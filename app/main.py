@@ -79,7 +79,6 @@ async def healthz():
 async def dashboard(request: Request, db: Session = Depends(get_db)):
     settings = get_settings()
     hero = _ensure_hero(db, settings.HERO_NAME)
-    ctx = _hero_context(hero)
 
     recent_xp = (
         db.query(XpEvent)
@@ -100,10 +99,10 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
     )
 
     return templates.TemplateResponse(
-        "dashboard.html",
-        {
-            "request": request,
-            **ctx,
+        request=request,
+        name="dashboard.html",
+        context={
+            **_hero_context(hero),
             "recent_xp": recent_xp,
             "active_quests": active_quests,
             "recent_syncs": recent_syncs,
@@ -119,9 +118,9 @@ async def trigger_sync(request: Request, db: Session = Depends(get_db)):
         token = settings.get_token()
     except RuntimeError as e:
         return templates.TemplateResponse(
-            "dashboard.html",
-            {
-                "request": request,
+            request=request,
+            name="dashboard.html",
+            context={
                 **_hero_context(_ensure_hero(db, settings.HERO_NAME)),
                 "sync_error": str(e),
                 "recent_xp": [],
@@ -161,8 +160,9 @@ async def quests_page(request: Request, db: Session = Depends(get_db)):
     hero = _ensure_hero(db, settings.HERO_NAME)
     all_quests = db.query(Quest).order_by(Quest.active.desc(), Quest.completed_at.desc()).all()
     return templates.TemplateResponse(
-        "quests.html",
-        {"request": request, **_hero_context(hero), "quests": all_quests},
+        request=request,
+        name="quests.html",
+        context={**_hero_context(hero), "quests": all_quests},
     )
 
 
@@ -172,8 +172,9 @@ async def achievements_page(request: Request, db: Session = Depends(get_db)):
     hero = _ensure_hero(db, settings.HERO_NAME)
     all_achievements = db.query(Achievement).order_by(Achievement.unlocked_at.desc()).all()
     return templates.TemplateResponse(
-        "achievements.html",
-        {"request": request, **_hero_context(hero), "achievements": all_achievements},
+        request=request,
+        name="achievements.html",
+        context={**_hero_context(hero), "achievements": all_achievements},
     )
 
 
@@ -210,9 +211,9 @@ async def settings_page(request: Request, db: Session = Depends(get_db)):
     )
 
     return templates.TemplateResponse(
-        "settings.html",
-        {
-            "request": request,
+        request=request,
+        name="settings.html",
+        context={
             "config_items": config_items,
             "last_sync": last_sync,
             "last_sync_error": last_sync_error.last_error if last_sync_error else None,
