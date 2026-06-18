@@ -1,0 +1,77 @@
+# Python
+
+**pycache**/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+
+.venv/
+venv/
+env/
+
+# Environment and secrets
+
+.env
+.env.*
+!.env.example
+secrets/
+*.token
+*.key
+*.pem
+
+# Local data
+
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+
+logs/
+*.log
+
+# Docker / local overrides
+
+docker-compose.override.yml
+compose.override.yml
+
+# IDEs
+
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+
+.DS_Store
+Thumbs.db
+
+# Test / generated files
+
+tmp/
+.cache/
+uploads/
+exports/
+
+# Personal wger data
+
+wger-export*
+workout-export*
+training-export*
+*.csv
+*.tsv
+*.jsonl
