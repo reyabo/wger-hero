@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Settings — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>Settings</h1>
+</div>
+
+<section class="card">
+  <div class="card-title">Configuration Status</div>
+  <p class="muted">Secret values are never displayed. Only non-sensitive configuration is shown.</p>
+  <table class="config-table">
+    <thead>
+      <tr><th>Setting</th><th>Value</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      {% for key, value, ok in config_items %}
+      <tr>
+        <td><code>{{ key }}</code></td>
+        <td>{{ value }}</td>
+        <td>
+          {% if ok %}
+          <span class="badge badge-success">OK</span>
+          {% else %}
+          <span class="badge badge-error">Missing</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <div class="card-title">Token Configuration</div>
+  <p>The API token can be provided in three ways (highest priority first):</p>
+  <ol>
+    <li>Mount a file at <code>/run/secrets/wger_api_token</code></li>
+    <li>Set <code>WGER_API_TOKEN_FILE</code> to a file path</li>
+    <li>Set <code>WGER_API_TOKEN</code> environment variable</li>
+  </ol>
+</section>
+
+{% endblock %}

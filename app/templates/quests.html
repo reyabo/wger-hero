@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Quests — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>Quests</h1>
+  <span class="badge">Level {{ level }}</span>
+</div>
+
+{% set active = quests | selectattr("active") | list %}
+{% set completed = quests | rejectattr("active") | selectattr("completed_at") | list %}
+
+{% if active %}
+<section class="card">
+  <div class="card-title">Active</div>
+  {% for quest in active %}
+  <div class="quest-block">
+    <div class="quest-header">
+      <span class="quest-name">{{ quest.title }}</span>
+      <span class="xp-reward">+{{ quest.xp_reward }} XP</span>
+    </div>
+    <p class="quest-desc">{{ quest.description }}</p>
+    <div class="quest-progress-row">
+      <span class="progress-text">{{ quest.current_value }} / {{ quest.target_value }}</span>
+      <div class="bar-wrap">
+        <div class="bar" style="width: {{ [(quest.current_value / quest.target_value * 100)|int, 100]|min }}%"></div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if completed %}
+<section class="card">
+  <div class="card-title">Completed</div>
+  {% for quest in completed %}
+  <div class="quest-block completed">
+    <div class="quest-header">
+      <span class="quest-name">{{ quest.title }}</span>
+      <span class="badge badge-success">Completed {{ quest.completed_at.strftime('%Y-%m-%d') }}</span>
+    </div>
+    <p class="quest-desc muted">{{ quest.description }}</p>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if not quests %}
+<p class="muted">No quests found.</p>
+{% endif %}
+
+{% endblock %}

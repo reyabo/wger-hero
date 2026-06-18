@@ -1,0 +1,20 @@
+services:
+  wger-hero:
+    build: .
+    container_name: wger-hero
+    restart: unless-stopped
+    ports:
+      - "8091:5000"
+    volumes:
+      - /srv/data/wger-hero:/data
+      - ./secrets/wger_api_token.txt:/run/secrets/wger_api_token:ro
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=sqlite:////data/wger_hero.db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
