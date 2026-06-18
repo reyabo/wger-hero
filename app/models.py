@@ -32,6 +32,7 @@ class SyncEvent(Base):
     synced_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     raw_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     xp_awarded: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
 
 
 class XpEvent(Base):
@@ -64,6 +65,18 @@ class Quest(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     period_start: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     period_end: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class ApiCheckEvent(Base):
+    __tablename__ = "api_check_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    endpoint: Mapped[str] = mapped_column(String(200))
+    http_status: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    result_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    is_success: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Achievement(Base):

@@ -32,6 +32,47 @@
 </section>
 
 <section class="card">
+  <div class="card-title">API Status</div>
+  <table class="config-table">
+    <thead>
+      <tr><th>Item</th><th>Value</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Last sync</td>
+        <td>
+          {% if last_sync %}
+            {{ last_sync.synced_at.strftime('%Y-%m-%d %H:%M UTC') }}
+            — {{ last_sync.raw_summary }}
+            — <span class="xp-reward">+{{ last_sync.xp_awarded }} XP</span>
+          {% else %}
+            <span class="muted">Never synced</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>Last sync result</td>
+        <td>
+          {% if last_sync_error %}
+            <span class="badge badge-error">Failed</span>
+            <span class="muted small">{{ last_sync_error }}</span>
+          {% elif last_sync %}
+            <span class="badge badge-success">OK</span>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="card-divider"></div>
+
+  <p class="muted small">To run a live API probe from the container:</p>
+  <pre class="code-block">python -m app.diagnostics wger</pre>
+</section>
+
+<section class="card">
   <div class="card-title">Token Configuration</div>
   <p>The API token can be provided in three ways (highest priority first):</p>
   <ol>

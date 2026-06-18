@@ -7,11 +7,12 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Optional
 
+import httpx
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.models import HeroProfile, SyncEvent, XpEvent
-from app.wger_client import WgerClient
+from app.wger_client import WgerClient, WgerClientError
 from app.xp import calculate_xp_awards, level_from_total_xp
 
 logger = logging.getLogger(__name__)
@@ -44,9 +45,48 @@ class SyncResult:
     errors: list[str] = field(default_factory=list)
 
 
+def _sanitize_error(e: Exception) -> str:
+    """
+    Convert an exception into a short, safe message that contains no private data.
+    Never include exception messages directly — they may embed tokens or raw payloads.
+    """
+    msg = str(e)
+    if isinstance(e, WgerClientError):
+        if "401" in msg:
+            return "401 Unauthorized: check API token"
+        if "403" in msg:
+            return "403 Forbidden: token may lack required permissions"
+        if "404" in msg:
+            return "404 Not Found: endpoint may not exist on this wger version"
+        if "429" in msg:
+            return "429 Too Many Requests: rate limited by wger"
+        if "5" in msg[:3]:
+            return "5xx Server Error: wger returned a server error"
+        return "API error: unexpected HTTP status"
+    if isinstance(e, (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError)):
+        return "Connection error: could not reach wger"
+    if isinstance(e, (KeyError, TypeError, ValueError)):
+        return "Unexpected response shape: missing or invalid field in wger response"
+    return f"Sync error: {type(e).__name__}"
+
+
 def _hash_session(data: dict) -> str:
     serialized = json.dumps(data, sort_keys=True, default=str)
     return hashlib.sha256(serialized.encode()).hexdigest()
+
+
+def _safe_int(value) -> Optional[int]:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float(value) -> Optional[float]:
+    try:
+        return float(value) if value not in (None, "", "None") else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _normalize_session(
@@ -54,30 +94,39 @@ def _normalize_session(
     logs: list[dict],
     exercise_names: dict[int, str],
 ) -> NormalizedWorkoutLog:
-    session_id = str(session.get("id", ""))
+    session_id = str(session.get("id") or "unknown")
+
     session_date_raw = session.get("date", "")
     try:
-        session_date = date.fromisoformat(session_date_raw)
+        session_date = date.fromisoformat(str(session_date_raw))
     except (ValueError, TypeError):
         session_date = date.today()
 
+    # notes may contain private data — use only as label, never log the content
     title = session.get("notes") or None
-    workout_id = session.get("workout")
 
     exercises: list[NormalizedExerciseLog] = []
     for log_entry in logs:
-        ex_id = log_entry.get("exercise") or log_entry.get("exercise_id")
-        ex_name = exercise_names.get(ex_id, f"Exercise {ex_id}") if ex_id else "Unknown"
-        rir_raw = log_entry.get("rir")
-        exercises.append(
-            NormalizedExerciseLog(
-                name=ex_name,
-                sets=None,
-                reps=log_entry.get("reps"),
-                weight=log_entry.get("weight"),
-                rir=float(rir_raw) if rir_raw not in (None, "", "None") else None,
+        try:
+            ex_id = log_entry.get("exercise") or log_entry.get("exercise_id")
+            ex_id_int = _safe_int(ex_id)
+            ex_name = (
+                exercise_names.get(ex_id_int, f"Exercise {ex_id_int}")
+                if ex_id_int is not None
+                else "Unknown"
             )
-        )
+            exercises.append(
+                NormalizedExerciseLog(
+                    name=ex_name,
+                    sets=None,
+                    reps=_safe_int(log_entry.get("reps")),
+                    weight=_safe_float(log_entry.get("weight")),
+                    rir=_safe_float(log_entry.get("rir")),
+                )
+            )
+        except Exception:
+            # Malformed log entry — skip, don't crash the entire sync
+            logger.warning("Skipping malformed log entry (unexpected field type)")
 
     raw_hash = _hash_session({"session": session, "logs": logs})
 
@@ -119,41 +168,47 @@ async def sync_workouts(db: Session, client: WgerClient, hero_name: str = "Hero"
     try:
         exercises = await client.get_exercises()
         for ex in exercises:
-            ex_id = ex.get("id")
-            # Name may be in translations list or direct field
+            ex_id = _safe_int(ex.get("id"))
             name = ex.get("name") or ex.get("uuid") or f"Exercise {ex_id}"
-            if ex_id:
-                exercise_names[int(ex_id)] = name
+            if ex_id is not None:
+                exercise_names[ex_id] = name
     except Exception as e:
         logger.warning("Could not fetch exercise catalog: %s", type(e).__name__)
 
-    # Fetch sessions and logs
+    # Fetch sessions
     try:
         sessions = await client.get_workout_sessions()
     except Exception as e:
-        result.errors.append(f"Failed to fetch sessions: {e}")
-        logger.error("Sync failed fetching sessions: %s", e)
+        sanitized = _sanitize_error(e)
+        result.errors.append(sanitized)
+        logger.error("Sync failed fetching sessions: %s", type(e).__name__)
         return result
 
+    # Fetch exercise logs
     try:
         all_logs = await client.get_exercise_logs()
     except Exception as e:
-        logger.warning("Could not fetch exercise logs: %s — proceeding without them", e)
+        logger.warning("Could not fetch exercise logs: %s — proceeding without them", type(e).__name__)
         all_logs = []
 
-    # Group logs by workout/session id
+    # Group logs by workout id
     logs_by_workout: dict[int, list[dict]] = {}
     for log in all_logs:
-        wid = log.get("workout")
+        wid = _safe_int(log.get("workout"))
         if wid is not None:
-            logs_by_workout.setdefault(int(wid), []).append(log)
+            logs_by_workout.setdefault(wid, []).append(log)
 
     for session in sessions:
-        session_id = session.get("id")
-        workout_id = session.get("workout")
-        session_logs = logs_by_workout.get(workout_id, []) if workout_id else []
+        try:
+            session_workout_id = _safe_int(session.get("workout"))
+            session_logs = logs_by_workout.get(session_workout_id, []) if session_workout_id else []
 
-        normalized = _normalize_session(session, session_logs, exercise_names)
+            normalized = _normalize_session(session, session_logs, exercise_names)
+        except Exception as e:
+            sanitized = _sanitize_error(e)
+            result.errors.append(sanitized)
+            logger.warning("Could not normalize session: %s", type(e).__name__)
+            continue
 
         # Deduplication check
         existing = (

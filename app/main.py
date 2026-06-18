@@ -134,6 +134,18 @@ async def trigger_sync(request: Request, db: Session = Depends(get_db)):
     client = WgerClient(base_url=settings.WGER_BASE_URL, token=token)
     result = await sync_workouts(db, client, hero_name=settings.HERO_NAME)
 
+    # Store sanitized error on the most recent SyncEvent if errors occurred
+    if result.errors:
+        last_event = (
+            db.query(SyncEvent)
+            .filter(SyncEvent.source == "wger")
+            .order_by(SyncEvent.synced_at.desc())
+            .first()
+        )
+        if last_event:
+            last_event.last_error = result.errors[-1]
+            db.commit()
+
     hero = db.query(HeroProfile).first()
     if hero:
         evaluate_quests(db, hero)
@@ -166,7 +178,7 @@ async def achievements_page(request: Request, db: Session = Depends(get_db)):
 
 
 @app.get("/settings", response_class=HTMLResponse)
-async def settings_page(request: Request):
+async def settings_page(request: Request, db: Session = Depends(get_db)):
     settings = get_settings()
     try:
         token_ok = bool(settings.get_token())
@@ -182,7 +194,27 @@ async def settings_page(request: Request):
         ("HERO_NAME", settings.HERO_NAME, True),
         ("APP_ENV", settings.APP_ENV, True),
     ]
+
+    # Last sync status — show only sanitized summary, never raw payloads
+    last_sync = (
+        db.query(SyncEvent)
+        .filter(SyncEvent.source == "wger")
+        .order_by(SyncEvent.synced_at.desc())
+        .first()
+    )
+    last_sync_error = (
+        db.query(SyncEvent)
+        .filter(SyncEvent.source == "wger", SyncEvent.last_error.isnot(None))
+        .order_by(SyncEvent.synced_at.desc())
+        .first()
+    )
+
     return templates.TemplateResponse(
         "settings.html",
-        {"request": request, "config_items": config_items},
+        {
+            "request": request,
+            "config_items": config_items,
+            "last_sync": last_sync,
+            "last_sync_error": last_sync_error.last_error if last_sync_error else None,
+        },
     )
