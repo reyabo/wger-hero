@@ -1,246 +1,192 @@
 # wger-hero
 
-A small self-hosted gamification layer for [wger](https://github.com/wger-project/wger).
+A gamification layer for your self-hosted [wger](https://wger.de) instance.
 
-`wger-hero` reads workout data from a wger instance and turns completed training into XP, levels, quests, streaks and achievements.
+wger remains the source of truth. wger-hero only reads your workout data and turns completed training into XP, levels, quests, streaks, and achievements.
 
-wger remains the source of truth for workouts, exercises, routines and logs.
-wger-hero only adds a lightweight game layer on top.
+## Features
 
-## Status
+- Connects to wger via the REST API (read-only)
+- Awards XP for completed workouts, conditioning bonuses, and logged RIR
+- Simple level progression: `1000 + level × 250 XP` per level
+- Weekly quests (Week Warrior, HOME HERO × SUPERMOVER 3)
+- Achievements (First Blood, Triple Threat, …)
+- Clean server-rendered dashboard — no external CDN, no tracking
+- Deduplication: syncing twice never awards XP twice
+- `/healthz` endpoint for container health checks
+- Manual sync button (scheduled sync can be added in V2)
 
-Early planning / prototype.
+## Quick Start (Docker)
 
-## Goals
+### 1. Clone and configure
 
-* Read workout logs from a wger instance via API
-* Award XP for completed workouts
-* Track levels, streaks, quests and achievements
-* Store local gamification state in SQLite
-* Provide a small self-hosted web dashboard
-* Run easily with Docker Compose
-
-## Non-Goals
-
-This project does not aim to replace wger.
-
-It should not:
-
-* create or edit workouts in wger in the first version
-* modify wger exercise data
-* require public internet exposure
-* send data to third parties
-* include analytics or tracking
-* store API tokens in Git
-
-## Planned Features
-
-### Dashboard
-
-* Current level
-* Total XP
-* XP progress toward next level
-* Weekly training progress
-* Active quests
-* Recent XP events
-* Unlocked achievements
-
-### Quest System
-
-Possible quest types:
-
-* Complete a workout
-* Complete a weekly training target
-* Complete a specific routine
-* Complete conditioning work
-* Maintain a consistency streak
-
-### XP Categories
-
-Suggested attributes:
-
-* Strength
-* Push
-* Pull
-* Legs
-* Stamina
-* Mobility
-* Discipline
-
-### Achievements
-
-Example achievements:
-
-* First Workout
-* Full Week Completed
-* Three Workout Week
-* Consistency Streak
-* Conditioning Completed
-* New Personal Best
-
-## Suggested Stack
-
-* Python
-* FastAPI
-* Jinja2 templates
-* SQLite
-* httpx
-* pydantic
-* pytest
-* Docker
-* Docker Compose
-
-## Configuration
-
-Example `.env`:
-
-```dotenv
-WGER_BASE_URL=https://your-wger-instance.example
-WGER_API_TOKEN_FILE=/run/secrets/wger_api_token
-DATABASE_URL=sqlite:////data/wger_hero.sqlite
-APP_SECRET_KEY=change-me
-SYNC_INTERVAL_MINUTES=60
-TIMEZONE=UTC
-DEFAULT_WEEKLY_WORKOUT_TARGET=3
+```bash
+git clone https://github.com/reyabo/wger-hero
+cd wger-hero
+cp .env.example .env
 ```
 
-Alternatively, the API token may be provided directly through an environment variable:
+Edit `.env`:
 
-```dotenv
-WGER_API_TOKEN=your-token-here
+```env
+WGER_BASE_URL=https://wger.yourdomain.com
+HERO_NAME=YourName
 ```
 
-Using a token file is recommended for deployments.
+### 2. Set up the API token
 
-## Docker
+Generate a token in wger at **Settings → API → Generate new token**.
 
-The app should listen on port `5000` inside the container.
+Create a secrets directory (excluded from git):
 
-Example Docker Compose setup:
-
-```yaml
-services:
-  wger-hero:
-    build: .
-    container_name: wger-hero
-    restart: unless-stopped
-    environment:
-      WGER_BASE_URL: ${WGER_BASE_URL}
-      WGER_API_TOKEN_FILE: /run/secrets/wger_api_token
-      DATABASE_URL: sqlite:////data/wger_hero.sqlite
-      APP_SECRET_KEY: ${APP_SECRET_KEY}
-      TIMEZONE: ${TIMEZONE:-UTC}
-      DEFAULT_WEEKLY_WORKOUT_TARGET: ${DEFAULT_WEEKLY_WORKOUT_TARGET:-3}
-    volumes:
-      - ./data:/data
-      - ./secrets/wger_api_token.txt:/run/secrets/wger_api_token:ro
-    ports:
-      - "8091:5000"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/healthz').status == 200 else 1)"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+```bash
+mkdir secrets
+echo "your_wger_api_token_here" > secrets/wger_api_token.txt
+chmod 600 secrets/wger_api_token.txt
 ```
 
-Start:
+The Docker Compose file mounts this as a read-only secret at `/run/secrets/wger_api_token`.
+
+### 3. Create the data directory
+
+```bash
+sudo mkdir -p /srv/data/wger-hero
+```
+
+### 4. Start the app
 
 ```bash
 docker compose up -d --build
 ```
 
-Open:
+The app is available at `http://localhost:8091`.
 
-```text
-http://localhost:8091
-```
+### 5. Sync your workouts
 
-## Development
-
-Create a virtual environment:
+Open the dashboard and click **Sync Now**, or POST to `/sync`:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+curl -X POST http://localhost:8091/sync
+```
+
+## Running Locally (without Docker)
+
+```bash
+# Install dependencies
 pip install -e ".[dev]"
+
+# Set required env vars
+export WGER_BASE_URL=https://wger.yourdomain.com
+export WGER_API_TOKEN=your_token_here
+
+# Override database path (avoids needing /data)
+export DATABASE_URL=sqlite:///./wger_hero_dev.db
+
+# Start the server
+uvicorn app.main:app --host 0.0.0.0 --port 8091 --reload
 ```
 
-Run tests:
+## Running Tests
 
 ```bash
-pytest
+WGER_BASE_URL=https://wger.example.com python -m pytest
 ```
 
-Run locally:
+All tests use in-memory SQLite and mocked wger clients — no real wger instance required.
 
-```bash
-uvicorn app.main:app --reload
+## Configuration Reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `WGER_BASE_URL` | (required) | Base URL of your wger instance |
+| `WGER_API_TOKEN` | — | API token (env var, least preferred) |
+| `WGER_API_TOKEN_FILE` | — | Path to a file containing the token |
+| `HERO_NAME` | `Hero` | Display name for your character |
+| `DATABASE_URL` | `sqlite:////data/wger_hero.db` | SQLite database path |
+| `APP_ENV` | `production` | Environment label |
+
+Token resolution order (highest priority first):
+1. `WGER_API_TOKEN_FILE` env var → reads file at that path
+2. Docker secret at `/run/secrets/wger_api_token` (auto-detected)
+3. `WGER_API_TOKEN` env var
+
+## Caddy Reverse Proxy
+
+Add to your `Caddyfile`:
+
+```
+hero.example.com {
+    reverse_proxy localhost:8091
+}
 ```
 
-## Data Storage
+## XP Rules
 
-wger-hero stores local gamification data in SQLite.
-
-The database contains:
-
-* hero profile
-* XP events
-* quest progress
-* achievements
-* sync history
-
-The sync history is used to prevent awarding XP multiple times for the same workout log.
-
-## Security
-
-Never commit:
-
-* API tokens
-* `.env` files
-* SQLite databases
-* personal workout exports
-* logs containing private workout data
-* screenshots with private information
-
-Recommended:
-
-* use token files or Docker secrets
-* run behind a reverse proxy if exposing the app beyond localhost
-* restrict access to trusted users only
+| Event | XP | Attribute |
+|---|---|---|
+| Workout completed | +100 | Strength |
+| Conditioning/finisher detected | +25 | Conditioning |
+| RIR logged on any set | +10 | Mindfulness |
+| Quest completed (Week Warrior) | +200 | Strength |
+| Quest completed (HOME HERO Full Week) | +200 | Strength |
+| Achievement unlocked | +50 | Glory |
 
 ## Level Formula
 
-Initial simple formula:
-
-```text
-Level 1 starts at 0 XP.
-XP needed for next level = 1000 + current_level * 250
+```
+XP to next level = 1000 + current_level × 250
 ```
 
-This formula is intentionally simple and may change later.
+Level 1 → 2: 1,250 XP  
+Level 2 → 3: 1,500 XP  
+Level 10 → 11: 3,500 XP
 
-## First Version Acceptance Criteria
+## Project Structure
 
-A first usable version should:
+```
+wger-hero/
+├── app/
+│   ├── main.py         # FastAPI routes
+│   ├── config.py       # Settings (pydantic-settings)
+│   ├── database.py     # SQLAlchemy engine + init
+│   ├── models.py       # ORM models
+│   ├── wger_client.py  # wger API client (httpx)
+│   ├── sync.py         # Fetch → normalize → award XP
+│   ├── xp.py           # XP rules + level formula
+│   ├── quests.py       # Quest seeding + progress
+│   ├── achievements.py # Achievement unlock logic
+│   ├── templates/      # Jinja2 HTML templates
+│   └── static/         # CSS (no external CDN)
+├── tests/
+├── Dockerfile
+├── docker-compose.yml
+├── .env.example
+└── pyproject.toml
+```
 
-1. connect to a wger instance using an API token
-2. fetch recent workout logs
-3. normalize workout data internally
-4. award XP once per completed workout
-5. avoid duplicate XP through stable sync IDs or hashes
-6. store gamification state in SQLite
-7. show a simple dashboard
-8. provide a manual sync button
-9. expose `/healthz`
-10. run with Docker Compose
-11. include tests for XP, levels, quests and deduplication
+## What Still Needs Live Verification
 
-## Design Principle
+The wger API client is designed to be easy to adapt. Verify against your live instance:
 
-wger-hero should reward consistency, not reckless overtraining.
+| Item | Candidate | Notes |
+|---|---|---|
+| Completed sessions | `/api/v2/workoutsession/` | Check fields: `id`, `date`, `workout`, `notes` |
+| Exercise logs | `/api/v2/log/` | Check fields: `exercise`, `reps`, `weight`, `rir` |
+| Routines | `/api/v2/routine/` | May not exist on older wger — client handles 404 gracefully |
+| Exercise names | `/api/v2/exercise/` | Names may be in a `translations` list, not a top-level `name` field |
+| Token format | `Authorization: Token <value>` | Verify this is correct (not `Bearer`) |
 
-The app should never encourage training through pain, ignoring form breakdown or chasing volume at all costs. Technical work, recovery and honest logging should be rewarded too.
+Test connectivity:
 
-## License
+```bash
+curl -H "Authorization: Token YOUR_TOKEN" \
+  https://wger.yourdomain.com/api/v2/workoutsession/?format=json
+```
 
-MIT
+## Security
+
+- API tokens are never logged or committed
+- No data is sent to third parties
+- No analytics or external tracking
+- Raw API payloads are not stored — only a sanitized summary
+- `.env` and `secrets/` are in `.gitignore`

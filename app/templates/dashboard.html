@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>{{ hero.name }}</h1>
+  <span class="badge">Level {{ level }}</span>
+</div>
+
+{% if sync_error %}
+<div class="alert alert-error">
+  <strong>Sync failed:</strong> {{ sync_error }}
+</div>
+{% endif %}
+
+<section class="card xp-card">
+  <div class="xp-header">
+    <span class="label">Total XP</span>
+    <span class="xp-total">{{ hero.total_xp }}</span>
+  </div>
+  <div class="xp-bar-wrap">
+    <div class="xp-bar" style="width: {{ xp_pct }}%"></div>
+  </div>
+  <div class="xp-sub">
+    <span>{{ xp_in_level }} / {{ xp_needed }} XP to level {{ level + 1 }}</span>
+    <span>{{ xp_pct }}%</span>
+  </div>
+</section>
+
+<div class="grid-2">
+  <section class="card">
+    <div class="card-title">Active Quests</div>
+    {% if active_quests %}
+      {% for quest in active_quests %}
+      <div class="quest-row">
+        <div class="quest-info">
+          <span class="quest-name">{{ quest.title }}</span>
+          <span class="quest-desc">{{ quest.description }}</span>
+        </div>
+        <div class="quest-progress">
+          <span class="progress-text">{{ quest.current_value }} / {{ quest.target_value }}</span>
+          <div class="mini-bar-wrap">
+            <div class="mini-bar" style="width: {{ [(quest.current_value / quest.target_value * 100)|int, 100]|min }}%"></div>
+          </div>
+          <span class="xp-reward">+{{ quest.xp_reward }} XP</span>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="muted">No active quests.</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <div class="card-title">Sync</div>
+    <p class="muted">Pull latest workouts from wger and award XP.</p>
+    <form method="POST" action="/sync">
+      <button type="submit" class="btn btn-primary">Sync Now</button>
+    </form>
+    {% if recent_syncs %}
+    <div class="sync-history">
+      <div class="label">Recent syncs</div>
+      {% for s in recent_syncs %}
+      <div class="sync-row">
+        <span class="muted small">{{ s.synced_at.strftime('%Y-%m-%d %H:%M') }}</span>
+        <span class="small">{{ s.raw_summary }}</span>
+        <span class="xp-reward small">+{{ s.xp_awarded }} XP</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-title">Recent XP Events</div>
+  {% if recent_xp %}
+  <table class="xp-table">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Event</th>
+        <th>Attribute</th>
+        <th class="right">XP</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ev in recent_xp %}
+      <tr>
+        <td class="muted small">{{ ev.created_at.strftime('%Y-%m-%d') }}</td>
+        <td>{{ ev.title }}</td>
+        <td><span class="tag tag-{{ ev.attribute|lower }}">{{ ev.attribute }}</span></td>
+        <td class="right xp-reward">+{{ ev.xp }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p class="muted">No XP events yet. Hit <strong>Sync Now</strong> to fetch your workouts.</p>
+  {% endif %}
+</section>
+
+{% endblock %}

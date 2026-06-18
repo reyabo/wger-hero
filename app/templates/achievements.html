@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Achievements — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>Achievements</h1>
+  <span class="badge">Level {{ level }}</span>
+</div>
+
+<section class="card">
+  <div class="achievements-grid">
+    {% for ach in achievements %}
+    <div class="ach-card {% if ach.unlocked_at %}unlocked{% else %}locked{% endif %}">
+      <div class="ach-icon">{% if ach.unlocked_at %}★{% else %}☆{% endif %}</div>
+      <div class="ach-body">
+        <div class="ach-title">{{ ach.title }}</div>
+        <div class="ach-desc">{{ ach.description }}</div>
+        {% if ach.unlocked_at %}
+        <div class="ach-date muted small">Unlocked {{ ach.unlocked_at.strftime('%Y-%m-%d') }}</div>
+        {% else %}
+        <div class="ach-date muted small">Locked</div>
+        {% endif %}
+      </div>
+    </div>
+    {% else %}
+    <p class="muted">No achievements found.</p>
+    {% endfor %}
+  </div>
+</section>
+
+{% endblock %}
