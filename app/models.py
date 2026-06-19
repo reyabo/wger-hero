@@ -71,6 +71,10 @@ class Quest(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     # When true, the quest re-arms for the next period after completion
     repeatable: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Reward calculation fields
+    category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    duration_size: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    effort: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     period_start: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     period_end: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -121,6 +125,10 @@ class Habit(Base):
     base_xp_reward: Mapped[int] = mapped_column(Integer, default=20)
     # JSON object of {stat_key: xp} awarded on each completion
     stat_rewards: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Reward calculation fields (category/duration/effort → auto-calculated XP)
+    category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    duration_size: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    effort: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow

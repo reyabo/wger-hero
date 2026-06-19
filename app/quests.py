@@ -8,6 +8,12 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.models import Habit, HabitCompletion, HeroProfile, Quest, SyncEvent, XpEvent
+from app.rewards import (
+    CATEGORY_CHOICES,
+    DURATION_CHOICES,
+    EFFORT_CHOICES,
+    calculate_rewards,
+)
 from app.stats import award_stat_xp, parse_stat_rewards, serialize_stat_rewards
 from app.xp import recalc_level
 
@@ -283,6 +289,26 @@ def _unique_slug(db: Session, title: str) -> str:
     return slug
 
 
+SYSTEM_QUEST_SLUGS = {"week-warrior", "home-hero-full-week"}
+
+
+def _resolve_quest_xp(
+    category: Optional[str],
+    duration_size: Optional[str],
+    effort: Optional[str],
+    xp_reward: Optional[int],
+    stat_rewards: Optional[dict[str, int]],
+) -> tuple[int, dict[str, int]]:
+    if (
+        category in CATEGORY_CHOICES
+        and duration_size in DURATION_CHOICES
+        and effort in EFFORT_CHOICES
+        and xp_reward is None
+    ):
+        return calculate_rewards(duration_size, effort, category)
+    return max(0, int(xp_reward or 100)), stat_rewards or {}
+
+
 def create_quest(
     db: Session,
     *,
@@ -292,12 +318,21 @@ def create_quest(
     period: str = "weekly",
     target_value: int = 1,
     match_text: Optional[str] = None,
-    xp_reward: int = 100,
+    xp_reward: Optional[int] = None,
     stat_rewards: Optional[dict[str, int]] = None,
     repeatable: bool = False,
     active: bool = True,
+    category: Optional[str] = None,
+    duration_size: Optional[str] = None,
+    effort: Optional[str] = None,
 ) -> Quest:
     """Create and persist a user-defined quest."""
+    xp, computed_stats = _resolve_quest_xp(
+        category, duration_size, effort, xp_reward, stat_rewards
+    )
+    if stat_rewards is not None and xp_reward is not None:
+        computed_stats = stat_rewards
+
     quest = Quest(
         slug=_unique_slug(db, title),
         title=title.strip(),
@@ -307,11 +342,14 @@ def create_quest(
         target_value=max(1, int(target_value)),
         current_value=0,
         match_text=(match_text or "").strip() or None,
-        xp_reward=max(0, int(xp_reward)),
-        stat_rewards=serialize_stat_rewards(stat_rewards or {}),
+        xp_reward=xp,
+        stat_rewards=serialize_stat_rewards(computed_stats),
         attribute="Strength",
         active=active,
         repeatable=repeatable,
+        category=category if category in CATEGORY_CHOICES else None,
+        duration_size=duration_size if duration_size in DURATION_CHOICES else None,
+        effort=effort if effort in EFFORT_CHOICES else None,
     )
     db.add(quest)
     db.commit()
@@ -329,23 +367,96 @@ def update_quest(
     period: str,
     target_value: int,
     match_text: Optional[str],
-    xp_reward: int,
-    stat_rewards: Optional[dict[str, int]],
+    xp_reward: Optional[int] = None,
+    stat_rewards: Optional[dict[str, int]] = None,
     repeatable: bool,
     active: bool,
+    category: Optional[str] = None,
+    duration_size: Optional[str] = None,
+    effort: Optional[str] = None,
 ) -> Quest:
     """Update an existing quest in place (slug is preserved)."""
+    xp, computed_stats = _resolve_quest_xp(
+        category, duration_size, effort, xp_reward, stat_rewards
+    )
+    if stat_rewards is not None and xp_reward is not None:
+        computed_stats = stat_rewards
+
     quest.title = title.strip()
     quest.description = (description or "").strip() or None
     quest.quest_type = quest_type if quest_type in QUEST_TYPE_CHOICES else quest.quest_type
     quest.period = period if period in PERIOD_CHOICES else quest.period
     quest.target_value = max(1, int(target_value))
     quest.match_text = (match_text or "").strip() or None
-    quest.xp_reward = max(0, int(xp_reward))
-    quest.stat_rewards = serialize_stat_rewards(stat_rewards or {})
+    quest.xp_reward = xp
+    quest.stat_rewards = serialize_stat_rewards(computed_stats)
     quest.repeatable = repeatable
     quest.active = active
+    quest.category = category if category in CATEGORY_CHOICES else None
+    quest.duration_size = duration_size if duration_size in DURATION_CHOICES else None
+    quest.effort = effort if effort in EFFORT_CHOICES else None
     quest.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(quest)
     return quest
+
+
+def delete_or_archive_quest(db: Session, quest: Quest) -> str:
+    """
+    Hard-delete a quest if it has never been completed and has no XP events;
+    deactivate (archive) it otherwise. System quests are always archived.
+    Returns "deleted" or "archived".
+    """
+    is_system = quest.slug in SYSTEM_QUEST_SLUGS
+    has_completion = quest.completed_at is not None
+    has_xp_events = (
+        db.query(XpEvent)
+        .filter(
+            XpEvent.source == "quest",
+            XpEvent.source_id == str(quest.id),
+        )
+        .first()
+        is not None
+    )
+
+    if is_system or has_completion or has_xp_events:
+        quest.active = False
+        quest.updated_at = datetime.utcnow()
+        db.commit()
+        return "archived"
+    db.delete(quest)
+    db.commit()
+    return "deleted"
+
+
+SYSTEM_QUEST_SLUGS = {"week-warrior", "home-hero-full-week"}
+
+
+def delete_or_archive_quest(db: Session, quest: Quest) -> str:
+    """
+    Hard-delete a quest if it has no history; deactivate (archive) it otherwise.
+    System quests are always archived, never deleted.
+    Returns "deleted" or "archived".
+    """
+    # System quests are never hard-deleted
+    if quest.slug in SYSTEM_QUEST_SLUGS:
+        quest.active = False
+        db.commit()
+        return "archived"
+
+    has_xp_events = (
+        db.query(XpEvent)
+        .filter(XpEvent.source == "quest", XpEvent.source_id == quest.slug)
+        .first()
+        is not None
+    )
+    has_history = has_xp_events or quest.completed_at is not None
+
+    if has_history:
+        quest.active = False
+        db.commit()
+        return "archived"
+
+    db.delete(quest)
+    db.commit()
+    return "deleted"

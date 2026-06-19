@@ -25,6 +25,14 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("repeatable", "BOOLEAN DEFAULT 0"),
         ("created_at", "DATETIME"),
         ("updated_at", "DATETIME"),
+        ("category", "VARCHAR(50)"),
+        ("duration_size", "VARCHAR(20)"),
+        ("effort", "VARCHAR(20)"),
+    ],
+    "habits": [
+        ("category", "VARCHAR(50)"),
+        ("duration_size", "VARCHAR(20)"),
+        ("effort", "VARCHAR(20)"),
     ],
 }
 

@@ -33,6 +33,9 @@
           <button type="submit" class="btn btn-primary btn-sm">Complete</button>
         </form>
         <a href="/habits/{{ habit.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
+        <form method="POST" action="/habits/{{ habit.id }}/delete" onsubmit="return confirm('Delete or archive this habit?')">
+          <button type="submit" class="btn btn-ghost btn-sm">Delete</button>
+        </form>
       </div>
     </div>
     {% endfor %}
@@ -42,23 +45,26 @@
 </section>
 
 {% if inactive_habits %}
-<section class="card">
-  <div class="card-title">Inactive</div>
-  {% for habit in inactive_habits %}
-  <div class="habit-row">
-    <div class="habit-info">
-      <span class="habit-name muted">{{ habit.title }}</span>
-      <div class="habit-meta">
-        <span class="tag">{{ habit.recurrence }}</span>
-        <span class="muted small">· inactive</span>
+<details>
+  <summary style="cursor:pointer;padding:0.5rem 0;font-weight:600;">Archived / Inactive ({{ inactive_habits | length }})</summary>
+  <section class="card">
+    <div class="card-title">Inactive</div>
+    {% for habit in inactive_habits %}
+    <div class="habit-row">
+      <div class="habit-info">
+        <span class="habit-name muted">{{ habit.title }}</span>
+        <div class="habit-meta">
+          <span class="tag">{{ habit.recurrence }}</span>
+          <span class="muted small">· inactive · {{ completion_counts[habit.id] }} completed</span>
+        </div>
+      </div>
+      <div class="habit-actions">
+        <a href="/habits/{{ habit.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
       </div>
     </div>
-    <div class="habit-actions">
-      <a href="/habits/{{ habit.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
-    </div>
-  </div>
-  {% endfor %}
-</section>
+    {% endfor %}
+  </section>
+</details>
 {% endif %}
 
 {% endblock %}

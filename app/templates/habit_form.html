@@ -22,6 +22,36 @@
 
     <div class="form-grid">
       <div class="form-row">
+        <label for="category">Category</label>
+        <select id="category" name="category" onchange="updatePreview()">
+          <option value="">— select —</option>
+          {% for key, label in categories.items() %}
+          <option value="{{ key }}" {% if habit and habit.category == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-row">
+        <label for="duration_size">Duration</label>
+        <select id="duration_size" name="duration_size" onchange="updatePreview()">
+          <option value="">— select —</option>
+          {% for key, label in duration_labels.items() %}
+          <option value="{{ key }}" {% if habit and habit.duration_size == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-row">
+        <label for="effort">Effort</label>
+        <select id="effort" name="effort" onchange="updatePreview()">
+          <option value="">— select —</option>
+          {% for key, label in effort_labels.items() %}
+          <option value="{{ key }}" {% if habit and habit.effort == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-row">
         <label for="recurrence">Recurrence</label>
         <select id="recurrence" name="recurrence">
           {% for r in recurrences %}
@@ -35,12 +65,11 @@
         <input type="number" id="target_count" name="target_count" min="1"
                value="{{ habit.target_count if habit else 1 }}">
       </div>
+    </div>
 
-      <div class="form-row">
-        <label for="base_xp_reward">Base XP reward</label>
-        <input type="number" id="base_xp_reward" name="base_xp_reward" min="0"
-               value="{{ habit.base_xp_reward if habit else 20 }}">
-      </div>
+    <div id="reward-preview" class="card" style="background:#f8f8f2;margin:1rem 0;display:none;">
+      <div class="card-title">Reward Preview</div>
+      <div id="preview-content"></div>
     </div>
 
     <div class="form-row checkbox-row">
@@ -50,25 +79,64 @@
       </label>
     </div>
 
-    <div class="form-row">
-      <label>Stat rewards (XP per completion)</label>
-      <p class="muted small">Leave a stat at 0 to skip it. Stat XP is tracked separately from global XP.</p>
-      <div class="stat-grid">
-        {% for key in stat_keys %}
-        <div class="stat-input">
-          <label for="stat_{{ key }}">{{ stat_names[key] }}</label>
-          <input type="number" id="stat_{{ key }}" name="stat_{{ key }}" min="0"
-                 value="{{ rewards.get(key, 0) }}">
-        </div>
-        {% endfor %}
-      </div>
-    </div>
-
     <div class="form-actions">
       <button type="submit" class="btn btn-primary">Save</button>
       <a href="/habits" class="btn btn-ghost">Cancel</a>
     </div>
   </form>
 </section>
+
+<script>
+const DURATION_XP = {"mini": 15, "short": 25, "normal": 40, "long": 60, "large": 80};
+const EFFORT_MULT = {"easy": 0.8, "normal": 1.0, "demanding": 1.25};
+const CATEGORY_STATS = {
+  "strength_training": {"strength": 45, "body_control": 25, "discipline": 20, "technique": 10},
+  "endurance": {"endurance": 60, "discipline": 25, "recovery": 15},
+  "mobility": {"mobility": 65, "recovery": 25, "discipline": 10},
+  "technique_skill": {"technique": 45, "body_control": 30, "discipline": 15, "dexterity": 10},
+  "knowledge_learning": {"knowledge": 70, "discipline": 20, "technique": 10},
+  "creativity": {"creativity": 65, "technique": 20, "discipline": 15},
+  "household_order": {"discipline": 60, "recovery": 25, "dexterity": 15},
+  "project_work": {"knowledge": 40, "technique": 35, "discipline": 25},
+  "recovery": {"recovery": 70, "mobility": 20, "discipline": 10},
+  "social_community": {"creativity": 35, "recovery": 35, "discipline": 20, "knowledge": 10}
+};
+const STAT_NAMES = {{ stat_names | tojson }};
+
+function calcXp(duration, effort) {
+  const base = DURATION_XP[duration] || 40;
+  const mult = EFFORT_MULT[effort] || 1.0;
+  const raw = base * mult;
+  return Math.round(raw / 5) * 5;
+}
+
+function updatePreview() {
+  const cat = document.getElementById('category').value;
+  const dur = document.getElementById('duration_size').value;
+  const eff = document.getElementById('effort').value;
+  const preview = document.getElementById('reward-preview');
+  const content = document.getElementById('preview-content');
+
+  if (!cat || !dur || !eff) {
+    preview.style.display = 'none';
+    return;
+  }
+
+  const xp = calcXp(dur, eff);
+  const dist = CATEGORY_STATS[cat] || {};
+  let html = `<p><strong>Global XP: +${xp}</strong></p><ul>`;
+  for (const [stat, pct] of Object.entries(dist)) {
+    const val = Math.round(xp * pct / 100);
+    const name = STAT_NAMES[stat] || stat;
+    html += `<li>${name}: +${val} (${pct}%)</li>`;
+  }
+  html += '</ul>';
+  content.innerHTML = html;
+  preview.style.display = 'block';
+}
+
+// Run on page load if editing an existing habit
+updatePreview();
+</script>
 
 {% endblock %}
