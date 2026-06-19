@@ -171,3 +171,42 @@ def test_habit_edit_form_renders(client):
 def test_missing_habit_returns_404(client):
     resp = client.get("/habits/999999/edit")
     assert resp.status_code == 404
+
+
+def test_habit_delete_route_redirects(client):
+    # Create a habit, then delete it via POST /habits/{id}/delete
+    client.post(
+        "/habits/new",
+        data={"title": "To be deleted", "active": "on", "recurrence": "daily", "target_count": "1", "base_xp_reward": "10"},
+    )
+    page = client.get("/habits").text
+    import re
+    ids = re.findall(r"/habits/(\d+)/delete", page)
+    assert ids, "expected at least one deletable habit"
+    habit_id = ids[-1]
+    resp = client.post(f"/habits/{habit_id}/delete")
+    assert resp.status_code == 200  # followed redirect to /habits
+
+
+def test_quest_delete_route_redirects(client):
+    client.post(
+        "/quests/new",
+        data={"title": "Quest to delete", "quest_type": "manual", "period": "once", "target_value": "1", "xp_reward": "50", "active": "on"},
+    )
+    page = client.get("/quests").text
+    import re
+    ids = re.findall(r"/quests/(\d+)/delete", page)
+    assert ids, "expected at least one deletable quest"
+    quest_id = ids[-1]
+    resp = client.post(f"/quests/{quest_id}/delete")
+    assert resp.status_code == 200
+
+
+def test_habit_create_with_category_fields(client):
+    resp = client.post(
+        "/habits/new",
+        data={"title": "Category habit", "active": "on", "recurrence": "flexible", "target_count": "1",
+              "category": "knowledge_learning", "duration_size": "normal", "effort": "normal"},
+    )
+    assert resp.status_code == 200
+    assert "Category habit" in resp.text

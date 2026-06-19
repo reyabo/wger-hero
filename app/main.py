@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.achievements import check_achievements, seed_achievements
 from app.config import get_settings
 from app.database import get_db, init_db
-from app.habits import RECURRENCE_CHOICES, complete_habit, create_habit, update_habit
+from app.habits import RECURRENCE_CHOICES, complete_habit, create_habit, delete_or_archive_habit, update_habit
 from app.models import (
     Achievement,
     Habit,
@@ -27,10 +27,21 @@ from app.quests import (
     QUEST_TYPE_CHOICES,
     complete_quest_manual,
     create_quest,
+    delete_or_archive_quest,
     evaluate_quests,
     seed_quests,
     update_quest,
 )
+from app.rewards import (
+    CATEGORIES,
+    CATEGORY_CHOICES,
+    DURATION_CHOICES,
+    DURATION_LABELS,
+    EFFORT_CHOICES,
+    EFFORT_LABELS,
+    calculate_rewards,
+)
+from app.seed_defaults import seed_default_habits
 from app.stats import STAT_KEYS, STATS, get_stat_totals, parse_stat_rewards
 from app.sync import sync_workouts
 from app.wger_client import WgerClient
@@ -52,6 +63,7 @@ async def lifespan(app: FastAPI):
         _ensure_hero(db, settings.HERO_NAME)
         seed_quests(db)
         seed_achievements(db)
+        seed_default_habits(db)
     finally:
         try:
             next(db_gen)
@@ -226,6 +238,7 @@ async def quests_page(request: Request, db: Session = Depends(get_db)):
 
 
 def _quest_form_context(quest: Quest | None) -> dict:
+    from app.rewards import CATEGORIES, DURATION_LABELS, EFFORT_LABELS, CATEGORY_CHOICES, DURATION_CHOICES, EFFORT_CHOICES
     return {
         "quest": quest,
         "rewards": parse_stat_rewards(quest.stat_rewards) if quest else {},
@@ -233,6 +246,12 @@ def _quest_form_context(quest: Quest | None) -> dict:
         "periods": PERIOD_CHOICES,
         "stat_keys": STAT_KEYS,
         "stat_names": STATS,
+        "categories": CATEGORIES,
+        "duration_labels": DURATION_LABELS,
+        "effort_labels": EFFORT_LABELS,
+        "category_choices": CATEGORY_CHOICES,
+        "duration_choices": DURATION_CHOICES,
+        "effort_choices": EFFORT_CHOICES,
     }
 
 
@@ -348,12 +367,19 @@ async def habits_page(request: Request, db: Session = Depends(get_db)):
 
 
 def _habit_form_context(habit: Habit | None) -> dict:
+    from app.rewards import CATEGORIES, DURATION_LABELS, EFFORT_LABELS, CATEGORY_CHOICES, DURATION_CHOICES, EFFORT_CHOICES
     return {
         "habit": habit,
         "rewards": parse_stat_rewards(habit.stat_rewards) if habit else {},
         "recurrences": RECURRENCE_CHOICES,
         "stat_keys": STAT_KEYS,
         "stat_names": STATS,
+        "categories": CATEGORIES,
+        "duration_labels": DURATION_LABELS,
+        "effort_labels": EFFORT_LABELS,
+        "category_choices": CATEGORY_CHOICES,
+        "duration_choices": DURATION_CHOICES,
+        "effort_choices": EFFORT_CHOICES,
     }
 
 
@@ -378,6 +404,8 @@ async def habit_create(request: Request, db: Session = Depends(get_db)):
     title = (form.get("title") or "").strip()
     if not title:
         return RedirectResponse(url="/habits/new", status_code=303)
+    raw_xp = form.get("base_xp_reward")
+    base_xp = _int_field(form, "base_xp_reward", 0) if raw_xp else None
     create_habit(
         db,
         title=title,
@@ -385,8 +413,11 @@ async def habit_create(request: Request, db: Session = Depends(get_db)):
         active=_checkbox(form, "active"),
         recurrence=form.get("recurrence") or "daily",
         target_count=_int_field(form, "target_count", 1),
-        base_xp_reward=_int_field(form, "base_xp_reward", 0),
+        base_xp_reward=base_xp,
         stat_rewards=_stat_rewards_from_form(form),
+        category=form.get("category") or None,
+        duration_size=form.get("duration_size") or None,
+        effort=form.get("effort") or None,
     )
     return RedirectResponse(url="/habits", status_code=303)
 
@@ -415,6 +446,8 @@ async def habit_update(habit_id: int, request: Request, db: Session = Depends(ge
     if habit is None:
         raise HTTPException(status_code=404, detail="Habit not found")
     form = await request.form()
+    raw_xp = form.get("base_xp_reward")
+    base_xp = _int_field(form, "base_xp_reward", habit.base_xp_reward) if raw_xp else None
     update_habit(
         db,
         habit,
@@ -423,8 +456,11 @@ async def habit_update(habit_id: int, request: Request, db: Session = Depends(ge
         active=_checkbox(form, "active"),
         recurrence=form.get("recurrence") or habit.recurrence,
         target_count=_int_field(form, "target_count", habit.target_count),
-        base_xp_reward=_int_field(form, "base_xp_reward", habit.base_xp_reward),
+        base_xp_reward=base_xp,
         stat_rewards=_stat_rewards_from_form(form),
+        category=form.get("category") or None,
+        duration_size=form.get("duration_size") or None,
+        effort=form.get("effort") or None,
     )
     return RedirectResponse(url="/habits", status_code=303)
 
@@ -440,6 +476,25 @@ async def habit_complete(habit_id: int, request: Request, db: Session = Depends(
     evaluate_quests(db, hero)
     check_achievements(db, hero)
     return RedirectResponse(url="/habits", status_code=303)
+
+
+
+@app.post("/habits/{habit_id}/delete")
+async def habit_delete(habit_id: int, request: Request, db: Session = Depends(get_db)):
+    habit = db.get(Habit, habit_id)
+    if habit is None:
+        raise HTTPException(status_code=404, detail="Habit not found")
+    delete_or_archive_habit(db, habit)
+    return RedirectResponse(url="/habits", status_code=303)
+
+
+@app.post("/quests/{quest_id}/delete")
+async def quest_delete(quest_id: int, request: Request, db: Session = Depends(get_db)):
+    quest = db.get(Quest, quest_id)
+    if quest is None:
+        raise HTTPException(status_code=404, detail="Quest not found")
+    delete_or_archive_quest(db, quest)
+    return RedirectResponse(url="/quests", status_code=303)
 
 
 @app.get("/achievements", response_class=HTMLResponse)

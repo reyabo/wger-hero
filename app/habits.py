@@ -17,6 +17,12 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.models import Habit, HabitCompletion, HeroProfile, XpEvent
+from app.rewards import (
+    CATEGORY_CHOICES,
+    DURATION_CHOICES,
+    EFFORT_CHOICES,
+    calculate_rewards,
+)
 from app.stats import award_stat_xp, parse_stat_rewards, serialize_stat_rewards
 from app.xp import recalc_level
 
@@ -38,6 +44,24 @@ class CompletionResult:
     stat_rewards: dict[str, int] = field(default_factory=dict)
 
 
+def _resolve_xp_and_stats(
+    category: Optional[str],
+    duration_size: Optional[str],
+    effort: Optional[str],
+    base_xp_reward: Optional[int],
+    stat_rewards: Optional[dict[str, int]],
+) -> tuple[int, dict[str, int]]:
+    """Auto-calculate XP/stats from category/duration/effort, or use explicit values."""
+    if (
+        category in CATEGORY_CHOICES
+        and duration_size in DURATION_CHOICES
+        and effort in EFFORT_CHOICES
+        and base_xp_reward is None
+    ):
+        return calculate_rewards(duration_size, effort, category)
+    return max(0, int(base_xp_reward or 20)), stat_rewards or {}
+
+
 def create_habit(
     db: Session,
     *,
@@ -46,18 +70,36 @@ def create_habit(
     active: bool = True,
     recurrence: str = "daily",
     target_count: int = 1,
-    base_xp_reward: int = 20,
+    base_xp_reward: Optional[int] = None,
     stat_rewards: Optional[dict[str, int]] = None,
+    category: Optional[str] = None,
+    duration_size: Optional[str] = None,
+    effort: Optional[str] = None,
 ) -> Habit:
-    """Create and persist a new habit. Stat rewards are stored as JSON."""
+    """Create and persist a new habit.
+
+    If category/duration_size/effort are all valid and base_xp_reward is not
+    given, XP and stat rewards are calculated automatically. Pass base_xp_reward
+    explicitly to use a fixed value (backward-compatible with old data).
+    """
+    xp, computed_stats = _resolve_xp_and_stats(
+        category, duration_size, effort, base_xp_reward, stat_rewards
+    )
+    if stat_rewards is not None and base_xp_reward is not None:
+        # Caller provided explicit values — respect them.
+        computed_stats = stat_rewards
+
     habit = Habit(
         title=title.strip(),
         description=(description or "").strip() or None,
         active=active,
         recurrence=recurrence if recurrence in RECURRENCE_CHOICES else "daily",
         target_count=max(1, int(target_count)),
-        base_xp_reward=max(0, int(base_xp_reward)),
-        stat_rewards=serialize_stat_rewards(stat_rewards or {}),
+        base_xp_reward=xp,
+        stat_rewards=serialize_stat_rewards(computed_stats),
+        category=category if category in CATEGORY_CHOICES else None,
+        duration_size=duration_size if duration_size in DURATION_CHOICES else None,
+        effort=effort if effort in EFFORT_CHOICES else None,
     )
     db.add(habit)
     db.commit()
@@ -74,21 +116,55 @@ def update_habit(
     active: bool,
     recurrence: str,
     target_count: int,
-    base_xp_reward: int,
-    stat_rewards: Optional[dict[str, int]],
+    base_xp_reward: Optional[int] = None,
+    stat_rewards: Optional[dict[str, int]] = None,
+    category: Optional[str] = None,
+    duration_size: Optional[str] = None,
+    effort: Optional[str] = None,
 ) -> Habit:
     """Update an existing habit in place."""
+    xp, computed_stats = _resolve_xp_and_stats(
+        category, duration_size, effort, base_xp_reward, stat_rewards
+    )
+    if stat_rewards is not None and base_xp_reward is not None:
+        computed_stats = stat_rewards
+
     habit.title = title.strip()
     habit.description = (description or "").strip() or None
     habit.active = active
     habit.recurrence = recurrence if recurrence in RECURRENCE_CHOICES else "daily"
     habit.target_count = max(1, int(target_count))
-    habit.base_xp_reward = max(0, int(base_xp_reward))
-    habit.stat_rewards = serialize_stat_rewards(stat_rewards or {})
+    habit.base_xp_reward = xp
+    habit.stat_rewards = serialize_stat_rewards(computed_stats)
+    habit.category = category if category in CATEGORY_CHOICES else None
+    habit.duration_size = duration_size if duration_size in DURATION_CHOICES else None
+    habit.effort = effort if effort in EFFORT_CHOICES else None
     habit.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(habit)
     return habit
+
+
+def delete_or_archive_habit(db: Session, habit: Habit) -> str:
+    """
+    Hard-delete a habit if it has no completions; deactivate (archive) it otherwise.
+    History, XP events, and stat events are never deleted.
+    Returns "deleted" or "archived".
+    """
+    has_completions = (
+        db.query(HabitCompletion)
+        .filter(HabitCompletion.habit_id == habit.id)
+        .first()
+        is not None
+    )
+    if has_completions:
+        habit.active = False
+        habit.updated_at = datetime.utcnow()
+        db.commit()
+        return "archived"
+    db.delete(habit)
+    db.commit()
+    return "deleted"
 
 
 def _get_or_create_hero(db: Session, name: str = "Hero") -> HeroProfile:

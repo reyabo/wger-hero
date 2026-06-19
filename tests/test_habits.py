@@ -133,3 +133,15 @@ class TestHabitCompletion:
         habit = create_habit(db, title="Big", base_xp_reward=1300)
         complete_habit(db, habit, hero)
         assert db.query(HeroProfile).first().level >= 2
+
+
+def test_create_habit_with_category_calculates_xp(db):
+    from app.habits import create_habit
+    habit = create_habit(db, title="Test", category="knowledge_learning", duration_size="normal", effort="normal")
+    assert habit.base_xp_reward == 40
+
+
+def test_old_habit_data_compatible(db):
+    from app.habits import create_habit
+    habit = create_habit(db, title="Old style", base_xp_reward=20)
+    assert habit.base_xp_reward == 20
