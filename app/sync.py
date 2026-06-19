@@ -158,38 +158,49 @@ def _update_hero_level(db: Session, hero: HeroProfile) -> None:
     db.commit()
 
 
-async def sync_workouts(db: Session, client: WgerClient, hero_name: str = "Hero") -> SyncResult:
+async def sync_workouts(
+    db: Session,
+    client: WgerClient,
+    hero_name: str = "Hero",
+    fetch_exercise_logs: bool = True,
+    sync_from_date: Optional[date] = None,
+) -> SyncResult:
     result = SyncResult()
 
     hero = _get_or_create_hero(db, hero_name)
 
-    # Fetch exercise catalog for name resolution
-    exercise_names: dict[int, str] = {}
+    # Fetch sessions first — if this fails there is nothing else to do
     try:
-        exercises = await client.get_exercises()
-        for ex in exercises:
-            ex_id = _safe_int(ex.get("id"))
-            name = ex.get("name") or ex.get("uuid") or f"Exercise {ex_id}"
-            if ex_id is not None:
-                exercise_names[ex_id] = name
-    except Exception as e:
-        logger.warning("Could not fetch exercise catalog: %s", type(e).__name__)
-
-    # Fetch sessions
-    try:
-        sessions = await client.get_workout_sessions()
+        sessions = await client.get_workout_sessions(since=sync_from_date)
     except Exception as e:
         sanitized = _sanitize_error(e)
         result.errors.append(sanitized)
         logger.error("Sync failed fetching sessions: %s", type(e).__name__)
         return result
 
-    # Fetch exercise logs
-    try:
-        all_logs = await client.get_exercise_logs()
-    except Exception as e:
-        logger.warning("Could not fetch exercise logs: %s — proceeding without them", type(e).__name__)
-        all_logs = []
+    # Only fetch logs and exercise catalog when the feature is enabled
+    # and when there are sessions to enrich.
+    exercise_names: dict[int, str] = {}
+    all_logs: list[dict] = []
+
+    if fetch_exercise_logs and sessions:
+        try:
+            all_logs = await client.get_exercise_logs()
+        except Exception as e:
+            # 404 is already handled inside get_exercise_logs() and returns [].
+            # Any other error: proceed without logs rather than failing the sync.
+            logger.warning("Could not fetch exercise logs: %s — proceeding without them", type(e).__name__)
+
+        if all_logs:
+            try:
+                exercises = await client.get_exercises()
+                for ex in exercises:
+                    ex_id = _safe_int(ex.get("id"))
+                    name = ex.get("name") or ex.get("uuid") or f"Exercise {ex_id}"
+                    if ex_id is not None:
+                        exercise_names[ex_id] = name
+            except Exception as e:
+                logger.warning("Could not fetch exercise catalog: %s", type(e).__name__)
 
     # Group logs by workout id
     logs_by_workout: dict[int, list[dict]] = {}

@@ -131,7 +131,13 @@ async def trigger_sync(request: Request, db: Session = Depends(get_db)):
         )
 
     client = WgerClient(base_url=settings.WGER_BASE_URL, token=token)
-    result = await sync_workouts(db, client, hero_name=settings.HERO_NAME)
+    result = await sync_workouts(
+        db,
+        client,
+        hero_name=settings.HERO_NAME,
+        fetch_exercise_logs=settings.WGER_FETCH_EXERCISE_LOGS,
+        sync_from_date=settings.SYNC_FROM_DATE,
+    )
 
     # Store sanitized error on the most recent SyncEvent if errors occurred
     if result.errors:
@@ -194,6 +200,8 @@ async def settings_page(request: Request, db: Session = Depends(get_db)):
         ("DATABASE_URL", settings.DATABASE_URL, True),
         ("HERO_NAME", settings.HERO_NAME, True),
         ("APP_ENV", settings.APP_ENV, True),
+        ("WGER_FETCH_EXERCISE_LOGS", str(settings.WGER_FETCH_EXERCISE_LOGS), True),
+        ("SYNC_FROM_DATE", settings.SYNC_FROM_DATE.isoformat() if settings.SYNC_FROM_DATE else "all history", True),
     ]
 
     # Last sync status — show only sanitized summary, never raw payloads

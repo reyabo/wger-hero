@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +19,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:////data/wger_hero.db"
     HERO_NAME: str = "Hero"
     APP_ENV: str = "production"
+    # Set to false to skip /api/v2/log/ and exercise catalog fetching entirely
+    WGER_FETCH_EXERCISE_LOGS: bool = True
+    # Only sync sessions on or after this date (ISO format: YYYY-MM-DD). Empty = all history.
+    SYNC_FROM_DATE: Optional[date] = None
 
     def get_token(self) -> str:
         # Prefer explicit file path, then Docker secret, then env var
