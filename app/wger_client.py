@@ -62,24 +62,39 @@ class WgerClient:
 
         return results
 
-    async def get_workout_sessions(self) -> list[dict]:
+    async def get_workout_sessions(self, since: "date | None" = None) -> list[dict]:
         """
         Fetch workout sessions ordered by date descending.
         Endpoint: /api/v2/workoutsession/
         Fields expected: id, date, workout, notes, impression
+
+        `since`: if given, only sessions on or after this date are fetched
+        (uses the wger date__gte filter parameter).
         """
-        return await self._get_all("/api/v2/workoutsession/", {"ordering": "-date"})
+        from datetime import date as _date
+        params: dict = {"ordering": "-date"}
+        if since is not None:
+            params["date__gte"] = since.isoformat()
+        return await self._get_all("/api/v2/workoutsession/", params)
 
     async def get_exercise_logs(self, workout_id: int | None = None) -> list[dict]:
         """
         Fetch exercise logs (sets/reps/weight/rir per session).
         Endpoint: /api/v2/log/
         Fields expected: id, exercise, reps, weight, rir, date, workout
+
+        Returns [] on 404 — endpoint does not exist on all wger versions.
         """
         params: dict = {}
         if workout_id is not None:
             params["workout"] = workout_id
-        return await self._get_all("/api/v2/log/", params)
+        try:
+            return await self._get_all("/api/v2/log/", params)
+        except WgerClientError as e:
+            if "404" in str(e):
+                logger.info("Exercise log endpoint not available on this wger version — skipping")
+                return []
+            raise
 
     async def get_workouts(self) -> list[dict]:
         """
