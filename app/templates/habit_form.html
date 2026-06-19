@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}{{ heading }} — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>{{ heading }}</h1>
+</div>
+
+<section class="card">
+  <form method="POST" action="{{ form_action }}" class="form">
+    <div class="form-row">
+      <label for="title">Title</label>
+      <input type="text" id="title" name="title" required
+             value="{{ habit.title if habit else '' }}" placeholder="e.g. Read for 30 minutes">
+    </div>
+
+    <div class="form-row">
+      <label for="description">Description</label>
+      <textarea id="description" name="description" rows="2"
+                placeholder="Optional notes">{{ habit.description if habit and habit.description else '' }}</textarea>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-row">
+        <label for="recurrence">Recurrence</label>
+        <select id="recurrence" name="recurrence">
+          {% for r in recurrences %}
+          <option value="{{ r }}" {% if habit and habit.recurrence == r %}selected{% elif not habit and r == 'daily' %}selected{% endif %}>{{ r }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-row">
+        <label for="target_count">Target count (per period)</label>
+        <input type="number" id="target_count" name="target_count" min="1"
+               value="{{ habit.target_count if habit else 1 }}">
+      </div>
+
+      <div class="form-row">
+        <label for="base_xp_reward">Base XP reward</label>
+        <input type="number" id="base_xp_reward" name="base_xp_reward" min="0"
+               value="{{ habit.base_xp_reward if habit else 20 }}">
+      </div>
+    </div>
+
+    <div class="form-row checkbox-row">
+      <label class="checkbox">
+        <input type="checkbox" name="active" {% if not habit or habit.active %}checked{% endif %}>
+        Active
+      </label>
+    </div>
+
+    <div class="form-row">
+      <label>Stat rewards (XP per completion)</label>
+      <p class="muted small">Leave a stat at 0 to skip it. Stat XP is tracked separately from global XP.</p>
+      <div class="stat-grid">
+        {% for key in stat_keys %}
+        <div class="stat-input">
+          <label for="stat_{{ key }}">{{ stat_names[key] }}</label>
+          <input type="number" id="stat_{{ key }}" name="stat_{{ key }}" min="0"
+                 value="{{ rewards.get(key, 0) }}">
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Save</button>
+      <a href="/habits" class="btn btn-ghost">Cancel</a>
+    </div>
+  </form>
+</section>
+
+{% endblock %}

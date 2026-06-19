@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Habits — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>Habits</h1>
+  <span class="badge">Level {{ level }}</span>
+  <a href="/habits/new" class="btn btn-primary page-action">+ New Habit</a>
+</div>
+
+{% set active_habits = habits | selectattr("active") | list %}
+{% set inactive_habits = habits | rejectattr("active") | list %}
+
+<section class="card">
+  <div class="card-title">Active</div>
+  {% if active_habits %}
+    {% for habit in active_habits %}
+    <div class="habit-row">
+      <div class="habit-info">
+        <span class="habit-name">{{ habit.title }}</span>
+        {% if habit.description %}<span class="habit-desc">{{ habit.description }}</span>{% endif %}
+        <div class="habit-meta">
+          <span class="tag">{{ habit.recurrence }}</span>
+          <span class="xp-reward small">+{{ habit.base_xp_reward }} XP</span>
+          {% for key, amount in habit_rewards[habit.id].items() %}
+          <span class="tag stat-tag">{{ stat_names[key] }} +{{ amount }}</span>
+          {% endfor %}
+          <span class="muted small">· {{ completion_counts[habit.id] }} completed</span>
+        </div>
+      </div>
+      <div class="habit-actions">
+        <form method="POST" action="/habits/{{ habit.id }}/complete">
+          <button type="submit" class="btn btn-primary btn-sm">Complete</button>
+        </form>
+        <a href="/habits/{{ habit.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="muted">No active habits yet. <a href="/habits/new">Create your first habit</a>.</p>
+  {% endif %}
+</section>
+
+{% if inactive_habits %}
+<section class="card">
+  <div class="card-title">Inactive</div>
+  {% for habit in inactive_habits %}
+  <div class="habit-row">
+    <div class="habit-info">
+      <span class="habit-name muted">{{ habit.title }}</span>
+      <div class="habit-meta">
+        <span class="tag">{{ habit.recurrence }}</span>
+        <span class="muted small">· inactive</span>
+      </div>
+    </div>
+    <div class="habit-actions">
+      <a href="/habits/{{ habit.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
+    </div>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% endblock %}

@@ -27,6 +27,25 @@
   </div>
 </section>
 
+<section class="card">
+  <div class="card-title">Attributes</div>
+  {% set max_stat = (stat_totals.values() | max) if stat_totals else 0 %}
+  <div class="stat-totals">
+    {% for key, xp in stat_totals.items() %}
+    <div class="stat-total-row">
+      <span class="stat-total-name">{{ stat_names[key] }}</span>
+      <div class="mini-bar-wrap">
+        <div class="mini-bar" style="width: {{ ((xp / max_stat * 100) | int) if max_stat else 0 }}%"></div>
+      </div>
+      <span class="stat-total-xp">{{ xp }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% if not max_stat %}
+  <p class="muted small">No stat XP yet. Complete habits or quests with stat rewards to grow your attributes.</p>
+  {% endif %}
+</section>
+
 <div class="grid-2">
   <section class="card">
     <div class="card-title">Active Quests</div>

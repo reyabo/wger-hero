@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}{{ heading }} — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>{{ heading }}</h1>
+</div>
+
+<section class="card">
+  <form method="POST" action="{{ form_action }}" class="form">
+    <div class="form-row">
+      <label for="title">Title</label>
+      <input type="text" id="title" name="title" required
+             value="{{ quest.title if quest else '' }}" placeholder="e.g. Read 600 minutes this month">
+    </div>
+
+    <div class="form-row">
+      <label for="description">Description</label>
+      <textarea id="description" name="description" rows="2"
+                placeholder="Optional notes">{{ quest.description if quest and quest.description else '' }}</textarea>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-row">
+        <label for="quest_type">Type</label>
+        <select id="quest_type" name="quest_type">
+          {% for t in quest_types %}
+          <option value="{{ t }}" {% if quest and quest.quest_type == t %}selected{% elif not quest and t == 'manual' %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-row">
+        <label for="period">Period</label>
+        <select id="period" name="period">
+          {% for p in periods %}
+          <option value="{{ p }}" {% if quest and quest.period == p %}selected{% elif not quest and p == 'weekly' %}selected{% endif %}>{{ p }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-row">
+        <label for="target_value">Target value</label>
+        <input type="number" id="target_value" name="target_value" min="1"
+               value="{{ quest.target_value if quest else 1 }}">
+      </div>
+
+      <div class="form-row">
+        <label for="xp_reward">XP reward</label>
+        <input type="number" id="xp_reward" name="xp_reward" min="0"
+               value="{{ quest.xp_reward if quest else 100 }}">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label for="match_text">Match text <span class="muted small">(habit_count: only count habits whose title contains this)</span></label>
+      <input type="text" id="match_text" name="match_text"
+             value="{{ quest.match_text if quest and quest.match_text else '' }}" placeholder="optional, e.g. Japanese">
+    </div>
+
+    <div class="form-row checkbox-row">
+      <label class="checkbox">
+        <input type="checkbox" name="active" {% if not quest or quest.active %}checked{% endif %}>
+        Active
+      </label>
+      <label class="checkbox">
+        <input type="checkbox" name="repeatable" {% if quest and quest.repeatable %}checked{% endif %}>
+        Repeatable (re-arm next period)
+      </label>
+    </div>
+
+    <div class="form-row">
+      <label>Stat rewards (XP on completion)</label>
+      <p class="muted small">Leave a stat at 0 to skip it. Stat XP is tracked separately from global XP.</p>
+      <div class="stat-grid">
+        {% for key in stat_keys %}
+        <div class="stat-input">
+          <label for="stat_{{ key }}">{{ stat_names[key] }}</label>
+          <input type="number" id="stat_{{ key }}" name="stat_{{ key }}" min="0"
+                 value="{{ rewards.get(key, 0) }}">
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Save</button>
+      <a href="/quests" class="btn btn-ghost">Cancel</a>
+    </div>
+  </form>
+</section>
+
+{% endblock %}
