@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -12,8 +12,26 @@ from sqlalchemy.orm import Session
 from app.achievements import check_achievements, seed_achievements
 from app.config import get_settings
 from app.database import get_db, init_db
-from app.models import Achievement, HeroProfile, Quest, SyncEvent, XpEvent
-from app.quests import evaluate_quests, seed_quests
+from app.habits import RECURRENCE_CHOICES, complete_habit, create_habit, update_habit
+from app.models import (
+    Achievement,
+    Habit,
+    HabitCompletion,
+    HeroProfile,
+    Quest,
+    SyncEvent,
+    XpEvent,
+)
+from app.quests import (
+    PERIOD_CHOICES,
+    QUEST_TYPE_CHOICES,
+    complete_quest_manual,
+    create_quest,
+    evaluate_quests,
+    seed_quests,
+    update_quest,
+)
+from app.stats import STAT_KEYS, STATS, get_stat_totals, parse_stat_rewards
 from app.sync import sync_workouts
 from app.wger_client import WgerClient
 from app.xp import level_from_total_xp
@@ -70,6 +88,33 @@ def _hero_context(hero: HeroProfile) -> dict:
     }
 
 
+def _stat_rewards_from_form(form) -> dict[str, int]:
+    """Extract {stat_key: xp} from `stat_<key>` form fields (positive ints only)."""
+    rewards: dict[str, int] = {}
+    for key in STAT_KEYS:
+        raw = form.get(f"stat_{key}")
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            rewards[key] = value
+    return rewards
+
+
+def _checkbox(form, name: str) -> bool:
+    return form.get(name) is not None
+
+
+def _int_field(form, name: str, default: int = 0) -> int:
+    try:
+        return int(form.get(name))
+    except (TypeError, ValueError):
+        return default
+
+
 @app.get("/healthz")
 async def healthz():
     return JSONResponse({"status": "ok"})
@@ -106,6 +151,8 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             "recent_xp": recent_xp,
             "active_quests": active_quests,
             "recent_syncs": recent_syncs,
+            "stat_totals": get_stat_totals(db),
+            "stat_names": STATS,
         },
     )
 
@@ -165,11 +212,234 @@ async def quests_page(request: Request, db: Session = Depends(get_db)):
     settings = get_settings()
     hero = _ensure_hero(db, settings.HERO_NAME)
     all_quests = db.query(Quest).order_by(Quest.active.desc(), Quest.completed_at.desc()).all()
+    quest_rewards = {q.id: parse_stat_rewards(q.stat_rewards) for q in all_quests}
     return templates.TemplateResponse(
         request=request,
         name="quests.html",
-        context={**_hero_context(hero), "quests": all_quests},
+        context={
+            **_hero_context(hero),
+            "quests": all_quests,
+            "quest_rewards": quest_rewards,
+            "stat_names": STATS,
+        },
     )
+
+
+def _quest_form_context(quest: Quest | None) -> dict:
+    return {
+        "quest": quest,
+        "rewards": parse_stat_rewards(quest.stat_rewards) if quest else {},
+        "quest_types": QUEST_TYPE_CHOICES,
+        "periods": PERIOD_CHOICES,
+        "stat_keys": STAT_KEYS,
+        "stat_names": STATS,
+    }
+
+
+@app.get("/quests/new", response_class=HTMLResponse)
+async def quest_new(request: Request, db: Session = Depends(get_db)):
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    return templates.TemplateResponse(
+        request=request,
+        name="quest_form.html",
+        context={
+            **_hero_context(hero),
+            **_quest_form_context(None),
+            "form_action": "/quests/new",
+            "heading": "New Quest",
+        },
+    )
+
+
+@app.post("/quests/new")
+async def quest_create(request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    title = (form.get("title") or "").strip()
+    if not title:
+        return RedirectResponse(url="/quests/new", status_code=303)
+    create_quest(
+        db,
+        title=title,
+        description=form.get("description"),
+        quest_type=form.get("quest_type") or "manual",
+        period=form.get("period") or "weekly",
+        target_value=_int_field(form, "target_value", 1),
+        match_text=form.get("match_text"),
+        xp_reward=_int_field(form, "xp_reward", 0),
+        stat_rewards=_stat_rewards_from_form(form),
+        repeatable=_checkbox(form, "repeatable"),
+        active=_checkbox(form, "active"),
+    )
+    return RedirectResponse(url="/quests", status_code=303)
+
+
+@app.get("/quests/{quest_id}/edit", response_class=HTMLResponse)
+async def quest_edit(quest_id: int, request: Request, db: Session = Depends(get_db)):
+    quest = db.get(Quest, quest_id)
+    if quest is None:
+        raise HTTPException(status_code=404, detail="Quest not found")
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    return templates.TemplateResponse(
+        request=request,
+        name="quest_form.html",
+        context={
+            **_hero_context(hero),
+            **_quest_form_context(quest),
+            "form_action": f"/quests/{quest_id}/edit",
+            "heading": "Edit Quest",
+        },
+    )
+
+
+@app.post("/quests/{quest_id}/edit")
+async def quest_update(quest_id: int, request: Request, db: Session = Depends(get_db)):
+    quest = db.get(Quest, quest_id)
+    if quest is None:
+        raise HTTPException(status_code=404, detail="Quest not found")
+    form = await request.form()
+    update_quest(
+        db,
+        quest,
+        title=(form.get("title") or quest.title),
+        description=form.get("description"),
+        quest_type=form.get("quest_type") or quest.quest_type,
+        period=form.get("period") or quest.period,
+        target_value=_int_field(form, "target_value", quest.target_value),
+        match_text=form.get("match_text"),
+        xp_reward=_int_field(form, "xp_reward", quest.xp_reward),
+        stat_rewards=_stat_rewards_from_form(form),
+        repeatable=_checkbox(form, "repeatable"),
+        active=_checkbox(form, "active"),
+    )
+    return RedirectResponse(url="/quests", status_code=303)
+
+
+@app.post("/quests/{quest_id}/complete")
+async def quest_complete(quest_id: int, request: Request, db: Session = Depends(get_db)):
+    quest = db.get(Quest, quest_id)
+    if quest is None:
+        raise HTTPException(status_code=404, detail="Quest not found")
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    complete_quest_manual(db, quest, hero)
+    check_achievements(db, hero)
+    return RedirectResponse(url="/quests", status_code=303)
+
+
+@app.get("/habits", response_class=HTMLResponse)
+async def habits_page(request: Request, db: Session = Depends(get_db)):
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    habits = db.query(Habit).order_by(Habit.active.desc(), Habit.title).all()
+    habit_rewards = {h.id: parse_stat_rewards(h.stat_rewards) for h in habits}
+    completion_counts = {
+        h.id: db.query(HabitCompletion).filter(HabitCompletion.habit_id == h.id).count()
+        for h in habits
+    }
+    return templates.TemplateResponse(
+        request=request,
+        name="habits.html",
+        context={
+            **_hero_context(hero),
+            "habits": habits,
+            "habit_rewards": habit_rewards,
+            "completion_counts": completion_counts,
+            "stat_names": STATS,
+        },
+    )
+
+
+def _habit_form_context(habit: Habit | None) -> dict:
+    return {
+        "habit": habit,
+        "rewards": parse_stat_rewards(habit.stat_rewards) if habit else {},
+        "recurrences": RECURRENCE_CHOICES,
+        "stat_keys": STAT_KEYS,
+        "stat_names": STATS,
+    }
+
+
+@app.get("/habits/new", response_class=HTMLResponse)
+async def habit_new(request: Request, db: Session = Depends(get_db)):
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    return templates.TemplateResponse(
+        request=request,
+        name="habit_form.html",
+        context={
+            **_hero_context(hero),
+            **_habit_form_context(None),
+            "form_action": "/habits/new",
+            "heading": "New Habit",
+        },
+    )
+
+
+@app.post("/habits/new")
+async def habit_create(request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    title = (form.get("title") or "").strip()
+    if not title:
+        return RedirectResponse(url="/habits/new", status_code=303)
+    create_habit(
+        db,
+        title=title,
+        description=form.get("description"),
+        active=_checkbox(form, "active"),
+        recurrence=form.get("recurrence") or "daily",
+        target_count=_int_field(form, "target_count", 1),
+        base_xp_reward=_int_field(form, "base_xp_reward", 0),
+        stat_rewards=_stat_rewards_from_form(form),
+    )
+    return RedirectResponse(url="/habits", status_code=303)
+
+
+@app.get("/habits/{habit_id}/edit", response_class=HTMLResponse)
+async def habit_edit(habit_id: int, request: Request, db: Session = Depends(get_db)):
+    habit = db.get(Habit, habit_id)
+    if habit is None:
+        raise HTTPException(status_code=404, detail="Habit not found")
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    return templates.TemplateResponse(
+        request=request,
+        name="habit_form.html",
+        context={
+            **_hero_context(hero),
+            **_habit_form_context(habit),
+            "form_action": f"/habits/{habit_id}/edit",
+            "heading": "Edit Habit",
+        },
+    )
+
+
+@app.post("/habits/{habit_id}/edit")
+async def habit_update(habit_id: int, request: Request, db: Session = Depends(get_db)):
+    habit = db.get(Habit, habit_id)
+    if habit is None:
+        raise HTTPException(status_code=404, detail="Habit not found")
+    form = await request.form()
+    update_habit(
+        db,
+        habit,
+        title=(form.get("title") or habit.title),
+        description=form.get("description"),
+        active=_checkbox(form, "active"),
+        recurrence=form.get("recurrence") or habit.recurrence,
+        target_count=_int_field(form, "target_count", habit.target_count),
+        base_xp_reward=_int_field(form, "base_xp_reward", habit.base_xp_reward),
+        stat_rewards=_stat_rewards_from_form(form),
+    )
+    return RedirectResponse(url="/habits", status_code=303)
+
+
+@app.post("/habits/{habit_id}/complete")
+async def habit_complete(habit_id: int, request: Request, db: Session = Depends(get_db)):
+    habit = db.get(Habit, habit_id)
+    if habit is None:
+        raise HTTPException(status_code=404, detail="Habit not found")
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    complete_habit(db, habit, hero)
+    # Habit completions may advance habit_count quests and unlock achievements.
+    evaluate_quests(db, hero)
+    check_achievements(db, hero)
+    return RedirectResponse(url="/habits", status_code=303)
 
 
 @app.get("/achievements", response_class=HTMLResponse)

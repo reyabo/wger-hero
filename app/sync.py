@@ -178,6 +178,17 @@ async def sync_workouts(
         logger.error("Sync failed fetching sessions: %s", type(e).__name__)
         return result
 
+    # Enforce SYNC_FROM_DATE locally in case wger API ignores date__gte
+    if sync_from_date is not None:
+        before = len(sessions)
+        sessions = [
+            s for s in sessions
+            if s.get("date") and s["date"] >= sync_from_date.isoformat()
+        ]
+        filtered = before - len(sessions)
+        if filtered:
+            logger.info("Local date filter removed %d session(s) before %s", filtered, sync_from_date)
+
     # Only fetch logs and exercise catalog when the feature is enabled
     # and when there are sessions to enrich.
     exercise_names: dict[int, str] = {}

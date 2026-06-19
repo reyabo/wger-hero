@@ -370,3 +370,99 @@ ol li { margin-bottom: 0.3rem; font-size: 0.9rem; }
   border-top: 1px solid var(--border);
   margin: 1rem 0;
 }
+
+/* Button variants */
+.btn-sm { padding: 0.3rem 0.8rem; font-size: 0.8rem; }
+.btn-ghost {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover { color: var(--text); opacity: 1; border-color: var(--muted); }
+.page-action { margin-left: auto; }
+
+/* Forms */
+.form-row { margin-bottom: 1rem; }
+.form-row > label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+.form input[type="text"],
+.form input[type="number"],
+.form textarea,
+.form select {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.9rem;
+  padding: 0.5rem 0.7rem;
+}
+.form input:focus,
+.form textarea:focus,
+.form select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0 1rem;
+}
+.checkbox-row { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  color: var(--text);
+  font-weight: 500;
+}
+.checkbox input { width: auto; }
+.form-actions { display: flex; gap: 0.75rem; margin-top: 0.5rem; }
+
+/* Stat reward grid (forms) */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.6rem;
+}
+.stat-input label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 0.2rem;
+}
+
+/* Habit rows */
+.habit-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.habit-row:last-child { border-bottom: none; }
+.habit-info { flex: 1; }
+.habit-name { display: block; font-weight: 600; font-size: 0.95rem; }
+.habit-desc { display: block; font-size: 0.8rem; color: var(--muted); margin: 0.15rem 0; }
+.habit-meta { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.3rem; }
+.habit-actions { display: flex; align-items: center; gap: 0.5rem; }
+
+/* Quest meta / actions */
+.quest-meta { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0.4rem 0; }
+.quest-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
+.stat-tag { color: var(--accent); background: var(--accent-glow); }
+
+/* Stat totals (dashboard attributes) */
+.stat-totals { display: flex; flex-direction: column; gap: 0.5rem; }
+.stat-total-row { display: flex; align-items: center; gap: 0.75rem; }
+.stat-total-name { flex: 0 0 130px; font-size: 0.85rem; }
+.stat-total-row .mini-bar-wrap { flex: 1; height: 6px; }
+.stat-total-xp { flex: 0 0 48px; text-align: right; font-size: 0.85rem; color: var(--muted); }

@@ -1,16 +1,22 @@
-"""Quest seeding and progress evaluation."""
+"""Quest seeding, creation, and progress evaluation."""
 
 import logging
+import re
 from datetime import date, datetime, timedelta
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.models import HeroProfile, Quest, SyncEvent, XpEvent
+from app.models import Habit, HabitCompletion, HeroProfile, Quest, SyncEvent, XpEvent
+from app.stats import award_stat_xp, parse_stat_rewards, serialize_stat_rewards
+from app.xp import recalc_level
 
 logger = logging.getLogger(__name__)
 
 HOME_HERO_DAYS = {"tag 1", "tag 2", "tag 3", "beine", "push", "pull"}
+
+QUEST_TYPE_CHOICES = ("manual", "habit_count", "workout_count")
+PERIOD_CHOICES = ("daily", "weekly", "monthly", "once")
 
 DEFAULT_QUESTS = [
     {
@@ -92,9 +98,127 @@ def _count_home_hero_days_this_week(db: Session) -> int:
     return len(detected_days)
 
 
+def _period_end_from(start_dt: datetime, period: Optional[str]) -> Optional[datetime]:
+    """End-of-window datetime for a period starting at `start_dt` (None = open)."""
+    period = (period or "weekly").lower()
+    start = start_dt.date()
+    if period == "daily":
+        end = start
+    elif period == "monthly":
+        nxt = (
+            start.replace(year=start.year + 1, month=1, day=1)
+            if start.month == 12
+            else start.replace(month=start.month + 1, day=1)
+        )
+        end = nxt - timedelta(days=1)
+    elif period in ("once", "flexible"):
+        return None
+    else:  # weekly
+        wk_start = start - timedelta(days=start.weekday())
+        end = wk_start + timedelta(days=6)
+    return datetime.combine(end, datetime.max.time())
+
+
+def _period_window(quest: Quest) -> tuple[Optional[datetime], Optional[datetime]]:
+    """
+    Resolve a quest's counting window.
+
+    An explicit period_start/period_end wins (used after a repeatable re-arm);
+    otherwise the current window is derived from `period` so recurring quests
+    always reflect "this day/week/month".
+    """
+    if quest.period_start and quest.period_end:
+        return quest.period_start, quest.period_end
+
+    period = (quest.period or "weekly").lower()
+    if period == "once":
+        return None, None
+    today = date.today()
+    if period == "daily":
+        start = today
+    elif period == "monthly":
+        start = today.replace(day=1)
+    else:  # weekly (default)
+        start = today - timedelta(days=today.weekday())
+    start_dt = datetime.combine(start, datetime.min.time())
+    return start_dt, _period_end_from(start_dt, period)
+
+
+def _count_workouts_in_period(db: Session, quest: Quest) -> int:
+    start, end = _period_window(quest)
+    q = db.query(SyncEvent).filter(SyncEvent.source == "wger")
+    if start is not None:
+        q = q.filter(SyncEvent.synced_at >= start)
+    if end is not None:
+        q = q.filter(SyncEvent.synced_at <= end)
+    return q.count()
+
+
+def _count_habit_completions_in_period(db: Session, quest: Quest) -> int:
+    start, end = _period_window(quest)
+    q = db.query(HabitCompletion)
+    if quest.match_text:
+        q = q.join(Habit, Habit.id == HabitCompletion.habit_id).filter(
+            Habit.title.ilike(f"%{quest.match_text}%")
+        )
+    if start is not None:
+        q = q.filter(HabitCompletion.completed_at >= start)
+    if end is not None:
+        q = q.filter(HabitCompletion.completed_at <= end)
+    return q.count()
+
+
+def _complete_quest(db: Session, hero: HeroProfile, quest: Quest, when: Optional[datetime] = None) -> None:
+    """Award a quest's global + stat XP and either close it or re-arm it.
+
+    Does not commit — the caller owns the transaction.
+    """
+    when = when or datetime.utcnow()
+
+    hero.total_xp += quest.xp_reward
+    db.add(
+        XpEvent(
+            event_type="quest_complete",
+            source="quest",
+            source_id=quest.slug,
+            xp=quest.xp_reward,
+            attribute=quest.attribute,
+            title=f"Quest completed: {quest.title}",
+            description=quest.description,
+            created_at=when,
+        )
+    )
+    stat_total = award_stat_xp(
+        db,
+        parse_stat_rewards(quest.stat_rewards),
+        source="quest",
+        source_id=quest.slug,
+        title=quest.title,
+        when=when,
+    )
+    hero.level = recalc_level(hero.total_xp)
+
+    if quest.repeatable and (quest.period or "weekly").lower() != "once":
+        # Re-arm for the next window starting now; past events won't recount.
+        quest.current_value = 0
+        quest.completed_at = None
+        quest.period_start = when
+        quest.period_end = _period_end_from(when, quest.period)
+    else:
+        quest.completed_at = when
+        quest.active = False
+
+    logger.info(
+        "Quest completed: %s (+%d XP, +%d stat XP)", quest.title, quest.xp_reward, stat_total
+    )
+
+
 def evaluate_quests(db: Session, hero: HeroProfile) -> list[str]:
     """
-    Recalculate quest progress. Returns list of newly completed quest titles.
+    Recalculate progress for auto-tracked quests and complete any that hit target.
+
+    Manual quests are user-driven and never auto-completed here.
+    Returns the titles of quests newly completed.
     """
     newly_completed: list[str] = []
     active_quests = db.query(Quest).filter(Quest.active == True).all()
@@ -106,29 +230,122 @@ def evaluate_quests(db: Session, hero: HeroProfile) -> list[str]:
         if quest.completed_at is not None:
             continue
 
+        qtype = (quest.quest_type or "").lower()
         if quest.slug == "week-warrior":
             quest.current_value = workouts_this_week
         elif quest.slug == "home-hero-full-week":
             quest.current_value = home_hero_days
+        elif qtype == "workout_count":
+            quest.current_value = _count_workouts_in_period(db, quest)
+        elif qtype == "habit_count":
+            quest.current_value = _count_habit_completions_in_period(db, quest)
+        elif qtype == "manual":
+            continue  # progressed only by explicit user action
 
-        if quest.current_value >= quest.target_value:
-            quest.completed_at = datetime.utcnow()
-            quest.active = False
-            hero.total_xp += quest.xp_reward
-
-            xp_event = XpEvent(
-                event_type="quest_complete",
-                source="quest",
-                source_id=quest.slug,
-                xp=quest.xp_reward,
-                attribute=quest.attribute,
-                title=f"Quest completed: {quest.title}",
-                description=quest.description,
-                created_at=datetime.utcnow(),
-            )
-            db.add(xp_event)
+        if quest.target_value and quest.current_value >= quest.target_value:
+            _complete_quest(db, hero, quest)
             newly_completed.append(quest.title)
-            logger.info("Quest completed: %s (+%d XP)", quest.title, quest.xp_reward)
 
     db.commit()
     return newly_completed
+
+
+def complete_quest_manual(
+    db: Session, quest: Quest, hero: Optional[HeroProfile] = None, when: Optional[datetime] = None
+) -> bool:
+    """Mark a manual quest complete (user action). Returns True if it was awarded."""
+    if quest.quest_type != "manual" or not quest.active or quest.completed_at is not None:
+        return False
+    if hero is None:
+        hero = db.query(HeroProfile).first()
+        if hero is None:
+            hero = HeroProfile(name="Hero", level=1, total_xp=0)
+            db.add(hero)
+            db.flush()
+    quest.current_value = max(quest.current_value, quest.target_value)
+    _complete_quest(db, hero, quest, when)
+    db.commit()
+    return True
+
+
+def _slugify(title: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return base or "quest"
+
+
+def _unique_slug(db: Session, title: str) -> str:
+    base = _slugify(title)
+    slug = base
+    n = 2
+    while db.query(Quest).filter(Quest.slug == slug).first() is not None:
+        slug = f"{base}-{n}"
+        n += 1
+    return slug
+
+
+def create_quest(
+    db: Session,
+    *,
+    title: str,
+    description: Optional[str] = None,
+    quest_type: str = "manual",
+    period: str = "weekly",
+    target_value: int = 1,
+    match_text: Optional[str] = None,
+    xp_reward: int = 100,
+    stat_rewards: Optional[dict[str, int]] = None,
+    repeatable: bool = False,
+    active: bool = True,
+) -> Quest:
+    """Create and persist a user-defined quest."""
+    quest = Quest(
+        slug=_unique_slug(db, title),
+        title=title.strip(),
+        description=(description or "").strip() or None,
+        quest_type=quest_type if quest_type in QUEST_TYPE_CHOICES else "manual",
+        period=period if period in PERIOD_CHOICES else "weekly",
+        target_value=max(1, int(target_value)),
+        current_value=0,
+        match_text=(match_text or "").strip() or None,
+        xp_reward=max(0, int(xp_reward)),
+        stat_rewards=serialize_stat_rewards(stat_rewards or {}),
+        attribute="Strength",
+        active=active,
+        repeatable=repeatable,
+    )
+    db.add(quest)
+    db.commit()
+    db.refresh(quest)
+    return quest
+
+
+def update_quest(
+    db: Session,
+    quest: Quest,
+    *,
+    title: str,
+    description: Optional[str],
+    quest_type: str,
+    period: str,
+    target_value: int,
+    match_text: Optional[str],
+    xp_reward: int,
+    stat_rewards: Optional[dict[str, int]],
+    repeatable: bool,
+    active: bool,
+) -> Quest:
+    """Update an existing quest in place (slug is preserved)."""
+    quest.title = title.strip()
+    quest.description = (description or "").strip() or None
+    quest.quest_type = quest_type if quest_type in QUEST_TYPE_CHOICES else quest.quest_type
+    quest.period = period if period in PERIOD_CHOICES else quest.period
+    quest.target_value = max(1, int(target_value))
+    quest.match_text = (match_text or "").strip() or None
+    quest.xp_reward = max(0, int(xp_reward))
+    quest.stat_rewards = serialize_stat_rewards(stat_rewards or {})
+    quest.repeatable = repeatable
+    quest.active = active
+    quest.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(quest)
+    return quest

@@ -1,20 +1,27 @@
 # wger-hero
 
-A gamification layer for your self-hosted [wger](https://wger.de) instance.
+A small, self-hosted **habit RPG**. Define your own habits and quests, complete them, and earn XP, stats, and achievements.
 
-wger remains the source of truth. wger-hero only reads your workout data and turns completed training into XP, levels, quests, streaks, and achievements.
+It is a transparent, rule-based alternative to AI-heavy habit/quest apps:
+
+- **You** define what counts. The app never decides what you should value.
+- No AI coach, no generated daily plans, no productivity pressure, no external AI APIs.
+- Every reward follows visible rules, and every XP event is auditable.
+
+Your [wger](https://wger.de) instance is one **automatic** data source (workout XP). On top of that you track **manual habits** (reading, language learning, mobility, recovery, project work, …) and your own **custom quests**. wger stays the source of truth for workouts — wger-hero only ever reads it.
 
 ## Features
 
-- Connects to wger via the REST API (read-only)
-- Awards XP for completed workouts, conditioning bonuses, and logged RIR
+- **Manual habits** — repeatable, user-defined actions with their own XP and stat rewards
+- **Custom quests** — `manual`, `habit_count`, and `workout_count` goals over daily/weekly/monthly/once periods
+- **Global XP vs. stat XP** — global XP drives your level; stat XP grows 10 attributes (data ready for a future radar screen)
+- Reads wger via the REST API (read-only) and awards XP for completed workouts, conditioning, and logged RIR
 - Simple level progression: `1000 + level × 250 XP` per level
-- Weekly quests (Week Warrior, HOME HERO × SUPERMOVER 3)
 - Achievements (First Blood, Triple Threat, …)
-- Clean server-rendered dashboard — no external CDN, no tracking
-- Deduplication: syncing twice never awards XP twice
+- Accidental double-click protection on habit completion
+- Clean server-rendered dashboard — no external CDN, no analytics, no tracking
+- Deduplication: syncing the same workout twice never awards XP twice
 - `/healthz` endpoint for container health checks
-- Manual sync button (scheduled sync can be added in V2)
 
 ## Quick Start (Docker)
 
@@ -104,6 +111,8 @@ All tests use in-memory SQLite and mocked wger clients — no real wger instance
 | `HERO_NAME` | `Hero` | Display name for your character |
 | `DATABASE_URL` | `sqlite:////data/wger_hero.db` | SQLite database path |
 | `APP_ENV` | `production` | Environment label |
+| `WGER_FETCH_EXERCISE_LOGS` | `true` | Set `false` to skip `/api/v2/log/` + exercise catalog (older wger) |
+| `SYNC_FROM_DATE` | — | Only sync workouts on/after this date (`YYYY-MM-DD`), enforced locally |
 
 Token resolution order (highest priority first):
 1. `WGER_API_TOKEN_FILE` env var → reads file at that path
@@ -120,7 +129,49 @@ hero.example.com {
 }
 ```
 
-## XP Rules
+## Habits & Custom Quests
+
+Everything is server-rendered and defined by you — no AI, no hidden weighting.
+
+### Habits (`/habits`)
+
+A habit is a repeatable action you complete for XP. Create one at `/habits/new`:
+
+| Field | Meaning |
+|---|---|
+| Title / description | What the habit is |
+| Recurrence | `daily` · `weekly` · `monthly` · `flexible` |
+| Target count | How many completions make up a full period |
+| Base XP reward | Global XP awarded per completion |
+| Stat rewards | XP added to specific attributes per completion |
+
+Completing a habit creates an auditable completion record, awards global XP **and** stat XP, writes the XP events, and updates your hero. A second click within a couple of seconds is ignored so you never double-award by accident. Inactive habits cannot be completed.
+
+### Custom quests (`/quests`)
+
+A quest is a larger goal with a period. Create one at `/quests/new`:
+
+| Type | Progress source |
+|---|---|
+| `manual` | You mark it complete yourself |
+| `habit_count` | Number of habit completions in the period (optionally filtered by a *match text* against habit titles) |
+| `workout_count` | Number of synced wger workouts in the period |
+
+Periods are `daily` · `weekly` · `monthly` · `once`. Quests can carry their own stat rewards and can be marked **repeatable** to re-arm for the next period after completion. The built-in seeded quests (Week Warrior, HOME HERO × SUPERMOVER 3) keep working unchanged.
+
+## Stats
+
+Global XP (your level) and stat XP (your attributes) are tracked separately. There are 10 stats; stat totals are stored per attribute and surfaced on the dashboard (the radar chart is intentionally not built yet — the data is prepared for it):
+
+| Key | Display (DE) | Key | Display (DE) |
+|---|---|---|---|
+| `strength` | Stärke | `technique` | Technik |
+| `endurance` | Ausdauer | `discipline` | Disziplin |
+| `dexterity` | Geschicklichkeit | `knowledge` | Wissen |
+| `mobility` | Beweglichkeit | `creativity` | Kreativität |
+| `body_control` | Körperkontrolle | `recovery` | Regeneration |
+
+## XP Rules (automatic, from wger)
 
 | Event | XP | Attribute |
 |---|---|---|
@@ -130,6 +181,8 @@ hero.example.com {
 | Quest completed (Week Warrior) | +200 | Strength |
 | Quest completed (HOME HERO Full Week) | +200 | Strength |
 | Achievement unlocked | +50 | Glory |
+
+Manual habits and custom quests award the XP and stat rewards **you** assign to them.
 
 ## Level Formula
 
@@ -153,7 +206,9 @@ wger-hero/
 │   ├── wger_client.py  # wger API client (httpx)
 │   ├── sync.py         # Fetch → normalize → award XP
 │   ├── xp.py           # XP rules + level formula
-│   ├── quests.py       # Quest seeding + progress
+│   ├── habits.py       # Manual habit logic + completion rewards
+│   ├── quests.py       # Quest seeding, creation + progress
+│   ├── stats.py        # 10-stat registry + stat-XP rewards
 │   ├── achievements.py # Achievement unlock logic
 │   ├── templates/      # Jinja2 HTML templates
 │   └── static/         # CSS (no external CDN)

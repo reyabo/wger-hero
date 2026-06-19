@@ -5,6 +5,7 @@
 <div class="page-header">
   <h1>Quests</h1>
   <span class="badge">Level {{ level }}</span>
+  <a href="/quests/new" class="btn btn-primary page-action">+ New Quest</a>
 </div>
 
 {% set active = quests | selectattr("active") | list %}
@@ -20,11 +21,27 @@
       <span class="xp-reward">+{{ quest.xp_reward }} XP</span>
     </div>
     <p class="quest-desc">{{ quest.description }}</p>
+    <div class="quest-meta">
+      <span class="tag">{{ quest.quest_type }}</span>
+      <span class="tag">{{ quest.period }}</span>
+      {% if quest.repeatable %}<span class="tag">repeatable</span>{% endif %}
+      {% for key, amount in quest_rewards[quest.id].items() %}
+      <span class="tag stat-tag">{{ stat_names[key] }} +{{ amount }}</span>
+      {% endfor %}
+    </div>
     <div class="quest-progress-row">
       <span class="progress-text">{{ quest.current_value }} / {{ quest.target_value }}</span>
       <div class="bar-wrap">
         <div class="bar" style="width: {{ [(quest.current_value / quest.target_value * 100)|int, 100]|min }}%"></div>
       </div>
+    </div>
+    <div class="quest-actions">
+      {% if quest.quest_type == "manual" %}
+      <form method="POST" action="/quests/{{ quest.id }}/complete">
+        <button type="submit" class="btn btn-primary btn-sm">Complete</button>
+      </form>
+      {% endif %}
+      <a href="/quests/{{ quest.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
     </div>
   </div>
   {% endfor %}
@@ -47,7 +64,7 @@
 {% endif %}
 
 {% if not quests %}
-<p class="muted">No quests found.</p>
+<p class="muted">No quests yet. <a href="/quests/new">Create one</a>.</p>
 {% endif %}
 
 {% endblock %}

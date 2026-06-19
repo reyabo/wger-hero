@@ -23,6 +23,12 @@ def level_from_total_xp(total_xp: int) -> tuple[int, int, int]:
     return level, xp_in_level, xp_needed
 
 
+def recalc_level(total_xp: int) -> int:
+    """Return the character level for a given total XP (drops xp-in-level info)."""
+    level, _, _ = level_from_total_xp(total_xp)
+    return level
+
+
 @dataclass
 class XpAward:
     event_type: str
