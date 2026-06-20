@@ -42,7 +42,18 @@ from app.rewards import (
     calculate_rewards,
 )
 from app.seed_defaults import seed_default_habits
-from app.stats import STAT_KEYS, STATS, get_stat_totals, parse_stat_rewards
+from app.stats import (
+    STAT_KEYS,
+    STATS,
+    STAT_ABBR,
+    generate_radar_points,
+    generate_radar_grid_points,
+    get_all_stat_progress,
+    get_recent_stat_gains,
+    get_stat_summary,
+    get_stat_totals,
+    parse_stat_rewards,
+)
 from app.sync import sync_workouts
 from app.wger_client import WgerClient
 from app.xp import level_from_total_xp
@@ -495,6 +506,56 @@ async def quest_delete(quest_id: int, request: Request, db: Session = Depends(ge
         raise HTTPException(status_code=404, detail="Quest not found")
     delete_or_archive_quest(db, quest)
     return RedirectResponse(url="/quests", status_code=303)
+
+
+@app.get("/stats", response_class=HTMLResponse)
+async def stats_page(request: Request, db: Session = Depends(get_db)):
+    import math
+    settings = get_settings()
+    hero = _ensure_hero(db, settings.HERO_NAME)
+    stat_progress = get_all_stat_progress(db)
+    recent_gains = get_recent_stat_gains(db, limit=20)
+    summary = get_stat_summary(db)
+
+    n = len(stat_progress)
+    max_level = max((s.level for s in stat_progress), default=1)
+    scale = max(max_level, 5)
+    cx, cy, r = 200, 200, 150
+    radar_points = generate_radar_points(stat_progress, cx, cy, r)
+    grid_rings = [
+        generate_radar_grid_points(ring, n, cx, cy, r, scale)
+        for ring in range(1, scale + 1)
+    ]
+    def _pts_str(pts: list) -> str:
+        return " ".join(f"{x:.2f},{y:.2f}" for x, y in pts)
+
+    axis_tips = []
+    label_pts = []
+    for i, stat in enumerate(stat_progress):
+        angle = math.radians(i * 360 / n - 90)
+        axis_tips.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+        lx = cx + (r + 28) * math.cos(angle)
+        ly = cy + (r + 28) * math.sin(angle)
+        label_pts.append((lx, ly, stat.abbr))
+
+    return templates.TemplateResponse(
+        request=request,
+        name="stats.html",
+        context={
+            **_hero_context(hero),
+            "stat_progress": stat_progress,
+            "recent_gains": recent_gains,
+            "summary": summary,
+            "stat_names": STATS,
+            "stat_abbr": STAT_ABBR,
+            "radar_points_str": _pts_str(radar_points),
+            "grid_rings": [_pts_str(ring) for ring in grid_rings],
+            "axis_tips": axis_tips,
+            "label_pts": label_pts,
+            "cx": cx,
+            "cy": cy,
+        },
+    )
 
 
 @app.get("/achievements", response_class=HTMLResponse)
