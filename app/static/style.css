@@ -518,31 +518,70 @@ code {
 
 /* Reward Preview */
 .reward-preview {
-  background: linear-gradient(135deg, #0a1520 0%, #0d0a20 100%);
-  border: 1px solid var(--border-glow);
+  background: linear-gradient(135deg, rgba(10, 18, 32, 0.95), rgba(18, 25, 48, 0.95));
+  border: 1px solid rgba(125, 249, 255, 0.28);
   border-radius: var(--radius);
   padding: 0.85rem 1rem;
-  margin: 0.5rem 0;
+  margin: 0.85rem 0;
+  color: var(--text-main);
+  box-shadow: 0 0 18px rgba(79, 195, 247, 0.12);
 }
 
 .reward-preview.hidden { display: none; }
-#reward-preview { display: none; }
 
-.reward-preview .preview-xp {
-  font-size: 1.2rem;
-  font-weight: 800;
-  color: var(--accent-gold);
-  margin-bottom: 0.4rem;
+.reward-preview-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent-cyan);
+  margin-bottom: 0.5rem;
 }
 
-.reward-preview ul { list-style: none; font-size: 0.85rem; display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; }
-.reward-preview li { color: var(--accent-cyan); }
+.reward-preview-xp {
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: var(--accent-gold);
+  text-shadow: 0 0 10px rgba(245, 158, 11, 0.35);
+  margin-bottom: 0.5rem;
+}
+
+.reward-stat-list { list-style: none; font-size: 0.85rem; display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; }
+.reward-stat-list li { display: inline-flex; align-items: baseline; gap: 0.3rem; }
+.reward-stat-name { color: var(--text-main); }
+.reward-stat-val { color: var(--accent-cyan); font-weight: 700; }
+.reward-preview small, .reward-preview .muted { color: var(--text-muted); }
 
 /* Stats Page */
 .stats-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; align-items: start; }
 
-.radar-wrap { display: flex; justify-content: center; align-items: center; padding: 0.5rem; }
-.radar-wrap svg { max-width: 400px; width: 100%; height: auto; }
+.radar-wrap { display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 0.5rem; }
+.radar-wrap svg, .radar-svg { max-width: 400px; width: 100%; height: auto; display: block; }
+
+/* SVG radar styling. The template also sets explicit presentation attributes
+   so the chart stays visible even if these classes are overridden; the rules
+   here add the dark-theme glow on top. */
+.radar-ring { fill: none; stroke: rgba(125, 249, 255, 0.20); stroke-width: 1; }
+.radar-axis { stroke: rgba(125, 249, 255, 0.16); stroke-width: 1; }
+.radar-polygon {
+  fill: rgba(125, 249, 255, 0.18);
+  stroke: var(--accent-cyan);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 6px rgba(0, 212, 255, 0.55));
+}
+.radar-point {
+  fill: var(--accent-gold);
+  stroke: rgba(255, 255, 255, 0.85);
+  stroke-width: 1;
+  filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.7));
+}
+.radar-label {
+  fill: var(--text-main);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
 
 .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1.25rem; }
 

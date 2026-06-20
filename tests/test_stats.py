@@ -8,8 +8,10 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base
 from app.models import HeroProfile, HeroStat, StatXpEvent
 from app.stats import (
+    RADAR_MIN_RATIO,
     STAT_KEYS,
     StatProgressView,
+    build_radar,
     calculate_stat_level,
     generate_radar_grid_points,
     generate_radar_points,
@@ -17,6 +19,15 @@ from app.stats import (
     get_stat_summary,
     xp_for_stat_level,
 )
+
+
+def _progress(level=1):
+    """Helper: 10 StatProgressView rows at a given level."""
+    return [
+        StatProgressView(key=k, name=k.title(), abbr=k[:3].upper(), level=level,
+                         total_xp=0, xp_in_level=0, xp_for_next=150, pct=0)
+        for k in STAT_KEYS
+    ]
 
 
 @pytest.fixture
@@ -157,6 +168,59 @@ def test_radar_grid_at_center_when_level_zero():
 
 
 # ---------------------------------------------------------------------------
+# build_radar (ready-to-render structure)
+# ---------------------------------------------------------------------------
+
+def test_build_radar_empty():
+    radar = build_radar([])
+    assert radar["rings"] == []
+    assert radar["points"] == []
+    assert radar["polygon_points"] == ""
+
+
+def test_build_radar_structure():
+    radar = build_radar(_progress(level=3))
+    # at least 5 grid rings, 10 axes / labels / points
+    assert radar["rings_count"] >= 5
+    assert len(radar["rings"]) == radar["rings_count"]
+    assert len(radar["axes"]) == 10
+    assert len(radar["labels"]) == 10
+    assert len(radar["points"]) == 10
+    # every ring has a non-empty points string
+    for ring in radar["rings"]:
+        assert ring["points"].strip()
+    # data polygon is non-empty
+    assert radar["polygon_points"].strip()
+
+
+def test_build_radar_labels_have_text():
+    radar = build_radar(_progress())
+    for lbl in radar["labels"]:
+        assert lbl["text"]  # abbreviation
+        assert "x" in lbl and "y" in lbl
+
+
+def test_build_radar_zero_data_polygon_visible():
+    """Fresh / all-level-1 character must still produce a visible polygon."""
+    radar = build_radar(_progress(level=1))
+    assert radar["polygon_points"].strip() != ""
+    # vertices must be off-centre (minimum radius applied), not collapsed to 200,200
+    coords = [tuple(map(float, p.split(","))) for p in radar["polygon_points"].split()]
+    cx = cy = 200.0
+    distances = [((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 for x, y in coords]
+    assert min(distances) > 0  # nothing collapsed onto the centre
+    # the minimum radius should be honoured (150 * RADAR_MIN_RATIO)
+    assert max(distances) >= 150 * RADAR_MIN_RATIO - 1
+
+
+def test_build_radar_points_carry_metadata():
+    radar = build_radar(_progress(level=2))
+    pt = radar["points"][0]
+    assert {"cx", "cy", "label", "value"} <= set(pt.keys())
+    assert pt["value"] == 2
+
+
+# ---------------------------------------------------------------------------
 # /stats route
 # ---------------------------------------------------------------------------
 
@@ -222,7 +286,60 @@ def test_stats_route_renders_data(client):
     assert "Workout erledigt" in resp.text
 
 
+def test_stats_radar_has_visible_elements(client):
+    resp = client.get("/stats")
+    html = resp.text
+    assert "<svg" in html
+    # grid rings present (at least 5)
+    assert html.count('class="radar-ring"') >= 5
+    # data polygon present
+    assert 'class="radar-polygon"' in html
+    # at least 10 stat point markers
+    assert html.count('class="radar-point"') >= 10
+    # axis labels present
+    assert html.count('class="radar-label"') >= 10
+
+
+def test_stats_radar_uses_explicit_attributes(client):
+    """SVG must carry explicit stroke/fill so it renders even without CSS."""
+    resp = client.get("/stats")
+    html = resp.text
+    # polygon fill + stroke set inline
+    assert 'stroke="rgba(125, 249, 255, 0.95)"' in html
+    # point markers use an explicit gold fill
+    assert 'fill="rgba(245, 158, 11, 1)"' in html
+
+
 def test_stats_in_nav(client):
     resp = client.get("/stats")
     assert "/stats" in resp.text
     assert "Attribute" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Reward preview contrast (habit + quest forms) and CSS coverage
+# ---------------------------------------------------------------------------
+
+def test_habit_form_reward_preview_themed(client):
+    resp = client.get("/habits/new")
+    assert resp.status_code == 200
+    # themed class, not the old white "card" box
+    assert 'class="reward-preview"' in resp.text
+    assert "#f8f8f2" not in resp.text
+
+
+def test_quest_form_reward_preview_themed(client):
+    resp = client.get("/quests/new")
+    assert resp.status_code == 200
+    assert 'class="reward-preview"' in resp.text
+    assert "#f8f8f2" not in resp.text
+
+
+def test_css_styles_radar_and_reward_preview():
+    import pathlib
+    css = pathlib.Path("app/static/style.css").read_text()
+    for selector in (".radar-ring", ".radar-axis", ".radar-polygon",
+                     ".radar-point", ".radar-label"):
+        assert selector in css, f"missing CSS for {selector}"
+    assert ".reward-preview" in css
+    assert ".reward-preview-xp" in css
