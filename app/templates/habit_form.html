@@ -67,8 +67,8 @@
       </div>
     </div>
 
-    <div id="reward-preview" class="card" style="background:#f8f8f2;margin:1rem 0;display:none;">
-      <div class="card-title">Reward Preview</div>
+    <div id="reward-preview" class="reward-preview" style="display:none;">
+      <div class="reward-preview-title">Belohnungs-Vorschau</div>
       <div id="preview-content"></div>
     </div>
 
@@ -124,11 +124,11 @@ function updatePreview() {
 
   const xp = calcXp(dur, eff);
   const dist = CATEGORY_STATS[cat] || {};
-  let html = `<p><strong>Global XP: +${xp}</strong></p><ul>`;
+  let html = `<div class="reward-preview-xp">Globale XP: +${xp}</div><ul class="reward-stat-list">`;
   for (const [stat, pct] of Object.entries(dist)) {
     const val = Math.round(xp * pct / 100);
     const name = STAT_NAMES[stat] || stat;
-    html += `<li>${name}: +${val} (${pct}%)</li>`;
+    html += `<li><span class="reward-stat-name">${name}</span><span class="reward-stat-val">+${val}</span><span class="muted small">(${pct}%)</span></li>`;
   }
   html += '</ul>';
   content.innerHTML = html;

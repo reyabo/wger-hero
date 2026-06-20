@@ -33,22 +33,50 @@
 <div class="stats-layout">
   <section class="card radar-wrap">
     <div class="card-title">Radar</div>
-    <svg viewBox="0 0 400 400" class="radar-svg">
-      <!-- Grid rings -->
-      {% for ring_pts in grid_rings %}
-      <polygon points="{{ ring_pts }}" class="radar-ring" />
+    <svg viewBox="0 0 400 400" class="radar-svg" role="img" aria-label="Attribut-Radar">
+      <!-- Grid rings: explicit attributes so they render even without CSS -->
+      {% for ring in radar.rings %}
+      <polygon points="{{ ring.points }}"
+               class="radar-ring"
+               fill="none"
+               stroke="rgba(125, 249, 255, 0.20)"
+               stroke-width="1" />
       {% endfor %}
-      <!-- Axis lines -->
-      {% for tip in axis_tips %}
-      <line x1="200" y1="200" x2="{{ tip[0]|round(2) }}" y2="{{ tip[1]|round(2) }}" class="radar-axis" />
+      <!-- Axis spokes -->
+      {% for axis in radar.axes %}
+      <line x1="{{ axis.x1 }}" y1="{{ axis.y1 }}" x2="{{ axis.x2 }}" y2="{{ axis.y2 }}"
+            class="radar-axis"
+            stroke="rgba(125, 249, 255, 0.16)"
+            stroke-width="1" />
       {% endfor %}
       <!-- Data polygon -->
-      {% if radar_points_str %}
-      <polygon points="{{ radar_points_str }}" class="radar-polygon" />
+      {% if radar.polygon_points %}
+      <polygon points="{{ radar.polygon_points }}"
+               class="radar-polygon"
+               fill="rgba(125, 249, 255, 0.18)"
+               stroke="rgba(125, 249, 255, 0.95)"
+               stroke-width="2.5"
+               stroke-linejoin="round" />
       {% endif %}
+      <!-- Stat point markers -->
+      {% for pt in radar.points %}
+      <circle cx="{{ pt.cx }}" cy="{{ pt.cy }}" r="4"
+              class="radar-point"
+              fill="rgba(245, 158, 11, 1)"
+              stroke="rgba(255, 255, 255, 0.85)"
+              stroke-width="1">
+        <title>{{ pt.label }} · Level {{ pt.value }}</title>
+      </circle>
+      {% endfor %}
       <!-- Axis labels -->
-      {% for pt in label_pts %}
-      <text x="{{ pt[0] }}" y="{{ pt[1] }}" class="radar-label" text-anchor="middle" dominant-baseline="middle">{{ pt[2] }}</text>
+      {% for lbl in radar.labels %}
+      <text x="{{ lbl.x }}" y="{{ lbl.y }}"
+            class="radar-label"
+            fill="rgba(226, 232, 248, 0.92)"
+            font-size="13"
+            font-weight="700"
+            text-anchor="middle"
+            dominant-baseline="middle">{{ lbl.text }}</text>
       {% endfor %}
     </svg>
   </section>

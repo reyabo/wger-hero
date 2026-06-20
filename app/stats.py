@@ -206,6 +206,107 @@ def generate_radar_grid_points(level: int, n: int, cx: int = 200, cy: int = 200,
     return pts
 
 
+# Minimum normalized radius so a fresh / all-level-1 character still shows a
+# small but visible baseline shape instead of collapsing to a single point.
+RADAR_MIN_RATIO = 0.18
+
+
+def build_radar(
+    stats: list[StatProgressView],
+    cx: int = 200,
+    cy: int = 200,
+    r: int = 150,
+) -> dict:
+    """
+    Build a fully resolved radar chart description for the template.
+
+    Returns a dict with ready-to-render values so the Jinja template needs no
+    coordinate math:
+
+        {
+            "rings":           [{"points": "x,y x,y ..."}, ...],
+            "axes":            [{"x1","y1","x2","y2"}, ...],
+            "labels":          [{"x","y","text","full_name"}, ...],
+            "polygon_points":  "x,y x,y ...",
+            "points":          [{"cx","cy","label","value"}, ...],
+            "rings_count":     int,
+        }
+
+    The data polygon uses a visible minimum radius (RADAR_MIN_RATIO) so a fresh
+    character still renders a small shape rather than an invisible dot.
+    """
+    n = len(stats)
+    if n == 0:
+        return {
+            "rings": [],
+            "axes": [],
+            "labels": [],
+            "polygon_points": "",
+            "points": [],
+            "rings_count": 0,
+        }
+
+    max_level = max((s.level for s in stats), default=1)
+    scale = max(max_level, 5)  # at least 5 rings for readability
+    rings_count = scale
+
+    def _fmt(pts: list[tuple[float, float]]) -> str:
+        return " ".join(f"{x:.2f},{y:.2f}" for x, y in pts)
+
+    # Concentric grid rings (one polygon per level).
+    rings = []
+    for ring in range(1, rings_count + 1):
+        ratio = ring / scale
+        ring_pts = []
+        for i in range(n):
+            angle = math.radians(i * 360 / n - 90)
+            ring_pts.append((cx + r * ratio * math.cos(angle), cy + r * ratio * math.sin(angle)))
+        rings.append({"points": _fmt(ring_pts)})
+
+    # Axis spokes + labels + data points.
+    axes = []
+    labels = []
+    points = []
+    data_pts = []
+    for i, stat in enumerate(stats):
+        angle = math.radians(i * 360 / n - 90)
+        # axis spoke from centre to outer ring
+        ax = cx + r * math.cos(angle)
+        ay = cy + r * math.sin(angle)
+        axes.append({"x1": cx, "y1": cy, "x2": round(ax, 2), "y2": round(ay, 2)})
+
+        # data vertex (clamped to a visible minimum)
+        ratio = max(stat.level / scale, RADAR_MIN_RATIO)
+        px = cx + r * ratio * math.cos(angle)
+        py = cy + r * ratio * math.sin(angle)
+        data_pts.append((px, py))
+        points.append({
+            "cx": round(px, 2),
+            "cy": round(py, 2),
+            "label": stat.name,
+            "value": stat.level,
+        })
+
+        # label just outside the outer ring
+        lx = cx + (r + 28) * math.cos(angle)
+        ly = cy + (r + 28) * math.sin(angle)
+        labels.append({
+            "x": round(lx, 2),
+            "y": round(ly, 2),
+            "text": stat.abbr,
+            "full_name": stat.name,
+        })
+
+    return {
+        "rings": rings,
+        "axes": axes,
+        "labels": labels,
+        "polygon_points": _fmt(data_pts),
+        "points": points,
+        "rings_count": rings_count,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Parse / serialize helpers (used by habits, quests)
 # ---------------------------------------------------------------------------
