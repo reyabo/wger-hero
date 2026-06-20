@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — wger-hero{% endblock %}
+{% block title %}Übersicht — wger-hero{% endblock %}
 {% block content %}
 
 <div class="page-header">
@@ -9,26 +9,29 @@
 
 {% if sync_error %}
 <div class="alert alert-error">
-  <strong>Sync failed:</strong> {{ sync_error }}
+  <strong>Sync fehlgeschlagen:</strong> {{ sync_error }}
 </div>
 {% endif %}
 
 <section class="card xp-card">
   <div class="xp-header">
-    <span class="label">Total XP</span>
+    <span class="label">Gesamt-XP</span>
     <span class="xp-total">{{ hero.total_xp }}</span>
   </div>
   <div class="xp-bar-wrap">
     <div class="xp-bar" style="width: {{ xp_pct }}%"></div>
   </div>
   <div class="xp-sub">
-    <span>{{ xp_in_level }} / {{ xp_needed }} XP to level {{ level + 1 }}</span>
+    <span>{{ xp_in_level }} / {{ xp_needed }} XP bis Level {{ level + 1 }}</span>
     <span>{{ xp_pct }}%</span>
   </div>
 </section>
 
 <section class="card">
-  <div class="card-title">Attributes</div>
+  <div class="card-title">
+    Attribute
+    <a href="/stats" class="btn btn-ghost btn-sm" style="float:right;margin-top:-2px;">Details →</a>
+  </div>
   {% set max_stat = (stat_totals.values() | max) if stat_totals else 0 %}
   <div class="stat-totals">
     {% for key, xp in stat_totals.items() %}
@@ -42,13 +45,13 @@
     {% endfor %}
   </div>
   {% if not max_stat %}
-  <p class="muted small">No stat XP yet. Complete habits or quests with stat rewards to grow your attributes.</p>
+  <p class="muted small">Noch keine Attribut-XP. Schließe Habits oder Quests ab, um Attribute zu steigern.</p>
   {% endif %}
 </section>
 
 <div class="grid-2">
   <section class="card">
-    <div class="card-title">Active Quests</div>
+    <div class="card-title">Aktive Quests</div>
     {% if active_quests %}
       {% for quest in active_quests %}
       <div class="quest-row">
@@ -66,22 +69,22 @@
       </div>
       {% endfor %}
     {% else %}
-      <p class="muted">No active quests.</p>
+      <p class="muted">Keine aktiven Quests.</p>
     {% endif %}
   </section>
 
   <section class="card">
     <div class="card-title">Sync</div>
-    <p class="muted">Pull latest workouts from wger and award XP.</p>
+    <p class="muted">Neueste Workouts von wger abrufen und XP vergeben.</p>
     <form method="POST" action="/sync">
-      <button type="submit" class="btn btn-primary">Sync Now</button>
+      <button type="submit" class="btn btn-primary">Jetzt synchronisieren</button>
     </form>
     {% if recent_syncs %}
     <div class="sync-history">
-      <div class="label">Recent syncs</div>
+      <div class="label">Letzte Syncs</div>
       {% for s in recent_syncs %}
       <div class="sync-row">
-        <span class="muted small">{{ s.synced_at.strftime('%Y-%m-%d %H:%M') }}</span>
+        <span class="muted small">{{ s.synced_at.strftime('%d.%m.%Y %H:%M') }}</span>
         <span class="small">{{ s.raw_summary }}</span>
         <span class="xp-reward small">+{{ s.xp_awarded }} XP</span>
       </div>
@@ -92,21 +95,21 @@
 </div>
 
 <section class="card">
-  <div class="card-title">Recent XP Events</div>
+  <div class="card-title">Letzte XP-Ereignisse</div>
   {% if recent_xp %}
   <table class="xp-table">
     <thead>
       <tr>
-        <th>Date</th>
-        <th>Event</th>
-        <th>Attribute</th>
+        <th>Datum</th>
+        <th>Ereignis</th>
+        <th>Attribut</th>
         <th class="right">XP</th>
       </tr>
     </thead>
     <tbody>
       {% for ev in recent_xp %}
       <tr>
-        <td class="muted small">{{ ev.created_at.strftime('%Y-%m-%d') }}</td>
+        <td class="muted small">{{ ev.created_at.strftime('%d.%m.%Y') }}</td>
         <td>{{ ev.title }}</td>
         <td><span class="tag tag-{{ ev.attribute|lower }}">{{ ev.attribute }}</span></td>
         <td class="right xp-reward">+{{ ev.xp }}</td>
@@ -115,7 +118,7 @@
     </tbody>
   </table>
   {% else %}
-    <p class="muted">No XP events yet. Hit <strong>Sync Now</strong> to fetch your workouts.</p>
+    <p class="muted">Noch keine XP-Ereignisse. Klicke <strong>Jetzt synchronisieren</strong>, um Workouts abzurufen.</p>
   {% endif %}
 </section>
 

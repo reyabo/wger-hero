@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="de">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -11,11 +11,12 @@
     <div class="container">
       <a href="/" class="site-logo">⚔ wger-hero</a>
       <nav>
-        <a href="/">Dashboard</a>
-        <a href="/habits">Habits</a>
-        <a href="/quests">Quests</a>
-        <a href="/achievements">Achievements</a>
-        <a href="/settings">Settings</a>
+        <a href="/" {% if request.url.path == '/' %}class="active"{% endif %}>Übersicht</a>
+        <a href="/habits" {% if request.url.path.startswith('/habits') %}class="active"{% endif %}>Habits</a>
+        <a href="/quests" {% if request.url.path.startswith('/quests') %}class="active"{% endif %}>Quests</a>
+        <a href="/achievements" {% if request.url.path.startswith('/achievements') %}class="active"{% endif %}>Achievements</a>
+        <a href="/stats" {% if request.url.path.startswith('/stats') %}class="active"{% endif %}>Attribute</a>
+        <a href="/settings" {% if request.url.path.startswith('/settings') %}class="active"{% endif %}>Einstellungen</a>
       </nav>
     </div>
   </header>
@@ -26,7 +27,7 @@
 
   <footer class="site-footer">
     <div class="container">
-      <span>wger-hero &mdash; self-hosted training companion</span>
+      <span>wger-hero &mdash; selbst gehosteter Trainingsbegleiter</span>
     </div>
   </footer>
 </body>

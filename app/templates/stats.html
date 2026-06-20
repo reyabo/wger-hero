@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Attribute — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>Attribute</h1>
+  <span class="badge">Level {{ level }}</span>
+</div>
+
+<div class="summary-grid">
+  <div class="summary-card">
+    <div class="summary-label">Stärkste Eigenschaft</div>
+    <div class="summary-value">{{ summary.strongest_name or "—" }}</div>
+    <div class="summary-sub">{{ summary.strongest_xp }} XP gesamt</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-label">Schwächste Eigenschaft</div>
+    <div class="summary-value">{{ summary.weakest_name or "—" }}</div>
+    <div class="summary-sub">{{ summary.weakest_xp }} XP gesamt</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-label">XP diese Woche</div>
+    <div class="summary-value accent-gold">{{ summary.week_xp }}</div>
+    <div class="summary-sub">letzte 7 Tage</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-label">XP diesen Monat</div>
+    <div class="summary-value accent-cyan">{{ summary.month_xp }}</div>
+    <div class="summary-sub">letzte 30 Tage</div>
+  </div>
+</div>
+
+<div class="stats-layout">
+  <section class="card radar-wrap">
+    <div class="card-title">Radar</div>
+    <svg viewBox="0 0 400 400" class="radar-svg">
+      <!-- Grid rings -->
+      {% for ring_pts in grid_rings %}
+      <polygon points="{{ ring_pts }}" class="radar-ring" />
+      {% endfor %}
+      <!-- Axis lines -->
+      {% for tip in axis_tips %}
+      <line x1="200" y1="200" x2="{{ tip[0]|round(2) }}" y2="{{ tip[1]|round(2) }}" class="radar-axis" />
+      {% endfor %}
+      <!-- Data polygon -->
+      {% if radar_points_str %}
+      <polygon points="{{ radar_points_str }}" class="radar-polygon" />
+      {% endif %}
+      <!-- Axis labels -->
+      {% for pt in label_pts %}
+      <text x="{{ pt[0] }}" y="{{ pt[1] }}" class="radar-label" text-anchor="middle" dominant-baseline="middle">{{ pt[2] }}</text>
+      {% endfor %}
+    </svg>
+  </section>
+
+  <div class="stat-cards">
+    {% for stat in stat_progress %}
+    <div class="stat-card">
+      <div class="stat-card-head">
+        <span class="stat-abbr">{{ stat.abbr }}</span>
+        <span class="stat-name">{{ stat.name }}</span>
+        <span class="stat-level">Lv {{ stat.level }}</span>
+      </div>
+      <div class="bar-wrap">
+        <div class="bar" style="width: {{ stat.pct }}%"></div>
+      </div>
+      <div class="stat-card-foot">
+        <span class="muted small">{{ stat.xp_in_level }} / {{ stat.xp_for_next }} XP</span>
+        <span class="muted small">{{ stat.total_xp }} gesamt</span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<section class="card">
+  <div class="card-title">Letzte Attribut-Gewinne</div>
+  {% if recent_gains %}
+  <ul class="gain-list">
+    {% for ev in recent_gains %}
+    <li class="gain-row">
+      <span class="gain-stat">{{ stat_names[ev.stat_key] }}</span>
+      <span class="gain-source">{{ ev.title }}</span>
+      <span class="gain-date muted small">{{ ev.created_at.strftime('%d.%m.%Y') }}</span>
+      <span class="gain-xp">+{{ ev.xp }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">Noch keine Attribut-XP. Schließe Habits oder Quests ab, um Attribute zu steigern.</p>
+  {% endif %}
+</section>
+
+{% endblock %}
