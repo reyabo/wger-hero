@@ -160,21 +160,69 @@ def test_radar_grid_at_center_when_level_zero():
 # /stats route
 # ---------------------------------------------------------------------------
 
-def test_stats_route(db):
+@pytest.fixture
+def client():
+    """TestClient wired to a fresh in-memory DB via dependency override."""
+    import os
+    os.environ.setdefault("WGER_BASE_URL", "https://wger.example.com")
+    os.environ.setdefault("WGER_API_TOKEN", "test-token-for-stats")
+
+    import app.config as cfg
+    cfg._settings = None
+
     from fastapi.testclient import TestClient
-    from unittest.mock import patch, MagicMock
+    from app.database import get_db
     from app.main import app
 
-    settings_mock = MagicMock()
-    settings_mock.HERO_NAME = "Tester"
-    settings_mock.WGER_BASE_URL = "https://wger.example.com"
-    settings_mock.DATABASE_URL = "sqlite:///:memory:"
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestSession = sessionmaker(bind=engine)
 
-    with patch("app.main.get_settings", return_value=settings_mock):
-        with patch("app.main.get_db") as mock_get_db:
-            mock_get_db.return_value = iter([db])
-            client = TestClient(app)
-            resp = client.get("/stats")
+    def override_db():
+        s = TestSession()
+        try:
+            yield s
+        finally:
+            s.close()
+
+    app.dependency_overrides[get_db] = override_db
+    # Seed varied stat data so the radar + gain list render with real values.
+    seed = TestSession()
+    seed.add(HeroStat(stat_key="strength", xp=800))
+    seed.add(HeroStat(stat_key="endurance", xp=350))
+    seed.add(StatXpEvent(
+        stat_key="strength", xp=40, source="habit",
+        source_id="1", title="Workout erledigt",
+    ))
+    seed.commit()
+    seed.close()
+
+    with TestClient(app) as c:
+        yield c
+
+    app.dependency_overrides.clear()
+
+
+def test_stats_route(client):
+    resp = client.get("/stats")
     assert resp.status_code == 200
     assert "Attribute" in resp.text
     assert "Radar" in resp.text
+
+
+def test_stats_route_renders_data(client):
+    resp = client.get("/stats")
+    # radar data polygon, a stat abbreviation, and the seeded gain must appear
+    assert 'class="radar-polygon"' in resp.text
+    assert "STR" in resp.text
+    assert "Workout erledigt" in resp.text
+
+
+def test_stats_in_nav(client):
+    resp = client.get("/stats")
+    assert "/stats" in resp.text
+    assert "Attribute" in resp.text
