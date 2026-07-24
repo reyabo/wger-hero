@@ -11,36 +11,42 @@ Läuft in Produktion als Container `wger-hero` auf einem Debian-Server, intern P
 veröffentlicht auf 8091, hinter Caddy. Datenbank unter `/srv/data/wger-hero/wger_hero.db`.
 Einbenutzerbetrieb.
 
+Der Kern ist ein **prüfbares Hauptbuch über selbst definierten Aufwand**. Der Wert liegt
+im Bestand — `HabitCompletion`, `XpEvent`, `StatXpEvent`, `SyncEvent` —, nicht im
+Funktionsumfang. Was den Bestand schützt, korrigierbar macht und auswertbar hält, hat
+Vorrang vor jeder neuen Erfassungsfläche.
+
 ## Leitidee — nicht aufweichen
 
-Die README positioniert das Projekt ausdrücklich als regelbasierte, prüfbare Alternative
-zu KI-lastigen Habit-Apps. Der Funktionsumfang wird erweitert, dieser Kern bleibt:
-
-- Jede XP-, Level-, Streak- und Attributberechnung ist **deterministisch, sichtbar und
-  nachträglich prüfbar**. Ein LLM vergibt niemals XP, bewertet keinen Fortschritt und
-  gewichtet keine Belohnung.
-- Ein LLM darf ausschließlich **Text vorschlagen**, den der Nutzer annimmt oder verwirft.
-- Bei `LLM_ENABLED=false` — der Vorgabe — funktioniert die App vollständig.
+- **Keine KI-Funktionen.** Keine Modellaufrufe, keine externen KI-APIs, keine generierten
+  Empfehlungen. Das ist eine bewusste Produktentscheidung, kein offener Punkt.
+- Jede XP-, Level- und Attributberechnung ist deterministisch, sichtbar und nachträglich
+  prüfbar.
 - Keine externen CDNs, kein Tracking, keine Analytics. Zusätzliche Frontend-Bibliotheken
   werden mitgeliefert oder gar nicht genutzt.
+- Kein Produktivitätsdruck. Mechaniken, die Verlust erzeugen, brauchen eine ausdrückliche
+  Begründung.
 
 ## Harte Regeln
 
 1. **wger ist nur lesend.** `app/wger_client.py` sendet ausschließlich GET. Kein POST,
    PUT oder DELETE gegen die wger-API, kein direkter Zugriff auf die wger-Datenbank.
-2. **Keine destruktiven Operationen.** Kein `DROP`, kein `TRUNCATE`, kein Löschen von
-   Datenbankdateien oder Volumes.
+2. **Der Bestand wird nie gelöscht, nur ergänzt.** Korrekturen entstehen durch
+   Gegenbuchungen und Markierungen, nicht durch `DELETE` oder Überschreiben. Kein `DROP`,
+   kein `TRUNCATE`.
 3. **Migrationen additiv und reversibel.** Ab Einführung von Alembic hat jede Revision ein
-   funktionierendes `downgrade()`. Bestandsdaten und bestehende XP-Historie bleiben
-   unverändert.
-4. **Keine Secrets im Repository.** Neue Konfiguration immer in `.env.example` dokumentieren.
-   Nie einen echten Token, Hash oder Schlüssel committen.
+   funktionierendes `downgrade()`. Bestehende XP-Historie bleibt unverändert.
+4. **Keine Secrets im Repository.** Neue Konfiguration immer in `.env.example`
+   dokumentieren. Nie einen echten Token, Hash oder Schlüssel committen.
 5. **Kein zusätzlicher Dienst** (Postgres, Redis, Broker, Suchindex) ohne vorherige
    Rückfrage. Der Zielserver hat 4 Kerne und 16 GB RAM und betreibt bereits wger,
    Firefly III, FitTrackee und Caddy. SQLite bleibt.
-6. **Kein Framework-Wechsel** im Frontend ohne separate schriftliche Begründung.
+6. **Kein Framework-Wechsel** im Frontend, keine neue Laufzeitabhängigkeit ohne Rückfrage.
 7. **Bestehende Tests bleiben grün.** Kein Commit hinterlässt die App in einem nicht
    startfähigen Zustand.
+8. **Zurückhaltung ist erwünscht.** Das Projekt hat rund 6.800 Zeilen und wird von einer
+   Person gepflegt. Vorhandenes verbessern schlägt Neues danebenstellen. Wenn ein Schritt
+   größer wird als beschrieben: anhalten und nachfragen.
 
 ## Grenzen der Cloud-Umgebung
 
@@ -73,9 +79,6 @@ Eine Sitzung bearbeitet **genau einen Schritt** aus `docs/ROADMAP.md`.
 6. Abschlussbericht: was geändert, warum, welche Migration, welche neue Env-Variable,
    was der Nutzer vor dem Deploy manuell prüfen muss.
 
-Wenn ein Schritt größer wird als geplant oder eine Annahme nicht trägt: anhalten und
-nachfragen, statt den Umfang eigenmächtig auszuweiten.
-
 ## Bestandsaufnahme (Stand vor dem Umbau)
 
 **Module:** `main.py`, `config.py`, `database.py`, `models.py`, `wger_client.py`, `sync.py`,
@@ -92,7 +95,14 @@ prozentualer Attributverteilung; XP aus Dauer × Aufwand; globales XP treibt das
 Zielzahl; Achievements; lesende wger-Synchronisation mit Deduplizierung über `source_hash`;
 `/healthz`.
 
-**Bekannte Lücken:** keine Streaks (`four-week-streak` ist Platzhalter), keine Ziele oder
-Meilensteine, kein Journal, keine Fokus-Sessions, keine Zeitachse, keine Authentifizierung,
-kein Alembic (`database._ADDED_COLUMNS` ist eine handgeführte `ALTER TABLE`-Liste),
-`stats.build_radar()` ohne Darstellung, kein PWA-Manifest.
+**Bekannte Lücken:**
+
+- Kein Alembic — `database._ADDED_COLUMNS` ist eine handgeführte `ALTER TABLE`-Liste
+- Bestand nicht korrigierbar: `habits.py` setzt `completed_at=now` fest, kein Undo,
+  kein Nachtragen
+- Kein Export der Historie
+- Kein automatischer Sync, nur `POST /sync` von Hand
+- Keine Auswertung über längere Zeiträume; `stats.build_radar()` existiert ohne Darstellung
+- Keine Streak- oder Konsistenzlogik; Achievement `four-week-streak` ist Platzhalter
+- Keine Authentifizierung
+- Oberfläche nicht für kleine Displays ausgelegt
