@@ -49,6 +49,27 @@
   {% endif %}
 </section>
 
+<section class="card jp-card">
+  <div class="card-title">
+    Japanisch
+    <a href="/japanese" class="btn btn-ghost btn-sm" style="float:right;margin-top:-2px;">SAVE importieren →</a>
+  </div>
+  {% if japanese_latest %}
+  <div class="jp-status-grid">
+    <div><span class="label">Letzter SAVE</span><span class="jp-value">{{ japanese_latest.save_date.strftime('%d.%m.%Y') }}</span></div>
+    <div><span class="label">Streak</span><span class="jp-value">{{ japanese_latest.streak }}</span></div>
+    <div><span class="label">WaniKani</span><span class="jp-value">Lv {{ japanese_latest.wanikani_level }}</span></div>
+    <div><span class="label">Bunpro</span><span class="jp-value">{{ japanese_latest.bunpro_level }} · {{ japanese_latest.bunpro_points }} P.</span></div>
+    <div><span class="label">Grammatikpunkt</span><span class="jp-value">{{ japanese_latest.current_grammar_point or "—" }}</span></div>
+  </div>
+  {% else %}
+  <p class="muted small">
+    Noch kein SAVE importiert. <a href="/japanese">Ersten SAVE einfügen</a> —
+    der erste Import ist eine Baseline und vergibt 0 XP.
+  </p>
+  {% endif %}
+</section>
+
 <div class="grid-2">
   <section class="card">
     <div class="card-title">Aktive Quests</div>

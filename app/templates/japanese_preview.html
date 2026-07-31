@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}SAVE-Vorschau — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>SAVE-Vorschau</h1>
+  <span class="badge jp-tag-{{ preview.classification }}">{{ preview.classification }}</span>
+</div>
+
+{% if preview.warning %}
+<div class="alert alert-warning">
+  <strong>Hinweis:</strong> {{ preview.warning }}
+</div>
+{% endif %}
+
+<div class="summary-grid">
+  <div class="summary-card">
+    <div class="summary-label">Berechnetes XP-Delta</div>
+    <div class="summary-value accent-gold">{% if preview.xp_delta %}+{{ preview.xp_delta }}{% else %}0{% endif %}</div>
+    <div class="summary-sub">globale XP</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-label">Globale XP</div>
+    <div class="summary-value accent-cyan">{{ preview.hero_total_xp_before }} → {{ preview.hero_total_xp_after }}</div>
+    <div class="summary-sub">Level {{ preview.hero_level_before }} → {{ preview.hero_level_after }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-label">Quell-Levelbalken</div>
+    <div class="summary-value">
+      {% if previous %}Lv {{ previous.source_character_level }} · {{ previous.source_level_xp }}/{{ previous.source_level_xp_cap }} →{% endif %}
+      Lv {{ save.character_level }} · {{ save.level_xp }}/{{ save.level_xp_cap }}
+    </div>
+    <div class="summary-sub">{{ save.character_rank }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-label">SAVE-Datum</div>
+    <div class="summary-value">{{ save.save_date.strftime('%d.%m.%Y') }}</div>
+    <div class="summary-sub">Streak {{ save.streak }}</div>
+  </div>
+</div>
+
+<section class="card">
+  <div class="card-title">Sprachwerte</div>
+  <table class="xp-table">
+    <thead>
+      <tr><th>Wert</th><th class="right">Vorher</th><th class="right">Neu</th><th class="right">Delta</th></tr>
+    </thead>
+    <tbody>
+      {% set rows = [
+        ('語彙 Vokabular', previous.vocabulary_score if previous else None, save.vocabulary),
+        ('文法 Grammatik', previous.grammar_score if previous else None, save.grammar),
+        ('読解 Lesen', previous.reading_score if previous else None, save.reading),
+        ('聴解 Hören', previous.listening_score if previous else None, save.listening),
+        ('会話 Sprechen', previous.speaking_score if previous else None, save.speaking)
+      ] %}
+      {% for name, old, new in rows %}
+      <tr>
+        <td>{{ name }}</td>
+        <td class="right muted">{% if old is not none %}{{ old }}{% else %}—{% endif %}</td>
+        <td class="right">{{ new }}</td>
+        <td class="right xp-reward">
+          {% if old is not none %}{% set d = new - old %}{% if d > 0 %}+{{ d }}{% else %}{{ d }}{% endif %}{% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted small">
+    Diese Werte werden als Japanisch-Snapshot gespeichert und nicht auf die zehn
+    Hero-Attribute übertragen.
+  </p>
+</section>
+
+<section class="card">
+  <div class="card-title">Weitere Angaben</div>
+  <div class="jp-status-grid">
+    <div><span class="label">WaniKani</span><span class="jp-value">Lv {{ save.wanikani_level }}</span></div>
+    <div><span class="label">Bunpro</span><span class="jp-value">{{ save.bunpro_level }} · {{ save.bunpro_points }} Punkte</span></div>
+    <div><span class="label">Grammatikpunkt</span><span class="jp-value">{{ save.grammar_point }}</span></div>
+    <div><span class="label">Debuffs</span><span class="jp-value">{{ save.debuffs }}</span></div>
+    <div><span class="label">Neue Vokabeln</span><span class="jp-value">{{ save.new_vocabulary }}</span></div>
+    {% if save.session_xp is not none %}
+    <div><span class="label">Session-XP (angegeben)</span><span class="jp-value">{{ save.session_xp }}</span></div>
+    {% endif %}
+  </div>
+  <div class="jp-quest">
+    <span class="label">Tagesquest</span>
+    <p>{{ save.daily_quest }}</p>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-title">Bestätigen</div>
+  {% if preview.is_duplicate %}
+  <p class="muted">
+    Dieser SAVE wurde bereits importiert. Ein erneuter Import erzeugt weder
+    einen neuen Eintrag noch XP.
+  </p>
+  {% endif %}
+
+  <form method="POST" action="/japanese/import" class="form">
+    <input type="hidden" name="raw_save" value="{{ raw_save }}">
+
+    {% if preview.classification == 'baseline' %}
+    <div class="form-row checkbox-row">
+      <label class="checkbox">
+        <input type="checkbox" name="accept_baseline_credit" value="1"
+               {% if accept_baseline_credit %}checked{% endif %}>
+        Startgutschrift von {{ save.level_xp }} XP übernehmen
+        <span class="muted small">— unvollständige historische Gutschrift, nur der
+        aktuelle Balkenwert. Standardmäßig deaktiviert.</span>
+      </label>
+    </div>
+    {% endif %}
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Import bestätigen</button>
+      <a href="/japanese" class="btn btn-ghost">Abbrechen</a>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-title">Rohtext</div>
+  <pre class="code-block jp-raw">{{ raw_save }}</pre>
+</section>
+
+{% endblock %}

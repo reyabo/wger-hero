@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Import vom {{ record.save_date.strftime('%d.%m.%Y') }} — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>Import vom {{ record.save_date.strftime('%d.%m.%Y') }}</h1>
+  <span class="badge jp-tag-{{ record.classification }}">{{ record.classification }}</span>
+  <a href="/japanese" class="btn btn-ghost btn-sm page-action">← Japanisch</a>
+</div>
+
+{% if record.warning_text %}
+<div class="alert alert-warning">
+  <strong>Hinweis:</strong> {{ record.warning_text }}
+</div>
+{% endif %}
+
+<div class="summary-grid">
+  <div class="summary-card">
+    <div class="summary-label">Vergebenes XP</div>
+    <div class="summary-value accent-gold">{% if record.xp_awarded %}+{{ record.xp_awarded }}{% else %}0{% endif %}</div>
+    <div class="summary-sub">globale XP</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-label">Quellfortschritt</div>
+    <div class="summary-value accent-cyan">Lv {{ record.source_character_level }}</div>
+    <div class="summary-sub">{{ record.source_level_xp }} / {{ record.source_level_xp_cap }} XP</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-label">Streak</div>
+    <div class="summary-value">{{ record.streak }}</div>
+    <div class="summary-sub">Tage</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-label">Importiert</div>
+    <div class="summary-value">{{ record.created_at.strftime('%d.%m.%Y') }}</div>
+    <div class="summary-sub">{{ record.created_at.strftime('%H:%M') }} Uhr</div>
+  </div>
+</div>
+
+<section class="card">
+  <div class="card-title">Sprachwerte</div>
+  <div class="jp-status-grid">
+    <div><span class="label">語彙 Vokabular</span><span class="jp-value">{{ record.vocabulary_score }}</span></div>
+    <div><span class="label">文法 Grammatik</span><span class="jp-value">{{ record.grammar_score }}</span></div>
+    <div><span class="label">読解 Lesen</span><span class="jp-value">{{ record.reading_score }}</span></div>
+    <div><span class="label">聴解 Hören</span><span class="jp-value">{{ record.listening_score }}</span></div>
+    <div><span class="label">会話 Sprechen</span><span class="jp-value">{{ record.speaking_score }}</span></div>
+  </div>
+  <p class="muted small">
+    Absolute Snapshot-Werte. Sie werden bewusst nicht auf die zehn
+    Hero-Attribute übertragen.
+  </p>
+</section>
+
+<section class="card">
+  <div class="card-title">Snapshot</div>
+  <div class="jp-status-grid">
+    <div><span class="label">SAVE-Datum</span><span class="jp-value">{{ record.save_date.strftime('%d.%m.%Y') }}</span></div>
+    <div><span class="label">WaniKani</span><span class="jp-value">Lv {{ record.wanikani_level }}</span></div>
+    <div><span class="label">Bunpro</span><span class="jp-value">{{ record.bunpro_level }} · {{ record.bunpro_points }} Punkte</span></div>
+    <div><span class="label">Rang</span><span class="jp-value">{{ record.source_character_rank or "—" }}</span></div>
+    <div><span class="label">Grammatikpunkt</span><span class="jp-value">{{ record.current_grammar_point or "—" }}</span></div>
+    <div><span class="label">Debuffs</span><span class="jp-value">{{ record.debuffs_text or "—" }}</span></div>
+    <div><span class="label">Neue Vokabeln</span><span class="jp-value">{{ record.new_vocabulary_text or "—" }}</span></div>
+    {% if record.reported_session_xp is not none %}
+    <div><span class="label">Session-XP (angegeben)</span><span class="jp-value">{{ record.reported_session_xp }}</span></div>
+    {% endif %}
+  </div>
+  <div class="jp-quest">
+    <span class="label">Tagesquest</span>
+    <p>{{ record.daily_quest_text or "—" }}</p>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-title">Rohtext</div>
+  <pre class="code-block jp-raw">{{ record.raw_save }}</pre>
+</section>
+
+{% endblock %}

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, Float, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -145,6 +145,54 @@ class HabitCompletion(Base):
     completed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     xp_awarded: Mapped[int] = mapped_column(Integer, default=0)
     stat_xp_awarded: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class JapaneseSaveImport(Base):
+    """An imported Japanese coach SAVE snapshot (append-only, never edited).
+
+    Stores the source progress exactly as reported plus the derived global XP
+    that was awarded for it. The five language scores are kept as absolute
+    snapshot values and are deliberately NOT mapped onto the ten HeroStat
+    attributes — no transparent mapping has been agreed yet.
+    """
+
+    __tablename__ = "japanese_save_imports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    save_date: Mapped[datetime] = mapped_column(Date, index=True)
+    streak: Mapped[int] = mapped_column(Integer, default=0)
+
+    wanikani_level: Mapped[int] = mapped_column(Integer, default=0)
+    bunpro_level: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    bunpro_points: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Progress inside the *source* level bar — not cumulative lifetime XP.
+    source_character_level: Mapped[int] = mapped_column(Integer, default=1)
+    source_character_rank: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    source_level_xp: Mapped[int] = mapped_column(Integer, default=0)
+    source_level_xp_cap: Mapped[int] = mapped_column(Integer, default=0)
+    reported_session_xp: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    vocabulary_score: Mapped[int] = mapped_column(Integer, default=0)
+    grammar_score: Mapped[int] = mapped_column(Integer, default=0)
+    reading_score: Mapped[int] = mapped_column(Integer, default=0)
+    listening_score: Mapped[int] = mapped_column(Integer, default=0)
+    speaking_score: Mapped[int] = mapped_column(Integer, default=0)
+
+    current_grammar_point: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    debuffs_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    new_vocabulary_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    daily_quest_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    raw_save: Mapped[str] = mapped_column(Text)
+    normalized_hash: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True
+    )
+    # baseline | progress | duplicate | historical | warning
+    classification: Mapped[str] = mapped_column(String(20), default="baseline")
+    xp_awarded: Mapped[int] = mapped_column(Integer, default=0)
+    warning_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class HeroStat(Base):
