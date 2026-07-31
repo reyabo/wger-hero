@@ -13,11 +13,19 @@ from app.achievements import check_achievements, seed_achievements
 from app.config import get_settings
 from app.database import get_db, init_db
 from app.habits import RECURRENCE_CHOICES, complete_habit, create_habit, delete_or_archive_habit, update_habit
+from app.japanese_import import (
+    get_latest_import,
+    get_recent_imports,
+    import_save,
+    preview_save,
+)
+from app.japanese_saves import SaveParseError
 from app.models import (
     Achievement,
     Habit,
     HabitCompletion,
     HeroProfile,
+    JapaneseSaveImport,
     Quest,
     SyncEvent,
     XpEvent,
@@ -175,6 +183,7 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             "recent_syncs": recent_syncs,
             "stat_totals": get_stat_totals(db),
             "stat_names": STATS,
+            "japanese_latest": get_latest_import(db),
         },
     )
 
@@ -505,6 +514,115 @@ async def quest_delete(quest_id: int, request: Request, db: Session = Depends(ge
         raise HTTPException(status_code=404, detail="Quest not found")
     delete_or_archive_quest(db, quest)
     return RedirectResponse(url="/quests", status_code=303)
+
+
+@app.get("/japanese", response_class=HTMLResponse)
+async def japanese_page(request: Request, db: Session = Depends(get_db)):
+    settings = get_settings()
+    hero = _ensure_hero(db, settings.HERO_NAME)
+    return templates.TemplateResponse(
+        request=request,
+        name="japanese.html",
+        context={
+            **_hero_context(hero),
+            "recent_imports": get_recent_imports(db),
+            "latest": get_latest_import(db),
+        },
+    )
+
+
+@app.post("/japanese/preview", response_class=HTMLResponse)
+async def japanese_preview(request: Request, db: Session = Depends(get_db)):
+    settings = get_settings()
+    hero = _ensure_hero(db, settings.HERO_NAME)
+    form = await request.form()
+    raw = (form.get("raw_save") or "").strip()
+    accept_credit = bool(form.get("accept_baseline_credit"))
+
+    try:
+        preview = preview_save(db, raw, accept_baseline_credit=accept_credit)
+    except SaveParseError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="japanese.html",
+            context={
+                **_hero_context(hero),
+                "recent_imports": get_recent_imports(db),
+                "latest": get_latest_import(db),
+                "errors": exc.errors,
+                "raw_save": raw,
+            },
+            status_code=400,
+        )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="japanese_preview.html",
+        context={
+            **_hero_context(hero),
+            "preview": preview,
+            "save": preview.save,
+            "previous": preview.previous,
+            "raw_save": raw,
+            "accept_baseline_credit": accept_credit,
+        },
+    )
+
+
+@app.post("/japanese/import")
+async def japanese_import(request: Request, db: Session = Depends(get_db)):
+    settings = get_settings()
+    hero = _ensure_hero(db, settings.HERO_NAME)
+    form = await request.form()
+    # The raw text is re-parsed and the delta re-derived server-side; no value
+    # computed in the browser is trusted.
+    raw = (form.get("raw_save") or "").strip()
+    accept_credit = bool(form.get("accept_baseline_credit"))
+
+    try:
+        result = import_save(
+            db,
+            raw,
+            accept_baseline_credit=accept_credit,
+            hero_name=settings.HERO_NAME,
+        )
+    except SaveParseError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="japanese.html",
+            context={
+                **_hero_context(hero),
+                "recent_imports": get_recent_imports(db),
+                "latest": get_latest_import(db),
+                "errors": exc.errors,
+                "raw_save": raw,
+            },
+            status_code=400,
+        )
+
+    if result.is_duplicate:
+        target = result.duplicate_of.id if result.duplicate_of else None
+        if target is not None:
+            return RedirectResponse(url=f"/japanese/imports/{target}", status_code=303)
+        return RedirectResponse(url="/japanese", status_code=303)
+
+    return RedirectResponse(url=f"/japanese/imports/{result.created.id}", status_code=303)
+
+
+@app.get("/japanese/imports/{import_id}", response_class=HTMLResponse)
+async def japanese_import_detail(
+    import_id: int, request: Request, db: Session = Depends(get_db)
+):
+    settings = get_settings()
+    hero = _ensure_hero(db, settings.HERO_NAME)
+    record = db.get(JapaneseSaveImport, import_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Import not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="japanese_detail.html",
+        context={**_hero_context(hero), "record": record},
+    )
 
 
 @app.get("/stats", response_class=HTMLResponse)

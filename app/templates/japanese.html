@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Japanisch — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>Japanisch</h1>
+  <span class="badge">Level {{ level }}</span>
+</div>
+
+{% if errors %}
+<div class="alert alert-error">
+  <strong>Der SAVE konnte nicht gelesen werden:</strong>
+  <ul class="error-list">
+    {% for e in errors %}
+    <li>{{ e.message }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if latest %}
+<section class="card jp-status">
+  <div class="card-title">Letzter Stand</div>
+  <div class="jp-status-grid">
+    <div><span class="label">SAVE-Datum</span><span class="jp-value">{{ latest.save_date.strftime('%d.%m.%Y') }}</span></div>
+    <div><span class="label">Streak</span><span class="jp-value">{{ latest.streak }}</span></div>
+    <div><span class="label">WaniKani</span><span class="jp-value">Lv {{ latest.wanikani_level }}</span></div>
+    <div><span class="label">Bunpro</span><span class="jp-value">{{ latest.bunpro_level }} · {{ latest.bunpro_points }} P.</span></div>
+    <div><span class="label">Quell-Level</span><span class="jp-value">Lv {{ latest.source_character_level }} ({{ latest.source_level_xp }}/{{ latest.source_level_xp_cap }})</span></div>
+    <div><span class="label">Grammatikpunkt</span><span class="jp-value">{{ latest.current_grammar_point or "—" }}</span></div>
+  </div>
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="card-title">SAVE einfügen</div>
+  <p class="muted small">
+    Füge den kompletten Block von <code>=== 状態 SAVE ===</code> bis
+    <code>=== END SAVE ===</code> ein. Beide Marker müssen enthalten sein.
+    Optional wird eine Zeile <code>Session-XP: 60</code> als maßgeblicher
+    Zuwachs übernommen. Es wird zuerst eine Vorschau angezeigt — gespeichert
+    wird erst nach Bestätigung.
+  </p>
+
+  <form method="POST" action="/japanese/preview" class="form">
+    <div class="form-row">
+      <label for="raw_save">SAVE-Block</label>
+      <textarea id="raw_save" name="raw_save" rows="14" class="jp-textarea" required
+                placeholder="=== 状態 SAVE ===&#10;Datum: 2026-07-31 | Streak: 4&#10;...&#10;=== END SAVE ===">{{ raw_save or '' }}</textarea>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">SAVE prüfen</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-title">Letzte Importe</div>
+  {% if recent_imports %}
+  <table class="xp-table">
+    <thead>
+      <tr>
+        <th>Datum</th>
+        <th>Quell-Level</th>
+        <th>Art</th>
+        <th class="right">XP</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for imp in recent_imports %}
+      <tr>
+        <td><a href="/japanese/imports/{{ imp.id }}">{{ imp.save_date.strftime('%d.%m.%Y') }}</a></td>
+        <td class="muted small">Lv {{ imp.source_character_level }} · {{ imp.source_level_xp }}/{{ imp.source_level_xp_cap }}</td>
+        <td><span class="tag jp-tag-{{ imp.classification }}">{{ imp.classification }}</span></td>
+        <td class="right xp-reward">{% if imp.xp_awarded %}+{{ imp.xp_awarded }}{% else %}0{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Noch keine Importe. Der erste Import ist eine Baseline und vergibt 0 XP.</p>
+  {% endif %}
+</section>
+
+{% endblock %}
