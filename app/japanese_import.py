@@ -19,7 +19,9 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.japanese_saves import (
+    CALC_DUPLICATE,
     CLASSIFICATION_DUPLICATE,
+    JAPANESE_STAT_CATEGORY,
     DeltaResult,
     JapaneseSave,
     PreviousState,
@@ -27,6 +29,8 @@ from app.japanese_saves import (
     parse_save,
 )
 from app.models import HeroProfile, JapaneseSaveImport, XpEvent
+from app.rewards import calculate_stat_rewards
+from app.stats import award_stat_xp, serialize_stat_rewards
 from app.xp import recalc_level
 
 logger = logging.getLogger(__name__)
@@ -55,8 +59,19 @@ class PreviewResult:
         return CLASSIFICATION_DUPLICATE if self.is_duplicate else self.delta.classification
 
     @property
+    def reward_calculation(self) -> str:
+        return CALC_DUPLICATE if self.is_duplicate else self.delta.reward_calculation
+
+    @property
     def xp_delta(self) -> int:
         return 0 if self.is_duplicate else self.delta.xp_delta
+
+    @property
+    def stat_rewards(self) -> dict[str, int]:
+        """Attribute split for the preview — the same rule the import applies."""
+        if self.is_duplicate or not self.delta.awards_stat_xp:
+            return {}
+        return calculate_stat_rewards(JAPANESE_STAT_CATEGORY, self.xp_delta)
 
     @property
     def warning(self) -> Optional[str]:
@@ -116,6 +131,18 @@ def _previous_state(row: Optional[JapaneseSaveImport]) -> Optional[PreviousState
         level_xp=row.source_level_xp,
         level_xp_cap=row.source_level_xp_cap,
         save_date=save_date,
+    )
+
+
+def _xp_description(save: JapaneseSave, delta: DeltaResult) -> str:
+    """Auditable one-liner explaining where this session's XP came from."""
+    if save.has_session_fields:
+        return (
+            f"Sitzungsmodus {save.session_mode}, Abschluss {save.session_completion}"
+        )
+    return (
+        f"Legacy-Berechnung, Quell-Level {save.character_level}: "
+        f"{save.level_xp} / {save.level_xp_cap} XP"
     )
 
 
@@ -229,11 +256,18 @@ def import_save(
             xp_awarded=awarded,
             warning_text=delta.warning,
             created_at=datetime.utcnow(),
+            session_mode=save.session_mode,
+            session_completion=save.session_completion,
+            reward_calculation=delta.reward_calculation,
         )
         db.add(record)
         db.flush()  # assign record.id for the XpEvent source_id
 
+        stat_rewards: dict[str, int] = {}
+        stat_total = 0
+
         if awarded > 0:
+            now = datetime.utcnow()
             hero = _ensure_hero(db, hero_name)
             db.add(
                 XpEvent(
@@ -243,16 +277,30 @@ def import_save(
                     xp=awarded,
                     attribute=XP_ATTRIBUTE,
                     title=f"Japanisch-Session {save.save_date.isoformat()}",
-                    description=(
-                        f"Quell-Level {save.character_level}: "
-                        f"{save.level_xp} / {save.level_xp_cap} XP"
-                    ),
-                    created_at=datetime.utcnow(),
+                    description=_xp_description(save, delta),
+                    created_at=now,
                 )
             )
             hero.total_xp += awarded
             hero.level = recalc_level(hero.total_xp)
-            hero.updated_at = datetime.utcnow()
+            hero.updated_at = now
+
+            # Attribute XP uses the project's canonical learning split, so the
+            # sum always equals the global XP of this session. A baseline
+            # credit is global-only and never reaches this branch.
+            if delta.awards_stat_xp:
+                stat_rewards = calculate_stat_rewards(JAPANESE_STAT_CATEGORY, awarded)
+                stat_total = award_stat_xp(
+                    db,
+                    stat_rewards,
+                    source=XP_SOURCE,
+                    source_id=str(record.id),
+                    title=f"Japanisch-Session {save.save_date.isoformat()}",
+                    when=now,
+                )
+
+        record.stat_xp_awarded = stat_total
+        record.stat_rewards = serialize_stat_rewards(stat_rewards)
 
         db.commit()
     except Exception:

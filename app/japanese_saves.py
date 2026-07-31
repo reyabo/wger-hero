@@ -28,7 +28,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Optional
 
@@ -44,6 +44,92 @@ CLASSIFICATION_PROGRESS = "progress"
 CLASSIFICATION_DUPLICATE = "duplicate"
 CLASSIFICATION_HISTORICAL = "historical"
 CLASSIFICATION_WARNING = "warning"
+
+# How the reward was derived (stored on JapaneseSaveImport.reward_calculation)
+CALC_BASELINE = "baseline"
+CALC_DETERMINISTIC = "deterministic_session"
+CALC_LEGACY = "legacy_level_delta"
+CALC_HISTORICAL = "historical"
+CALC_DUPLICATE = "duplicate"
+CALC_WARNING = "warning"
+
+# ---------------------------------------------------------------------------
+# Deterministic session rewards
+#
+# The reward for a Japanese session is decided by wger-hero from two objective
+# fields the coach reports — session mode and completion. The five competence
+# scores are a factual snapshot and never influence XP; a reported "Session-XP"
+# line is kept as source metadata only. No percentages, no AI weighting.
+# ---------------------------------------------------------------------------
+
+JAPANESE_SESSION_REWARDS: dict[str, int] = {
+    "MINI": 15,
+    "START": 40,
+    "START_VOICE": 40,
+    "GENKI": 40,
+    "IRODORI": 40,
+    "SCHWACH": 40,
+    "BOSS": 80,
+    "STATUS": 0,
+}
+
+SESSION_MODES = frozenset(JAPANESE_SESSION_REWARDS)
+
+# A partially completed session is worth a mini reward at most.
+PARTIAL_SESSION_CAP = 15
+
+COMPLETION_FULL = "vollständig"
+COMPLETION_PARTIAL = "teilweise"
+COMPLETION_ABORTED = "abgebrochen"
+COMPLETION_NONE = "keine Leistung"
+
+SESSION_COMPLETIONS = frozenset({
+    COMPLETION_FULL, COMPLETION_PARTIAL, COMPLETION_ABORTED, COMPLETION_NONE,
+})
+
+# The learning category whose canonical stat split every Japanese session uses.
+# Reusing rewards.CATEGORY_STAT_MAP keeps one single answer to "learning →
+# attributes" instead of inventing a second, Japanese-specific table.
+JAPANESE_STAT_CATEGORY = "knowledge_learning"
+
+
+def normalize_session_mode(raw: str) -> Optional[str]:
+    """Normalize a user-written mode to a canonical key, or None if unknown.
+
+    Accepts "START VOICE", "START-VOICE" and "START_VOICE" alike, in any case.
+    """
+    if raw is None:
+        return None
+    key = re.sub(r"[\s\-]+", "_", raw.strip()).upper()
+    key = re.sub(r"_+", "_", key).strip("_")
+    return key if key in SESSION_MODES else None
+
+
+def normalize_session_completion(raw: str) -> Optional[str]:
+    """Normalize a completion value to its canonical spelling, or None."""
+    if raw is None:
+        return None
+    key = re.sub(r"\s+", " ", raw.strip()).casefold()
+    for value in SESSION_COMPLETIONS:
+        if value.casefold() == key:
+            return value
+    return None
+
+
+def calculate_session_reward(mode: str, completion: str) -> int:
+    """Global XP for a session, purely from mode and completion.
+
+    STATUS is always 0. A full session pays its table value, a partial one at
+    most PARTIAL_SESSION_CAP, and aborted / no-performance sessions pay nothing.
+    """
+    full = JAPANESE_SESSION_REWARDS.get(mode)
+    if full is None:
+        return 0
+    if completion == COMPLETION_FULL:
+        return full
+    if completion == COMPLETION_PARTIAL:
+        return min(PARTIAL_SESSION_CAP, full)
+    return 0  # abgebrochen | keine Leistung
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +226,23 @@ class JapaneseSave:
     daily_quest: str
     session_xp: Optional[int]
     raw: str
+    # New deterministic-reward fields. None when the line is absent (old format)
+    # or when the written value could not be recognized — the *_raw fields keep
+    # what was written so the warning can quote it.
+    session_mode: Optional[str] = None
+    session_mode_raw: Optional[str] = None
+    session_completion: Optional[str] = None
+    session_completion_raw: Optional[str] = None
+
+    @property
+    def has_session_fields(self) -> bool:
+        """True when both new-format lines are present and understood."""
+        return self.session_mode is not None and self.session_completion is not None
+
+    @property
+    def has_any_session_line(self) -> bool:
+        """True when at least one new-format line was written at all."""
+        return self.session_mode_raw is not None or self.session_completion_raw is not None
 
     def normalized_text(self) -> str:
         """Canonical, format-independent representation used for hashing."""
@@ -163,6 +266,8 @@ class JapaneseSave:
             _normalize_text(self.new_vocabulary),
             _normalize_text(self.daily_quest),
             "" if self.session_xp is None else str(self.session_xp),
+            self.session_mode or _normalize_text(self.session_mode_raw or ""),
+            self.session_completion or _normalize_text(self.session_completion_raw or ""),
         ]
         return "|".join(parts)
 
@@ -204,6 +309,8 @@ _PATTERNS: dict[str, re.Pattern] = {
     "vokabeln": re.compile(r"^Neue Vokabeln heute:\s*(?P<value>.*)$", re.IGNORECASE),
     "tagesquest": re.compile(r"^Tagesquest:\s*(?P<value>.*)$", re.IGNORECASE),
     "session_xp": re.compile(r"^Session-XP:\s*(?P<value>-?\d+)\s*$", re.IGNORECASE),
+    "session_mode": re.compile(r"^Session-Modus:\s*(?P<value>.+?)\s*$", re.IGNORECASE),
+    "session_completion": re.compile(r"^Session-Abschluss:\s*(?P<value>.+?)\s*$", re.IGNORECASE),
 }
 
 # Which parsed key feeds which model/dataclass field (for error reporting)
@@ -217,6 +324,8 @@ _FIELD_OF_KEY = {
     "vokabeln": "new_vocabulary",
     "tagesquest": "daily_quest",
     "session_xp": "session_xp",
+    "session_mode": "session_mode",
+    "session_completion": "session_completion",
 }
 
 _REQUIRED_KEYS = [
@@ -252,6 +361,8 @@ _PREFIXES = [
     ("neue vokabeln heute:", "vokabeln"),
     ("tagesquest:", "tagesquest"),
     ("session-xp:", "session_xp"),
+    ("session-modus:", "session_mode"),
+    ("session-abschluss:", "session_completion"),
 ]
 
 
@@ -375,6 +486,19 @@ def parse_save(raw: str) -> JapaneseSave:
     if numbers["character_level"] < 1:
         errors.append(FieldError("character_level", "Das Level muss mindestens 1 sein."))
 
+    # Optional new-format lines. An unrecognized value is NOT a parse error —
+    # the save still imports as a snapshot, but the reward becomes a warning
+    # case with 0 XP (see calculate_delta).
+    session_mode_raw = session_mode = None
+    if "session_mode" in found:
+        session_mode_raw = found["session_mode"].group("value").strip()
+        session_mode = normalize_session_mode(session_mode_raw)
+
+    session_completion_raw = session_completion = None
+    if "session_completion" in found:
+        session_completion_raw = found["session_completion"].group("value").strip()
+        session_completion = normalize_session_completion(session_completion_raw)
+
     if errors:
         raise SaveParseError(errors)
 
@@ -399,6 +523,10 @@ def parse_save(raw: str) -> JapaneseSave:
         daily_quest=_normalize_text(found["tagesquest"].group("value")),
         session_xp=session_xp,
         raw=raw,
+        session_mode=session_mode,
+        session_mode_raw=session_mode_raw,
+        session_completion=session_completion,
+        session_completion_raw=session_completion_raw,
     )
 
 
@@ -421,6 +549,21 @@ class DeltaResult:
     classification: str
     xp_delta: int
     warning: Optional[str] = None
+    # How the value above was derived — see the CALC_* constants.
+    reward_calculation: str = CALC_LEGACY
+    # A coach-reported "Session-XP:" value, kept for comparison only.
+    reported_session_xp: Optional[int] = None
+    # True when the coach reported a value that differs from the rule result.
+    reported_mismatch: bool = False
+
+    @property
+    def is_legacy(self) -> bool:
+        return self.reward_calculation == CALC_LEGACY
+
+    @property
+    def awards_stat_xp(self) -> bool:
+        """Baseline credit is global-only; every other positive award splits."""
+        return self.xp_delta > 0 and self.reward_calculation != CALC_BASELINE
 
 
 def calculate_delta(
@@ -444,15 +587,21 @@ def calculate_delta(
       * Level jump > 1, level decrease, negative delta or implausible caps →
         ``warning``, 0 XP. Never a deduction: nothing is ever taken away.
     """
+    reported = current.session_xp
+
     if previous is None:
+        # A baseline never pays, not even with a valid session mode: the
+        # historical total cannot be reconstructed from a level bar.
         if accept_baseline_credit:
             return DeltaResult(
                 classification=CLASSIFICATION_BASELINE,
                 xp_delta=max(0, current.level_xp),
                 warning=(
                     "Startgutschrift übernommen: nur der aktuelle Balkenwert, "
-                    "keine vollständige Historie."
+                    "keine vollständige Historie. Es werden keine Attribut-XP vergeben."
                 ),
+                reward_calculation=CALC_BASELINE,
+                reported_session_xp=reported,
             )
         return DeltaResult(
             classification=CLASSIFICATION_BASELINE,
@@ -462,6 +611,8 @@ def calculate_delta(
                 "historische Gesamtfortschritt aus dem Levelbalken nicht "
                 "rekonstruierbar ist."
             ),
+            reward_calculation=CALC_BASELINE,
+            reported_session_xp=reported,
         )
 
     if current.save_date < previous.save_date:
@@ -473,7 +624,73 @@ def calculate_delta(
                 f"letzten Import ({previous.save_date.isoformat()}). "
                 "Es wird kein XP vergeben."
             ),
+            reward_calculation=CALC_HISTORICAL,
+            reported_session_xp=reported,
         )
+
+    # --- new format: mode + completion decide everything -------------------
+    if current.has_session_fields:
+        xp = calculate_session_reward(current.session_mode, current.session_completion)
+        mismatch = reported is not None and reported != xp
+        warning = None
+        if mismatch:
+            warning = (
+                f"Der SAVE meldet {reported} Session-XP. Nach den Regeln von "
+                f"wger-hero ergibt diese Sitzung {xp} XP. Verwendet werden {xp} XP."
+            )
+        return DeltaResult(
+            classification=CLASSIFICATION_PROGRESS,
+            xp_delta=xp,
+            warning=warning,
+            reward_calculation=CALC_DETERMINISTIC,
+            reported_session_xp=reported,
+            reported_mismatch=mismatch,
+        )
+
+    # A session line was written but could not be understood, or only one of
+    # the two was given. Never guess — snapshot only, no reward.
+    if current.has_any_session_line:
+        problems = []
+        if current.session_mode_raw is not None and current.session_mode is None:
+            problems.append(
+                f"unbekannter Sitzungsmodus „{current.session_mode_raw}“ "
+                f"(erlaubt: {', '.join(sorted(SESSION_MODES))})"
+            )
+        elif current.session_mode_raw is None:
+            problems.append("die Zeile „Session-Modus:“ fehlt")
+        if current.session_completion_raw is not None and current.session_completion is None:
+            problems.append(
+                f"unbekannter Abschluss „{current.session_completion_raw}“ "
+                f"(erlaubt: {', '.join(sorted(SESSION_COMPLETIONS))})"
+            )
+        elif current.session_completion_raw is None:
+            problems.append("die Zeile „Session-Abschluss:“ fehlt")
+        return DeltaResult(
+            classification=CLASSIFICATION_WARNING,
+            xp_delta=0,
+            warning=(
+                "Die Sitzung konnte nicht bewertet werden: "
+                + " und ".join(problems)
+                + ". Der Snapshot kann gespeichert werden, es wird kein XP vergeben."
+            ),
+            reward_calculation=CALC_WARNING,
+            reported_session_xp=reported,
+        )
+
+    # --- legacy format: fall back to the level-bar delta --------------------
+    # Method stays 'legacy_level_delta' even for its warning outcomes;
+    # classification carries the warning state, reward_calculation the method.
+    return replace(
+        _legacy_level_delta(current, previous),
+        reward_calculation=CALC_LEGACY,
+        reported_session_xp=reported,
+    )
+
+
+def _legacy_level_delta(
+    current: JapaneseSave, previous: PreviousState
+) -> DeltaResult:
+    """Pre-session-mode behaviour: derive the delta from the source level bar."""
 
     # Implausible caps make every derived delta meaningless.
     if current.level_xp_cap <= 0 or previous.level_xp_cap <= 0:

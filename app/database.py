@@ -34,6 +34,16 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("duration_size", "VARCHAR(20)"),
         ("effort", "VARCHAR(20)"),
     ],
+    # The table itself shipped earlier; these columns were added with the
+    # deterministic session rewards and must be back-filled on databases that
+    # already have the table.
+    "japanese_save_imports": [
+        ("session_mode", "VARCHAR(20)"),
+        ("session_completion", "VARCHAR(20)"),
+        ("reward_calculation", "VARCHAR(30)"),
+        ("stat_xp_awarded", "INTEGER DEFAULT 0"),
+        ("stat_rewards", "TEXT"),
+    ],
 }
 
 

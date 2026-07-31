@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.achievements import check_achievements, seed_achievements
 from app.config import get_settings
 from app.database import get_db, init_db
-from app.habits import RECURRENCE_CHOICES, complete_habit, create_habit, delete_or_archive_habit, update_habit
+from app.habits import RECURRENCE_CHOICES, archive_habit, complete_habit, create_habit, delete_or_archive_habit, update_habit
 from app.japanese_import import (
     get_latest_import,
     get_recent_imports,
@@ -49,7 +49,7 @@ from app.rewards import (
     EFFORT_LABELS,
     calculate_rewards,
 )
-from app.seed_defaults import seed_default_habits
+from app.seed_defaults import find_legacy_japanese_habit, seed_default_habits
 from app.stats import (
     STAT_KEYS,
     STATS,
@@ -527,8 +527,22 @@ async def japanese_page(request: Request, db: Session = Depends(get_db)):
             **_hero_context(hero),
             "recent_imports": get_recent_imports(db),
             "latest": get_latest_import(db),
+            "legacy_habit": find_legacy_japanese_habit(db),
         },
     )
+
+
+@app.post("/japanese/archive-habit")
+async def japanese_archive_habit(request: Request, db: Session = Depends(get_db)):
+    """Archive the seeded "Japanisch lernen" habit so it stops paying out.
+
+    Uses the existing habit service, which keeps every completion and XP event
+    and only deactivates the habit when it has history.
+    """
+    habit = find_legacy_japanese_habit(db)
+    if habit is not None:
+        archive_habit(db, habit)
+    return RedirectResponse(url="/japanese", status_code=303)
 
 
 @app.post("/japanese/preview", response_class=HTMLResponse)
@@ -565,6 +579,7 @@ async def japanese_preview(request: Request, db: Session = Depends(get_db)):
             "previous": preview.previous,
             "raw_save": raw,
             "accept_baseline_credit": accept_credit,
+            "stat_names": STATS,
         },
     )
 
@@ -621,7 +636,12 @@ async def japanese_import_detail(
     return templates.TemplateResponse(
         request=request,
         name="japanese_detail.html",
-        context={**_hero_context(hero), "record": record},
+        context={
+            **_hero_context(hero),
+            "record": record,
+            "stat_names": STATS,
+            "record_stat_rewards": parse_stat_rewards(record.stat_rewards),
+        },
     )
 
 

@@ -191,6 +191,17 @@ class JapaneseSaveImport(Base):
     # baseline | progress | duplicate | historical | warning
     classification: Mapped[str] = mapped_column(String(20), default="baseline")
     xp_awarded: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Deterministic reward fields (added after the table shipped in PR #8, so
+    # they are also listed in database._ADDED_COLUMNS for existing databases).
+    session_mode: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    session_completion: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # baseline | deterministic_session | legacy_level_delta | historical
+    # | duplicate | warning
+    reward_calculation: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    stat_xp_awarded: Mapped[int] = mapped_column(Integer, default=0)
+    # JSON object of {stat_key: xp} actually awarded for this import
+    stat_rewards: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     warning_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

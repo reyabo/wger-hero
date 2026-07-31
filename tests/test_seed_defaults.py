@@ -25,6 +25,12 @@ def test_seed_default_habits_idempotent(fresh_db):
 
 def test_seed_default_habits_fresh_db(fresh_db):
     from app.models import Habit
+    from app.seed_defaults import DEFAULT_HABITS, LEGACY_JAPANESE_HABIT_TITLE
+
     count = seed_default_habits(fresh_db)
-    assert count == 10
-    assert fresh_db.query(Habit).count() == 10
+    assert count == len(DEFAULT_HABITS)
+    assert fresh_db.query(Habit).count() == len(DEFAULT_HABITS)
+    # "Japanisch lernen" is deliberately no longer seeded: the SAVE import is
+    # the single reward channel for Japanese sessions.
+    titles = {h.title for h in fresh_db.query(Habit).all()}
+    assert LEGACY_JAPANESE_HABIT_TITLE not in titles

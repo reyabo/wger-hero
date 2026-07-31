@@ -38,7 +38,39 @@
 </div>
 
 <section class="card">
-  <div class="card-title">Sprachwerte</div>
+  <div class="card-title">Belohnung</div>
+  <div class="jp-status-grid">
+    <div><span class="label">Sitzungsmodus</span><span class="jp-value">{{ record.session_mode or "—" }}</span></div>
+    <div><span class="label">Abschluss</span><span class="jp-value">{{ record.session_completion or "—" }}</span></div>
+    <div><span class="label">Berechnungsart</span>
+      <span class="jp-value">
+        {% if record.reward_calculation == 'deterministic_session' %}Sitzungsregel
+        {% elif record.reward_calculation == 'legacy_level_delta' %}Legacy-Berechnung
+        {% elif record.reward_calculation == 'baseline' %}Baseline
+        {% elif record.reward_calculation == 'historical' %}Historisch
+        {% elif record.reward_calculation == 'warning' %}Warnung
+        {% else %}{{ record.reward_calculation or "—" }}{% endif %}
+      </span>
+    </div>
+    <div><span class="label">Attribut-XP gesamt</span><span class="jp-value">{{ record.stat_xp_awarded or 0 }}</span></div>
+    {% if record.reported_session_xp is not none %}
+    <div><span class="label">Gemeldete Session-XP</span><span class="jp-value muted">{{ record.reported_session_xp }}</span></div>
+    {% endif %}
+  </div>
+  {% if record_stat_rewards %}
+  <div class="jp-quest">
+    <span class="label">Attributverteilung</span>
+    <ul class="reward-stat-list" style="margin-top:0.35rem;">
+      {% for key, amount in record_stat_rewards.items() %}
+      <li><span class="reward-stat-name">{{ stat_names[key] }}</span><span class="reward-stat-val">+{{ amount }}</span></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="card-title">Sprachwerte <span class="muted small" style="text-transform:none;letter-spacing:0;">— fachlicher Fortschritt</span></div>
   <div class="jp-status-grid">
     <div><span class="label">語彙 Vokabular</span><span class="jp-value">{{ record.vocabulary_score }}</span></div>
     <div><span class="label">文法 Grammatik</span><span class="jp-value">{{ record.grammar_score }}</span></div>
@@ -47,8 +79,8 @@
     <div><span class="label">会話 Sprechen</span><span class="jp-value">{{ record.speaking_score }}</span></div>
   </div>
   <p class="muted small">
-    Absolute Snapshot-Werte. Sie werden bewusst nicht auf die zehn
-    Hero-Attribute übertragen.
+    Absolute Snapshot-Werte. Ihre Deltas beeinflussen weder die globalen XP noch
+    die Attributverteilung.
   </p>
 </section>
 
