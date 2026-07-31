@@ -171,6 +171,71 @@ Global XP (your level) and stat XP (your attributes) are tracked separately. The
 | `mobility` | Beweglichkeit | `creativity` | Kreativität |
 | `body_control` | Körperkontrolle | `recovery` | Regeneration |
 
+## Japanese SAVE Import
+
+Paste the coach's SAVE block on `/japanese`, review the preview, confirm. The
+import is the **single reward channel** for Japanese sessions — the seeded
+"Japanisch lernen" habit is no longer created, because it would reward the same
+session twice.
+
+### Preferred format
+
+```
+=== 状態 SAVE ===
+Datum: 2026-07-31 | Streak: 4
+WaniKani: Lv 1 | Bunpro: N5, 5 Punkte
+Charakter: Lv 2 (見習い) | 433 / 1000 XP
+Session-Modus: START
+Session-Abschluss: vollständig
+Session-XP: 60
+語彙 180 | 文法 250 | 読解 0 | 聴解 0 | 会話 215
+Aktueller Grammatikpunkt: これ
+Debuffs: keine
+Neue Vokabeln heute: keine
+Tagesquest: Erfüllt – Mini-Boss „Partikel-Golem“ besiegt.
+=== END SAVE ===
+```
+
+### Reward rules (deterministic, computed by wger-hero)
+
+XP comes from **session mode and completion only**. The five competence scores
+are a factual snapshot; their deltas never influence XP or attributes.
+
+| Mode | Full session |
+|---|---|
+| `MINI` | 15 XP |
+| `START`, `START_VOICE`, `GENKI`, `IRODORI`, `SCHWACH` | 40 XP |
+| `BOSS` | 80 XP |
+| `STATUS` | always 0 XP |
+
+`START VOICE`, `START-VOICE` and `START_VOICE` are accepted alike.
+
+| Completion | Result |
+|---|---|
+| `vollständig` | full value |
+| `teilweise` | `min(15, full)` |
+| `abgebrochen` | 0 XP |
+| `keine Leistung` | 0 XP |
+
+**`Session-XP:` is only a coach-reported comparison value.** For a save with mode
+and completion, wger-hero ignores it for the reward and shows the difference in
+the preview. In the example above the actual reward is therefore **40 XP**, not 60.
+
+Attribute XP reuses the project's canonical learning split
+(`knowledge_learning` → Wissen 70 %, Disziplin 20 %, Technik 10 %), so the stat
+XP of a session always sums to exactly its global XP. No physical attribute is
+ever touched.
+
+| Session | Global | Wissen | Disziplin | Technik |
+|---|---|---|---|---|
+| `MINI`, vollständig | +15 | +10 | +3 | +2 |
+| `START`, vollständig | +40 | +28 | +8 | +4 |
+| `BOSS`, vollständig | +80 | +56 | +16 | +8 |
+
+The first import is always a **baseline**: 0 global XP and 0 attribute XP. Saves
+without the two session lines fall back to the previous level-bar delta and are
+marked *Legacy-Berechnung*. Duplicate and back-dated saves never award anything.
+
 ## XP Rules (automatic, from wger)
 
 | Event | XP | Attribute |

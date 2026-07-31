@@ -145,6 +145,20 @@ def update_habit(
     return habit
 
 
+def archive_habit(db: Session, habit: Habit) -> Habit:
+    """Deactivate a habit, always keeping the row and its history.
+
+    Unlike :func:`delete_or_archive_habit`, this never removes anything — it is
+    used where the intent is explicitly "archive", also for a habit that has no
+    completions yet and could technically be hard-deleted.
+    """
+    habit.active = False
+    habit.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(habit)
+    return habit
+
+
 def delete_or_archive_habit(db: Session, habit: Habit) -> str:
     """
     Hard-delete a habit if it has no completions; deactivate (archive) it otherwise.

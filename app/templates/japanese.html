@@ -7,6 +7,18 @@
   <span class="badge">Level {{ level }}</span>
 </div>
 
+{% if legacy_habit %}
+<div class="alert alert-warning">
+  <strong>Doppelte Belohnung möglich:</strong>
+  Das Habit „Japanisch lernen“ ist noch aktiv. Wenn du zusätzlich Saves importierst,
+  kann dieselbe Sitzung doppelt belohnt werden.
+  <form method="POST" action="/japanese/archive-habit" style="margin-top:0.6rem;"
+        onsubmit="return confirm('Habit „Japanisch lernen“ archivieren? Bestehende Erledigungen und XP bleiben erhalten.')">
+    <button type="submit" class="btn btn-ghost btn-sm">Habit archivieren</button>
+  </form>
+</div>
+{% endif %}
+
 {% if errors %}
 <div class="alert alert-error">
   <strong>Der SAVE konnte nicht gelesen werden:</strong>
@@ -37,10 +49,28 @@
   <p class="muted small">
     Füge den kompletten Block von <code>=== 状態 SAVE ===</code> bis
     <code>=== END SAVE ===</code> ein. Beide Marker müssen enthalten sein.
-    Optional wird eine Zeile <code>Session-XP: 60</code> als maßgeblicher
-    Zuwachs übernommen. Es wird zuerst eine Vorschau angezeigt — gespeichert
-    wird erst nach Bestätigung.
+    Es wird zuerst eine Vorschau angezeigt — gespeichert wird erst nach Bestätigung.
   </p>
+  <p class="muted small">
+    wger-hero berechnet XP aus Sitzungsmodus und Abschluss. Die vom Coach
+    geführten Kompetenzwerte dienen der Fortschrittsanzeige, nicht der
+    Belohnungsberechnung.
+  </p>
+  <details class="jp-format-help">
+    <summary>Bevorzugtes Format und Belohnungsregeln</summary>
+    <pre class="code-block">Session-Modus: START
+Session-Abschluss: vollständig</pre>
+    <p class="muted small">
+      Modi: <code>MINI</code> (15 XP), <code>START</code>, <code>START_VOICE</code>,
+      <code>GENKI</code>, <code>IRODORI</code>, <code>SCHWACH</code> (je 40 XP),
+      <code>BOSS</code> (80 XP), <code>STATUS</code> (immer 0 XP).<br>
+      Abschluss: <code>vollständig</code> = voller Wert, <code>teilweise</code> =
+      höchstens 15 XP, <code>abgebrochen</code> und <code>keine Leistung</code> = 0 XP.<br>
+      Eine Zeile <code>Session-XP:</code> wird weiterhin gespeichert, dient aber nur
+      noch dem Vergleich. Saves ohne Modus und Abschluss nutzen die bisherige
+      <em>Legacy-Berechnung</em> aus dem Levelbalken.
+    </p>
+  </details>
 
   <form method="POST" action="/japanese/preview" class="form">
     <div class="form-row">

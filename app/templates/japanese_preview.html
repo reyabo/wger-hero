@@ -40,7 +40,53 @@
 </div>
 
 <section class="card">
-  <div class="card-title">Sprachwerte</div>
+  <div class="card-title">Belohnung</div>
+  <div class="jp-status-grid">
+    <div><span class="label">Sitzungsmodus</span><span class="jp-value">{{ save.session_mode or "—" }}</span></div>
+    <div><span class="label">Abschluss</span><span class="jp-value">{{ save.session_completion or "—" }}</span></div>
+    <div><span class="label">Berechnungsart</span>
+      <span class="jp-value">
+        {% if preview.reward_calculation == 'deterministic_session' %}Sitzungsregel
+        {% elif preview.reward_calculation == 'legacy_level_delta' %}Legacy-Berechnung
+        {% elif preview.reward_calculation == 'baseline' %}Baseline
+        {% elif preview.reward_calculation == 'historical' %}Historisch
+        {% elif preview.reward_calculation == 'duplicate' %}Duplikat
+        {% else %}Warnung{% endif %}
+      </span>
+    </div>
+    <div><span class="label">Globale XP</span><span class="jp-value accent-gold">{% if preview.xp_delta %}+{{ preview.xp_delta }}{% else %}0{% endif %}</span></div>
+  </div>
+
+  {% if preview.stat_rewards %}
+  <div class="jp-quest">
+    <span class="label">Attributverteilung</span>
+    <ul class="reward-stat-list" style="margin-top:0.35rem;">
+      {% for key, amount in preview.stat_rewards.items() %}
+      <li><span class="reward-stat-name">{{ stat_names[key] }}</span><span class="reward-stat-val">+{{ amount }}</span></li>
+      {% endfor %}
+    </ul>
+    <p class="muted small">Summe entspricht exakt den globalen XP dieser Sitzung.</p>
+  </div>
+  {% else %}
+  <p class="muted small">Diese Sitzung vergibt keine Attribut-XP.</p>
+  {% endif %}
+
+  {% if save.session_xp is not none %}
+  <div class="jp-quest">
+    <span class="label">Vergleich mit dem Coach-Wert</span>
+    <table class="xp-table" style="margin-top:0.35rem;">
+      <tbody>
+        <tr><td>Gemeldete Session-XP</td><td class="right muted">{{ save.session_xp }}</td></tr>
+        <tr><td>wger-hero-Regel</td><td class="right">{{ preview.xp_delta }}</td></tr>
+        <tr><td><strong>Verwendet</strong></td><td class="right xp-reward">{{ preview.xp_delta }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="card-title">Sprachwerte <span class="muted small" style="text-transform:none;letter-spacing:0;">— fachlicher Fortschritt, keine Belohnungsberechnung</span></div>
   <table class="xp-table">
     <thead>
       <tr><th>Wert</th><th class="right">Vorher</th><th class="right">Neu</th><th class="right">Delta</th></tr>
@@ -66,8 +112,8 @@
     </tbody>
   </table>
   <p class="muted small">
-    Diese Werte werden als Japanisch-Snapshot gespeichert und nicht auf die zehn
-    Hero-Attribute übertragen.
+    Diese Werte werden als Japanisch-Snapshot gespeichert. Ihre Deltas beeinflussen
+    weder die globalen XP noch die Attributverteilung.
   </p>
 </section>
 

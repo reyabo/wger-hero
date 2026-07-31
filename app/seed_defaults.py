@@ -1,8 +1,13 @@
 """Seed default habits and system data."""
 
+# The Japanese SAVE import is the single reward channel for Japanese sessions,
+# so this habit is no longer seeded — it would reward the same session twice.
+# Existing installations keep their habit: it is never deleted automatically,
+# only flagged on /japanese with an explicit archive action.
+LEGACY_JAPANESE_HABIT_TITLE = "Japanisch lernen"
+
 DEFAULT_HABITS = [
     {"title": "30 Minuten lesen", "category": "knowledge_learning", "duration_size": "normal", "effort": "normal", "recurrence": "flexible"},
-    {"title": "Japanisch lernen", "category": "knowledge_learning", "duration_size": "normal", "effort": "demanding", "recurrence": "flexible"},
     {"title": "Mobility 10 Minuten", "category": "mobility", "duration_size": "short", "effort": "normal", "recurrence": "flexible"},
     {"title": "Workout erledigen", "category": "strength_training", "duration_size": "long", "effort": "demanding", "recurrence": "flexible"},
     {"title": "30 Minuten laufen", "category": "endurance", "duration_size": "normal", "effort": "demanding", "recurrence": "flexible"},
@@ -12,6 +17,22 @@ DEFAULT_HABITS = [
     {"title": "Erholungsspaziergang", "category": "recovery", "duration_size": "normal", "effort": "easy", "recurrence": "flexible"},
     {"title": "Schlafroutine eingehalten", "category": "recovery", "duration_size": "short", "effort": "easy", "recurrence": "flexible"},
 ]
+
+
+def find_legacy_japanese_habit(db):
+    """Return the still-active seeded "Japanisch lernen" habit, or None.
+
+    Matches the exact default title only. Habits the user created themselves
+    with a similar name are never touched.
+    """
+    from app.models import Habit
+
+    return (
+        db.query(Habit)
+        .filter(Habit.title == LEGACY_JAPANESE_HABIT_TITLE)
+        .filter(Habit.active == True)  # noqa: E712 — SQLAlchemy column comparison
+        .first()
+    )
 
 
 def seed_default_habits(db) -> int:

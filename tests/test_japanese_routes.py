@@ -235,3 +235,116 @@ def test_dashboard_with_import(env):
     assert "31.07.2026" in resp.text  # last SAVE date
     assert "N5" in resp.text           # bunpro level
     assert "これ" in resp.text         # grammar point
+
+
+# ---------------------------------------------------------------------------
+# Deterministic rewards in the UI
+# ---------------------------------------------------------------------------
+
+def _det_save(mode, completion, day="2026-07-31", session_xp=None):
+    from tests.test_japanese_rewards import save_with
+    return save_with(mode=mode, completion=completion, day=day, session_xp=session_xp)
+
+
+def test_preview_shows_mode_completion_and_stat_split(env):
+    client, _ = env
+    client.post("/japanese/import", data={"raw_save": _det_save("STATUS", "vollständig", "2026-07-01")})
+    resp = client.post(
+        "/japanese/preview",
+        data={"raw_save": _det_save("START", "vollständig", "2026-07-02")},
+    )
+    assert resp.status_code == 200
+    assert "START" in resp.text
+    assert "vollständig" in resp.text
+    assert "Sitzungsregel" in resp.text
+    assert "+28" in resp.text and "+8" in resp.text and "+4" in resp.text
+
+
+def test_preview_shows_reported_vs_rule(env):
+    client, _ = env
+    client.post("/japanese/import", data={"raw_save": _det_save("STATUS", "vollständig", "2026-07-01")})
+    resp = client.post(
+        "/japanese/preview",
+        data={"raw_save": _det_save("START", "vollständig", "2026-07-02", session_xp=60)},
+    )
+    assert "Gemeldete Session-XP" in resp.text
+    assert "60" in resp.text and "40" in resp.text
+
+
+def test_import_awards_stat_xp_end_to_end(env):
+    client, Session = env
+    from app.models import HeroStat
+    client.post("/japanese/import", data={"raw_save": _det_save("STATUS", "vollständig", "2026-07-01")})
+    client.post("/japanese/import", data={"raw_save": _det_save("BOSS", "vollständig", "2026-07-02")})
+    db = Session()
+    totals = {s.stat_key: s.xp for s in db.query(HeroStat).all()}
+    assert totals == {"knowledge": 56, "discipline": 16, "technique": 8}
+    db.close()
+
+
+def test_detail_shows_calculation_kind(env):
+    client, _ = env
+    client.post("/japanese/import", data={"raw_save": _det_save("STATUS", "vollständig", "2026-07-01")})
+    resp = client.post(
+        "/japanese/import",
+        data={"raw_save": _det_save("BOSS", "vollständig", "2026-07-02")},
+        follow_redirects=True,
+    )
+    assert "Sitzungsregel" in resp.text
+    assert "BOSS" in resp.text
+
+
+def test_legacy_save_marked_in_preview(env):
+    client, _ = env
+    from tests.test_japanese_rewards import save_with
+    client.post("/japanese/import", data={"raw_save": save_with(xp=373, day="2026-07-01")})
+    resp = client.post("/japanese/preview", data={"raw_save": save_with(xp=433, day="2026-07-02")})
+    assert "Legacy-Berechnung" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Legacy habit warning + archive action
+# ---------------------------------------------------------------------------
+
+def test_no_warning_without_legacy_habit(env):
+    client, _ = env
+    resp = client.get("/japanese")
+    assert "ist noch aktiv" not in resp.text
+
+
+def test_warning_shown_for_active_legacy_habit(env):
+    client, Session = env
+    from app.models import Habit
+    from app.seed_defaults import LEGACY_JAPANESE_HABIT_TITLE
+    db = Session()
+    db.add(Habit(title=LEGACY_JAPANESE_HABIT_TITLE, active=True, base_xp_reward=50))
+    db.commit(); db.close()
+
+    resp = client.get("/japanese")
+    assert "ist noch aktiv" in resp.text
+    assert "doppelt belohnt" in resp.text
+    assert "/japanese/archive-habit" in resp.text
+
+
+def test_archive_route_deactivates_only_the_seeded_habit(env):
+    client, Session = env
+    from app.models import Habit
+    from app.seed_defaults import LEGACY_JAPANESE_HABIT_TITLE
+    db = Session()
+    db.add(Habit(title=LEGACY_JAPANESE_HABIT_TITLE, active=True, base_xp_reward=50))
+    db.add(Habit(title="Japanisch lernen (eigenes)", active=True, base_xp_reward=20))
+    db.commit(); db.close()
+
+    resp = client.post("/japanese/archive-habit", follow_redirects=False)
+    assert resp.status_code == 303
+
+    db = Session()
+    titles = {h.title: h.active for h in db.query(Habit).all()}
+    db.close()
+    assert titles[LEGACY_JAPANESE_HABIT_TITLE] is False
+    assert titles["Japanisch lernen (eigenes)"] is True   # user habit untouched
+
+
+def test_archive_route_is_safe_without_habit(env):
+    client, _ = env
+    assert client.post("/japanese/archive-habit", follow_redirects=False).status_code == 303
