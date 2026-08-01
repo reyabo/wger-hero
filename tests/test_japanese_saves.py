@@ -315,3 +315,98 @@ def test_no_progress_is_not_a_warning():
     result = calculate_delta(save, _prev(level=2, xp=433))
     assert result.xp_delta == 0
     assert result.classification == "progress"
+
+
+# ---------------------------------------------------------------------------
+# WaniKani/Bunpro line — SRS grammar-point wording (regression)
+# ---------------------------------------------------------------------------
+
+REPORTED_LINE = "WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS"
+
+
+def test_reported_line_parses():
+    """The exact line from the bug report must import."""
+    parse_save(_save(WaniKani=REPORTED_LINE))
+
+
+def test_reported_line_yields_wanikani_level():
+    assert parse_save(_save(WaniKani=REPORTED_LINE)).wanikani_level == 2
+
+
+def test_reported_line_yields_bunpro_level():
+    assert parse_save(_save(WaniKani=REPORTED_LINE)).bunpro_level == "N5"
+
+
+def test_reported_line_yields_srs_points():
+    assert parse_save(_save(WaniKani=REPORTED_LINE)).bunpro_points == 10
+
+
+def test_whitespace_around_the_separator_is_optional():
+    line = "WaniKani: Lv 2|Bunpro: N5, 10 Grammatikpunkte im SRS"
+    save = parse_save(_save(WaniKani=line))
+    assert (save.wanikani_level, save.bunpro_level, save.bunpro_points) == (2, "N5", 10)
+
+
+def test_singular_grammar_point_is_accepted():
+    line = "WaniKani: Lv 2 | Bunpro: N5, 1 Grammatikpunkt im SRS"
+    assert parse_save(_save(WaniKani=line)).bunpro_points == 1
+
+
+def test_plural_grammar_points_are_accepted():
+    line = "WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS"
+    assert parse_save(_save(WaniKani=line)).bunpro_points == 10
+
+
+def test_level_spelled_out_is_accepted():
+    line = "WaniKani: Level 2 | Bunpro: N5, 10 Grammatikpunkte im SRS"
+    assert parse_save(_save(WaniKani=line)).wanikani_level == 2
+
+
+def test_documented_format_without_srs_suffix_still_works():
+    save = parse_save(VALID_SAVE)
+    assert (save.wanikani_level, save.bunpro_level, save.bunpro_points) == (1, "N5", 5)
+
+
+def test_non_numeric_wanikani_level_is_rejected():
+    line = "WaniKani: Lv zwei | Bunpro: N5, zehn Grammatikpunkte im SRS"
+    with pytest.raises(SaveParseError) as excinfo:
+        parse_save(_save(WaniKani=line))
+    assert any(e.field == "wanikani_level" for e in excinfo.value.errors)
+
+
+def test_negative_srs_value_is_rejected():
+    line = "WaniKani: Lv 2 | Bunpro: N5, -10 Grammatikpunkte im SRS"
+    with pytest.raises(SaveParseError):
+        parse_save(_save(WaniKani=line))
+
+
+def test_missing_bunpro_value_is_rejected():
+    line = "WaniKani: Lv 2 | Bunpro: unbekannt"
+    with pytest.raises(SaveParseError):
+        parse_save(_save(WaniKani=line))
+
+
+def test_parse_error_message_names_the_line_without_internals():
+    line = "WaniKani: Lv 2 | Bunpro: unbekannt"
+    with pytest.raises(SaveParseError) as excinfo:
+        parse_save(_save(WaniKani=line))
+    message = " ".join(e.message for e in excinfo.value.errors)
+    assert "WaniKani" in message
+    assert "\\s" not in message and "(?P<" not in message
+
+
+def test_srs_wording_does_not_change_the_session_reward():
+    """XP comes from mode and completion only — never from the WaniKani line."""
+    plain = calculate_delta(parse_save(VALID_SAVE), _prev())
+    srs = calculate_delta(parse_save(_save(WaniKani=REPORTED_LINE)), _prev())
+    assert srs.xp_delta == plain.xp_delta
+    assert srs.reward_calculation == plain.reward_calculation
+    assert srs.classification == plain.classification
+
+
+def test_srs_wording_produces_a_stable_duplicate_hash():
+    """Same values, different wording — the canonical hash must not care."""
+    a = parse_save(_save(WaniKani="WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS"))
+    b = parse_save(_save(WaniKani="WaniKani: Lv 2 | Bunpro: N5, 10 Punkte"))
+    c = parse_save(_save(WaniKani="WaniKani: Level 2|Bunpro: n5, 10 Grammatikpunkt im SRS"))
+    assert a.normalized_hash() == b.normalized_hash() == c.normalized_hash()
