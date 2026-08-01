@@ -741,3 +741,18 @@ code {
 @media (max-width: 640px) {
   .goal-grid { grid-template-columns: 1fr; }
 }
+
+/* Momentum and streaks */
+.goal-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 0.6rem;
+  margin: 0.75rem 0 0.25rem;
+}
+.metric { display: flex; flex-direction: column; gap: 0.1rem; }
+.metric-value { font-size: 1.05rem; font-weight: 800; color: var(--accent-cyan); }
+.momentum-help { margin-top: 0.9rem; }
+.momentum-help summary { cursor: pointer; font-size: 0.85rem; color: var(--text-muted); padding: 0.3rem 0; }
+.momentum-help summary:hover { color: var(--accent-cyan); }
+.momentum-formula { list-style: none; margin: 0.5rem 0; font-size: 0.85rem; color: var(--text-muted); }
+.momentum-formula li { padding: 0.15rem 0; }

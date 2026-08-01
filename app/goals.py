@@ -16,9 +16,10 @@ import re
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Goal, Habit, Quest
+from app.models import Goal, GoalPauseInterval, Habit, Quest
 
 STATUS_ACTIVE = "active"
 STATUS_PAUSED = "paused"
@@ -123,17 +124,63 @@ def update_goal(
     return goal
 
 
+def open_pause_interval(db: Session, goal: Goal) -> Optional[GoalPauseInterval]:
+    """The still-running break of a goal, if it is paused right now."""
+    return (
+        db.query(GoalPauseInterval)
+        .filter(GoalPauseInterval.goal_id == goal.id, GoalPauseInterval.ended_at.is_(None))
+        .first()
+    )
+
+
+def pause_intervals_of(db: Session, goal: Goal) -> list[GoalPauseInterval]:
+    """Every recorded break of a goal, oldest first."""
+    return (
+        db.query(GoalPauseInterval)
+        .filter(GoalPauseInterval.goal_id == goal.id)
+        .order_by(GoalPauseInterval.started_at, GoalPauseInterval.id)
+        .all()
+    )
+
+
+def _record_pause_change(db: Session, goal: Goal, target: str, *, when: datetime) -> None:
+    """Keep the pause history in step with a status change.
+
+    Entering `paused` opens exactly one interval; leaving it closes the open
+    one. Leaving means *any* other status: a completed or archived goal is no
+    longer on a break, so an interval must never stay open behind it. Both
+    directions are idempotent, so pressing pause twice records one break.
+    """
+    if target == STATUS_PAUSED:
+        if open_pause_interval(db, goal) is None:
+            db.add(GoalPauseInterval(goal_id=goal.id, started_at=when, created_at=when))
+        return
+
+    running = open_pause_interval(db, goal)
+    if running is not None:
+        running.ended_at = when
+
+
 def set_status(db: Session, goal: Goal, target: str) -> bool:
     """Move a goal to another status. Returns False if the move is not allowed.
 
     Never touches habits, quests, XP or history — a status is a label on the
-    goal, not a cascade.
+    goal, not a cascade. The one thing it does record is the break itself, so
+    that a paused week stays neutral even after the goal is resumed.
     """
     if target not in GOAL_STATUSES or not can_transition(goal.status, target):
         return False
+    now = datetime.utcnow()
+    _record_pause_change(db, goal, target, when=now)
     goal.status = target
-    goal.updated_at = datetime.utcnow()
-    db.commit()
+    goal.updated_at = now
+    try:
+        db.commit()
+    except IntegrityError:
+        # The partial unique index refused a second open interval — another
+        # request opened one first. The goal is paused either way.
+        db.rollback()
+        return goal.status == target
     return True
 
 

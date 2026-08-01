@@ -378,3 +378,144 @@ def test_full_downgrade_and_upgrade_round_trip(db_url):
     command.downgrade(cfg, "base")
     command.upgrade(cfg, "head")
     assert {"goals", "quest_completions", "hero_profile"} <= _tables(db_url)
+
+
+# ---------------------------------------------------------------------------
+# 0004 — goal pause intervals
+# ---------------------------------------------------------------------------
+
+def _seed_goal_database(url: str) -> None:
+    """A database at revision 0003 with a goal and a rewarded quest."""
+    cfg = _alembic_config(url)
+    command.upgrade(cfg, "0003_quest_completions")
+
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO hero_profile (name, level, total_xp) VALUES ('Hero', 4, 4200)"
+        ))
+        conn.execute(text(
+            "INSERT INTO goals (slug, title, status, sort_order, created_at, updated_at)"
+            " VALUES ('bestand', 'Bestandsziel', 'active', 0,"
+            " '2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+        ))
+        conn.execute(text(
+            "INSERT INTO quests (slug, title, quest_type, period, target_value,"
+            " current_value, xp_reward, attribute, active, repeatable, goal_id,"
+            " is_milestone, sort_order)"
+            " VALUES ('legacy-weekly', 'Legacy', 'manual', 'weekly', 3, 3, 100,"
+            " 'Strength', 1, 1, 1, 0, 0)"
+        ))
+        conn.execute(text(
+            "INSERT INTO quest_completions (quest_id, completed_at, xp_awarded,"
+            " stat_xp_awarded, dedup_key, created_at)"
+            " VALUES (1, '2026-07-15 10:00:00', 100, 0, 'quest:1:weekly:2026-07-13',"
+            " '2026-07-15 10:00:00')"
+        ))
+    engine.dispose()
+
+
+def _goal_snapshot(url: str) -> dict:
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            return {
+                "goals": conn.execute(
+                    text("SELECT slug, status FROM goals")).fetchall(),
+                "completions": conn.execute(
+                    text("SELECT quest_id, dedup_key FROM quest_completions")
+                ).fetchall(),
+                "hero": conn.execute(
+                    text("SELECT total_xp FROM hero_profile")).scalar(),
+            }
+    finally:
+        engine.dispose()
+
+
+def test_pause_migration_runs_on_a_populated_database(db_url):
+    _seed_goal_database(db_url)
+    before = _goal_snapshot(db_url)
+
+    command.upgrade(_alembic_config(db_url), "0004_goal_pause_intervals")
+
+    assert "goal_pause_intervals" in _tables(db_url)
+    assert _goal_snapshot(db_url) == before, "existing goals and history must survive"
+
+
+def test_pause_migration_invents_no_history(db_url):
+    """A goal paused before this revision gets no interval out of thin air."""
+    _seed_goal_database(db_url)
+    engine = create_engine(db_url)
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE goals SET status='paused' WHERE slug='bestand'"))
+    engine.dispose()
+
+    command.upgrade(_alembic_config(db_url), "0004_goal_pause_intervals")
+
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM goal_pause_intervals")).scalar() == 0
+    finally:
+        engine.dispose()
+
+
+def test_open_pause_interval_is_unique_per_goal_in_the_database(db_url):
+    """The partial unique index, not Python, is the last line of defence."""
+    _seed_goal_database(db_url)
+    command.upgrade(_alembic_config(db_url), "0004_goal_pause_intervals")
+
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO goal_pause_intervals (goal_id, started_at, created_at)"
+                " VALUES (1, '2026-07-01 00:00:00', '2026-07-01 00:00:00')"
+            ))
+        with pytest.raises(Exception):
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "INSERT INTO goal_pause_intervals (goal_id, started_at, created_at)"
+                    " VALUES (1, '2026-07-02 00:00:00', '2026-07-02 00:00:00')"
+                ))
+    finally:
+        engine.dispose()
+
+
+def test_closed_pause_intervals_may_repeat_per_goal(db_url):
+    """Several finished breaks are normal — only the open one is unique."""
+    _seed_goal_database(db_url)
+    command.upgrade(_alembic_config(db_url), "0004_goal_pause_intervals")
+
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            for start, end in (
+                ("2026-05-01 00:00:00", "2026-05-10 00:00:00"),
+                ("2026-06-01 00:00:00", "2026-06-10 00:00:00"),
+            ):
+                conn.execute(text(
+                    "INSERT INTO goal_pause_intervals (goal_id, started_at, ended_at,"
+                    f" created_at) VALUES (1, '{start}', '{end}', '{start}')"
+                ))
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM goal_pause_intervals")).scalar() == 2
+    finally:
+        engine.dispose()
+
+
+def test_pause_migration_downgrade_and_upgrade_again(db_url):
+    _seed_goal_database(db_url)
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, "0004_goal_pause_intervals")
+    before = _goal_snapshot(db_url)
+
+    command.downgrade(cfg, "0003_quest_completions")
+    assert "goal_pause_intervals" not in _tables(db_url)
+    assert _goal_snapshot(db_url) == before, "downgrade must not touch user data"
+
+    command.upgrade(cfg, "0004_goal_pause_intervals")
+    assert "goal_pause_intervals" in _tables(db_url)
+    assert _goal_snapshot(db_url) == before

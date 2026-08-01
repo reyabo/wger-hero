@@ -445,3 +445,63 @@ def test_there_is_no_delete_route(client):
     c, _ = client
     c.post("/goals/new", data={"title": "Ziel"}, follow_redirects=False)
     assert c.post("/goals/ziel/delete", follow_redirects=False).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Pause history through the routes
+# ---------------------------------------------------------------------------
+
+def test_pause_route_records_an_interval(client):
+    c, Session = client
+    c.post("/goals/new", data={"title": "Ziel"}, follow_redirects=False)
+    c.post("/goals/ziel/status", data={"status": "paused"}, follow_redirects=False)
+
+    from app.models import GoalPauseInterval
+
+    db = Session()
+    interval = db.query(GoalPauseInterval).one()
+    assert interval.ended_at is None
+    db.close()
+
+
+def test_resume_route_closes_the_interval(client):
+    c, Session = client
+    c.post("/goals/new", data={"title": "Ziel"}, follow_redirects=False)
+    c.post("/goals/ziel/status", data={"status": "paused"}, follow_redirects=False)
+    c.post("/goals/ziel/status", data={"status": "active"}, follow_redirects=False)
+
+    from app.models import GoalPauseInterval
+
+    db = Session()
+    interval = db.query(GoalPauseInterval).one()
+    assert interval.ended_at is not None
+    db.close()
+
+
+def test_no_route_deletes_a_pause_interval(client):
+    """Pause history is append-only — there must be no way to remove it."""
+    c, Session = client
+    c.post("/goals/new", data={"title": "Ziel"}, follow_redirects=False)
+    c.post("/goals/ziel/status", data={"status": "paused"}, follow_redirects=False)
+
+    from app.main import app
+
+    paths = {getattr(r, "path", "") for r in app.routes}
+    assert not any("pause" in p for p in paths)
+
+
+def test_goal_detail_lists_recorded_pauses(client):
+    c, _ = client
+    c.post("/goals/new", data={"title": "Ziel"}, follow_redirects=False)
+    c.post("/goals/ziel/status", data={"status": "paused"}, follow_redirects=False)
+    html = c.get("/goals/ziel").text
+    assert "Erfasste Pausen" in html
+    assert "läuft" in html
+
+
+def test_momentum_explanation_names_the_pause_source(client):
+    c, _ = client
+    c.post("/goals/new", data={"title": "Ziel"}, follow_redirects=False)
+    html = c.get("/goals/ziel").text
+    assert "Pausenzeiträume" in html
+    assert "nicht rückwirkend" in html

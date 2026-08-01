@@ -54,6 +54,19 @@ DEFAULT_QUESTS = [
 ]
 
 
+def _app_timezone():
+    """The configured application timezone, or None if it cannot be resolved."""
+    from zoneinfo import ZoneInfo
+
+    from app.config import get_settings
+
+    try:
+        return ZoneInfo(get_settings().APP_TIMEZONE)
+    except Exception:  # unknown zone name — fall back rather than crash
+        logger.warning("Unknown APP_TIMEZONE, falling back to system local time")
+        return None
+
+
 def app_today() -> date:
     """Today in the configured application timezone.
 
@@ -61,16 +74,26 @@ def app_today() -> date:
     starts. Using the server's local date would silently shift every boundary
     if the container ran in another zone.
     """
-    from zoneinfo import ZoneInfo
-
-    from app.config import get_settings
-
-    try:
-        tz = ZoneInfo(get_settings().APP_TIMEZONE)
-    except Exception:  # unknown zone name — fall back rather than crash
-        logger.warning("Unknown APP_TIMEZONE, falling back to system local date")
+    tz = _app_timezone()
+    if tz is None:
         return date.today()
     return datetime.now(tz).date()
+
+
+def app_date_of(moment: datetime) -> date:
+    """The calendar day a stored timestamp belongs to, in the app timezone.
+
+    Timestamps are written as naive UTC (datetime.utcnow) throughout the app.
+    Anything that compares them against calendar days must go through here, so
+    there is exactly one place where a day boundary is decided.
+    """
+    from datetime import timezone
+
+    tz = _app_timezone()
+    if tz is None:
+        return moment.date()
+    aware = moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+    return aware.astimezone(tz).date()
 
 
 def _current_week_bounds() -> tuple[date, date]:

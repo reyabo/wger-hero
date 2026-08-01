@@ -45,6 +45,8 @@ from app.goals import (
     set_status,
     update_goal,
 )
+from app.goal_progress import goal_week_summary, pause_windows
+from app.momentum import explain_momentum
 from app.habits import RECURRENCE_CHOICES, archive_habit, complete_habit, create_habit, delete_or_archive_habit, update_habit
 from app.japanese_import import (
     get_latest_import,
@@ -938,6 +940,7 @@ async def goals_page(request: Request, db: Session = Depends(get_db)):
             **_hero_context(hero),
             "goals": goals,
             "progress": {g.id: goal_progress(db, g) for g in goals},
+            "week": {g.id: goal_week_summary(db, g) for g in goals},
             "status_labels": STATUS_LABELS,
             "show_archived": show_archived,
         },
@@ -987,6 +990,9 @@ async def goal_detail(slug: str, request: Request, db: Session = Depends(get_db)
             "habits": habits_for_goal(db, goal),
             "quests": quests_for_goal(db, goal),
             "milestones": milestones_for_goal(db, goal),
+            "week": goal_week_summary(db, goal),
+            "momentum_explanation": explain_momentum(),
+            "pause_windows": pause_windows(db, goal),
             "status_labels": STATUS_LABELS,
         },
     )

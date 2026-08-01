@@ -392,3 +392,75 @@ Duplicates never reach the check at all — they produce no row.
 quest only ever adds its own configured bonus when the period target is met; it
 never re-awards session XP, never modifies import rows and never recalculates
 attributes.
+
+## Streaks and Momentum
+
+Two deliberately different answers to "how is it going".
+
+**Streak** is strict: consecutive fully satisfied calendar weeks (Mon–Sun in
+`APP_TIMEZONE`). A week counts when every weekly quest of the goal was rewarded
+in it. The running week counts only once it is already satisfied — an unfinished
+week never ends a streak. The best streak stays visible after a break.
+
+**Momentum** is forgiving on purpose, so one missed week is not a reason to give
+up. It is a weighted average over the last four **completed** weeks:
+
+| Week | Weight |
+|---|---:|
+| last week | 40 % |
+| the week before | 30 % |
+| two weeks before | 20 % |
+| three weeks before | 10 % |
+
+Each week contributes its fulfilment **capped at 100 %** — over-delivering in one
+week cannot paper over another. The result is 0–100 and is explained in the UI,
+including a per-week breakdown of what counted and what did not.
+
+Rules that keep it from feeling punitive:
+
+- The **running week is never scored**; it cannot be a failure yet.
+- **Paused weeks are removed** from the calculation and the remaining weights are
+  renormalized, so a deliberate break neither helps nor hurts.
+- **Missing history is not a failure** — weeks before a goal existed are treated
+  the same way and reported as "keine Daten".
+- With nothing scorable, momentum is **`None`** ("noch nicht genug Daten"), never
+  `0`, because zero reads as failure.
+- Nothing here can produce negative XP or a negative value.
+
+The scoring rules live in `app/momentum.py` and are pure — dates and numbers in,
+numbers out, no database and no clock of their own. `app/goal_progress.py` is the
+thin layer that maps stored `QuestCompletion` history onto them.
+
+### Which weeks count as paused
+
+Pausing a goal writes a `GoalPauseInterval` — a start, and an end once the goal
+leaves the paused state. Momentum and streaks read those intervals, **never the
+goal's current status applied backwards**. That distinction matters in both
+directions: resuming a goal must not turn its old break into a row of failed
+weeks, and pausing today must not retroactively excuse a week that really was
+missed while the goal was running.
+
+The neutralisation rule is deliberately generous and applied in one place
+(`goal_progress.week_was_paused`):
+
+> Any overlap of a pause interval with a calendar week neutralises the whole week.
+
+So a pause that starts on Wednesday does not leave Monday and Tuesday behind as
+an unfinished week. In momentum a neutral week is removed and the remaining
+weights are renormalized; in a streak it is **skipped**, so it neither extends
+nor breaks the run. The running week stays outside momentum regardless.
+
+Bookkeeping rules:
+
+- `active → paused` opens exactly one interval; pausing again changes nothing.
+- Leaving `paused` closes the open interval — including `completed` and
+  `archived`, because a goal in those states is not on a break either. No status
+  other than `paused` may leave an interval running.
+- At most one open interval per goal, enforced by a **partial unique index**
+  (`ux_goal_pause_open … WHERE ended_at IS NULL`) rather than by Python alone.
+  Several finished breaks per goal are normal.
+- Intervals are append-only: no edit and no delete route exists. Breaks taken
+  before revision `0004_goal_pause_intervals` have no row and none is invented —
+  those weeks are scored from the quest history exactly as before.
+- Stored timestamps are naive UTC; the calendar day they belong to is resolved
+  once, centrally, via `quests.app_date_of()` in `APP_TIMEZONE`.

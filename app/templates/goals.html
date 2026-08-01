@@ -31,6 +31,31 @@
       <span class="muted small">{{ p.habits }} Gewohnheiten · {{ p.quests }} Quests</span>
     </div>
 
+    {% set w = week[goal.id] %}
+    <div class="goal-metrics">
+      <div class="metric">
+        <span class="label">Diese Woche</span>
+        <span class="metric-value">{{ w.this_week.achieved }} / {{ w.this_week.target }}</span>
+      </div>
+      <div class="metric">
+        <span class="label">Momentum</span>
+        <span class="metric-value">
+          {% if w.momentum.has_value %}{{ w.momentum.value }} %{% else %}—{% endif %}
+        </span>
+      </div>
+      <div class="metric">
+        <span class="label">Serie</span>
+        <span class="metric-value">{{ w.streak.current }}</span>
+      </div>
+      <div class="metric">
+        <span class="label">Beste Serie</span>
+        <span class="metric-value">{{ w.streak.best }}</span>
+      </div>
+    </div>
+    {% if not w.momentum.has_value and goal.status == 'active' %}
+    <p class="muted small">Noch nicht genug abgeschlossene Wochen für einen Momentum-Wert.</p>
+    {% endif %}
+
     {% if p.next %}
     <div class="goal-next"><span class="label">Nächster Schritt</span> {{ p.next.title }}</div>
     {% endif %}
