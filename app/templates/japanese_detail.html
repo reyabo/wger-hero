@@ -66,6 +66,11 @@
       {% endfor %}
     </ul>
   </div>
+  {% elif record.reward_calculation == 'legacy_level_delta' %}
+  <p class="muted small">
+    <strong>Legacy-Berechnung:</strong> globale XP aus der Levelbalken-Differenz,
+    keine Attribut-XP. Nur Sitzungen mit Modus und Abschluss verändern das Radar.
+  </p>
   {% endif %}
 </section>
 
