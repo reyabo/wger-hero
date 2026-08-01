@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Heute — wger-hero{% endblock %}
+
+{% block content %}
+<h1>Heute</h1>
+<p class="muted">
+  {{ plan.weekday_label }}, {{ day.strftime('%d.%m.%Y') }} ·
+  <a href="/week">Zur Wochenansicht</a>
+</p>
+
+<section class="card">
+  <h2 class="card-title">Für heute geplant</h2>
+  {% if plan.planned %}
+  <ul class="day-list">
+    {% for item in plan.planned %}
+    <li class="day-item {% if item.done %}is-done{% elif item.paused %}is-paused{% endif %}">
+      <div class="day-item-main">
+        <span class="day-item-title">{{ item.habit.title }}</span>
+        {% if item.goal %}
+        <a class="day-item-goal" href="/goals/{{ item.goal.slug }}">{{ item.goal.short_label or item.goal.title }}</a>
+        {% endif %}
+        <span class="status-badge status-{{ 'done' if item.done else ('paused' if item.paused else 'open') }}">
+          {{ item.status_label }}
+        </span>
+      </div>
+      <form method="post" action="/habits/{{ item.habit.id }}/complete" class="day-item-action">
+        {{ csrf_input(request) }}
+        <input type="hidden" name="next" value="/today">
+        <button type="submit" class="btn btn-small">Erledigt eintragen</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">Für heute ist nichts fest eingeplant.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2 class="card-title">Jederzeit möglich</h2>
+  {% if plan.flexible %}
+  <ul class="day-list">
+    {% for item in plan.flexible %}
+    <li class="day-item {% if item.done %}is-done{% elif item.paused %}is-paused{% endif %}">
+      <div class="day-item-main">
+        <span class="day-item-title">{{ item.habit.title }}</span>
+        {% if item.goal %}
+        <a class="day-item-goal" href="/goals/{{ item.goal.slug }}">{{ item.goal.short_label or item.goal.title }}</a>
+        {% endif %}
+        <span class="status-badge status-{{ 'done' if item.done else ('paused' if item.paused else 'open') }}">
+          {{ item.status_label }}
+        </span>
+      </div>
+      <form method="post" action="/habits/{{ item.habit.id }}/complete" class="day-item-action">
+        {{ csrf_input(request) }}
+        <input type="hidden" name="next" value="/today">
+        <button type="submit" class="btn btn-small">Erledigt eintragen</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">Keine flexiblen Gewohnheiten hinterlegt.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2 class="card-title">Quests dieses Zeitraums</h2>
+  {% if quests %}
+  <ul class="day-list">
+    {% for q in quests %}
+    <li class="day-item {% if q.paused %}is-paused{% endif %}">
+      <div class="day-item-main">
+        <span class="day-item-title">{{ q.quest.title }}</span>
+        {% if q.goal %}
+        <a class="day-item-goal" href="/goals/{{ q.goal.slug }}">{{ q.goal.short_label or q.goal.title }}</a>
+        {% endif %}
+        <span class="muted small">{{ q.current }} / {{ q.target }}</span>
+        <span class="status-badge status-{{ 'done' if q.rewarded else ('paused' if q.paused else 'open') }}">
+          {{ q.status_label }}
+        </span>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">Für diesen Zeitraum sind keine Quests aktiv.</p>
+  {% endif %}
+</section>
+
+{% if plan.is_empty and not quests %}
+<p class="muted">
+  Noch nichts eingeplant. Gewohnheiten lassen sich unter
+  <a href="/habits">Gewohnheiten</a> anlegen und optional auf Wochentage legen.
+</p>
+{% endif %}
+{% endblock %}

@@ -63,6 +63,20 @@ def pause_windows(db: Session, goal: Goal) -> list[tuple[date, Optional[date]]]:
     ]
 
 
+def overlaps_pause(
+    windows: list[tuple[date, Optional[date]]], first: date, last: date
+) -> bool:
+    """Whether a break touched the span `first`…`last` at all.
+
+    The one place where "was this paused?" is decided, for any span. Everything
+    else — momentum weeks, the week view, a single day — asks through here, so
+    there is no second overlap rule that could drift from this one.
+    """
+    return any(
+        start <= last and (end is None or end >= first) for start, end in windows
+    )
+
+
 def week_was_paused(windows: list[tuple[date, Optional[date]]], monday: date) -> bool:
     """Whether a break touched this calendar week at all.
 
@@ -70,10 +84,17 @@ def week_was_paused(windows: list[tuple[date, Optional[date]]], monday: date) ->
     that starts on Wednesday must not leave Monday and Tuesday behind as an
     unfinished week that reads as a failure.
     """
-    sunday = monday + timedelta(days=6)
-    return any(
-        start <= sunday and (end is None or end >= monday) for start, end in windows
-    )
+    return overlaps_pause(windows, monday, monday + timedelta(days=6))
+
+
+def day_was_paused(windows: list[tuple[date, Optional[date]]], day: date) -> bool:
+    """Whether a break covered this single day.
+
+    The day view asks per day rather than per week: marking Friday neutral only
+    because Monday was paused would be misleading in an operational view, while
+    the weekly scoring stays deliberately generous.
+    """
+    return overlaps_pause(windows, day, day)
 
 
 def week_outcome(

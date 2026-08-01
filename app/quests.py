@@ -526,6 +526,27 @@ def _complete_quest(
     return True
 
 
+def count_quest_progress(db: Session, quest: Quest) -> Optional[int]:
+    """Current progress of an auto-tracked quest, without writing anything.
+
+    Same counters evaluate_quests() uses, so a view can show live progress
+    without side effects. Returns None for manual quests, whose progress is
+    user-driven and must not be derived.
+    """
+    qtype = (quest.quest_type or "").lower()
+    if quest.slug == "week-warrior":
+        return _count_workouts_this_week(db)
+    if qtype == "workout_variety":
+        return _count_workout_variety_in_period(db, quest)
+    if qtype == "workout_count":
+        return _count_workouts_in_period(db, quest)
+    if qtype == "habit_count":
+        return _count_habit_completions_in_period(db, quest)
+    if qtype == "japanese_session_count":
+        return _count_japanese_sessions_in_period(db, quest)
+    return None
+
+
 def evaluate_quests(db: Session, hero: HeroProfile) -> list[str]:
     """
     Recalculate progress for auto-tracked quests and complete any that hit target.
@@ -545,16 +566,11 @@ def evaluate_quests(db: Session, hero: HeroProfile) -> list[str]:
         qtype = (quest.quest_type or "").lower()
         if quest.slug == "week-warrior":
             quest.current_value = workouts_this_week
-        elif qtype == "workout_variety":
-            quest.current_value = _count_workout_variety_in_period(db, quest)
-        elif qtype == "workout_count":
-            quest.current_value = _count_workouts_in_period(db, quest)
-        elif qtype == "habit_count":
-            quest.current_value = _count_habit_completions_in_period(db, quest)
-        elif qtype == "japanese_session_count":
-            quest.current_value = _count_japanese_sessions_in_period(db, quest)
-        elif qtype == "manual":
-            continue  # progressed only by explicit user action
+        else:
+            counted = count_quest_progress(db, quest)
+            if counted is None:
+                continue  # manual: progressed only by explicit user action
+            quest.current_value = counted
 
         if quest.target_value and quest.current_value >= quest.target_value:
             if _complete_quest(db, hero, quest):

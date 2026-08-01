@@ -102,16 +102,24 @@ was ab dem Cutover erfasst wurde.
 Migration: `0004_goal_pause_intervals`, additiv, mit getestetem `downgrade()`.
 Die Tabelle startet leer; Pausen vor dieser Revision werden nicht erfunden.
 
-## 6 — Tages- und Wochenansicht
+## 6 — Tages- und Wochenansicht  ✅
 
-- [ ] `/today`: Held, XP, heutige und offene flexible Habits, Schnellabschluss
-      mit CSRF, Wochenquests, drei Hauptziele, letzte XP, Pause-Hinweis
-- [ ] `/week`: Mo–So, Habits je Tag, wger-Trainings, bestätigte Japanisch-Sessions,
-      Wochenquests, Zielkarten mit Momentum/Streak, Navigation, Zukunft nur lesend
-- [ ] Habits: optionale Wochenplanung (`mon`…`sun`), ohne Angabe weiter flexibel
-- [ ] Tests: beide Ansichten, geplante vs. flexible Habits, Zeitzone
+- [x] `/today`: heutige geplante und flexible Habits mit Status, Schnellabschluss
+      über die bestehende Completion-Route mit CSRF, Quests des Zeitraums,
+      Zielbezug, Pause-Hinweis, klarer Leerzustand, Link zur Woche
+- [x] `/week`: Mo–So als Tageskarten, Habits je Tag, Completion-Status,
+      Wochenquests mit Zähler/Ziel/Belohnungsstand, Zielverlinkung,
+      Navigation über `?date=` ohne zusätzliche Persistenz
+- [x] Habits: optionale Wochenplanung als ISO-Wochentage (1–7) in
+      `habit_schedule_days`; ohne Angabe weiter flexibel, kein XP-Verlust
+- [x] Aggregation in `app/planning.py`: nur lesend, ohne Uhr, ohne zweite
+      Quest-, Belohnungs- oder Momentum-Logik (per Test abgesichert)
+- [x] Interne Rücksprungvalidierung (`safe_next`) gegen Open Redirect
+- [x] Tests: beide Ansichten, geplante vs. flexible Habits, Zeitzone, DST,
+      Monats- und Jahreswechsel, Migration, Auth und CSRF
 
-Migration: ja (additives Habit-Feld).
+Migration: `0005_habit_schedule_days`, additiv, mit getestetem `downgrade()`.
+Die Tabelle startet leer; für bestehende Habits wird keine Planung erfunden.
 
 ## 7 — Mobile PWA
 

@@ -519,3 +519,146 @@ def test_pause_migration_downgrade_and_upgrade_again(db_url):
     command.upgrade(cfg, "0004_goal_pause_intervals")
     assert "goal_pause_intervals" in _tables(db_url)
     assert _goal_snapshot(db_url) == before
+
+
+# ---------------------------------------------------------------------------
+# 0005 — optional weekday planning for habits
+# ---------------------------------------------------------------------------
+
+def _seed_habit_database(url: str) -> None:
+    """A database at revision 0004 with a habit and a real completion."""
+    cfg = _alembic_config(url)
+    command.upgrade(cfg, "0004_goal_pause_intervals")
+
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO habits (title, active, recurrence, target_count,"
+            " base_xp_reward, sort_order, created_at, updated_at)"
+            " VALUES ('Bestands-Habit', 1, 'daily', 1, 25, 0,"
+            " '2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+        ))
+        conn.execute(text(
+            "INSERT INTO habit_completions (habit_id, completed_at, xp_awarded,"
+            " stat_xp_awarded) VALUES (1, '2026-01-05 00:00:00', 25, 0)"
+        ))
+    engine.dispose()
+
+
+def _habit_snapshot(url: str) -> dict:
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            return {
+                "habits": conn.execute(
+                    text("SELECT title, active, recurrence FROM habits")).fetchall(),
+                "completions": conn.execute(
+                    text("SELECT habit_id, xp_awarded FROM habit_completions")
+                ).fetchall(),
+            }
+    finally:
+        engine.dispose()
+
+
+def test_schedule_migration_runs_on_a_populated_database(db_url):
+    _seed_habit_database(db_url)
+    before = _habit_snapshot(db_url)
+
+    command.upgrade(_alembic_config(db_url), "0005_habit_schedule_days")
+
+    assert "habit_schedule_days" in _tables(db_url)
+    assert _habit_snapshot(db_url) == before, "habits and completions must survive"
+
+
+def test_schedule_migration_invents_no_plan(db_url):
+    """Existing habits stay unplanned — no weekday is made up for them."""
+    _seed_habit_database(db_url)
+    command.upgrade(_alembic_config(db_url), "0005_habit_schedule_days")
+
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM habit_schedule_days")).scalar() == 0
+    finally:
+        engine.dispose()
+
+
+def test_several_weekdays_per_habit_are_allowed(db_url):
+    _seed_habit_database(db_url)
+    command.upgrade(_alembic_config(db_url), "0005_habit_schedule_days")
+
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            for day in (1, 3, 5):
+                conn.execute(text(
+                    "INSERT INTO habit_schedule_days (habit_id, iso_weekday)"
+                    f" VALUES (1, {day})"
+                ))
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM habit_schedule_days")).scalar() == 3
+    finally:
+        engine.dispose()
+
+
+def test_the_same_weekday_cannot_be_stored_twice(db_url):
+    """The unique constraint, not Python, is the last line of defence."""
+    _seed_habit_database(db_url)
+    command.upgrade(_alembic_config(db_url), "0005_habit_schedule_days")
+
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO habit_schedule_days (habit_id, iso_weekday) VALUES (1, 2)"
+            ))
+        with pytest.raises(Exception):
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "INSERT INTO habit_schedule_days (habit_id, iso_weekday)"
+                    " VALUES (1, 2)"
+                ))
+    finally:
+        engine.dispose()
+
+
+def test_schedule_migration_downgrade_and_upgrade_again(db_url):
+    _seed_habit_database(db_url)
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, "0005_habit_schedule_days")
+    before = _habit_snapshot(db_url)
+
+    command.downgrade(cfg, "0004_goal_pause_intervals")
+    assert "habit_schedule_days" not in _tables(db_url)
+    assert _habit_snapshot(db_url) == before, "downgrade must not touch user data"
+
+    command.upgrade(cfg, "0005_habit_schedule_days")
+    assert "habit_schedule_days" in _tables(db_url)
+    assert _habit_snapshot(db_url) == before
+
+
+def test_downgrade_keeps_habit_completions(db_url):
+    """Dropping the plan table must never cascade into recorded history."""
+    _seed_habit_database(db_url)
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, "0005_habit_schedule_days")
+
+    engine = create_engine(db_url)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO habit_schedule_days (habit_id, iso_weekday) VALUES (1, 4)"
+        ))
+    engine.dispose()
+
+    command.downgrade(cfg, "0004_goal_pause_intervals")
+
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM habit_completions")).scalar() == 1
+            assert conn.execute(text("SELECT count(*) FROM habits")).scalar() == 1
+    finally:
+        engine.dispose()

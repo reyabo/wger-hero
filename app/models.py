@@ -6,10 +6,12 @@ from sqlalchemy import (
     Date,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -156,6 +158,31 @@ class Habit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class HabitScheduleDay(Base):
+    """One weekday a habit is planned for, as an ISO weekday (1 = Mon … 7 = Sun).
+
+    Optional by design: a habit with no rows here is not tied to any weekday and
+    keeps working exactly as before — it simply shows up as "flexibel" rather
+    than being planned for a given day. Numbers rather than German labels are
+    stored so the data stays language-independent and validatable.
+
+    A missed planned day is never a failure: nothing here awards or removes XP,
+    and no completion is ever created from a plan.
+    """
+
+    __tablename__ = "habit_schedule_days"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    habit_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("habits.id"), index=True, nullable=False
+    )
+    iso_weekday: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("habit_id", "iso_weekday", name="ux_habit_schedule_day"),
     )
 
 

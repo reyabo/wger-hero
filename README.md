@@ -144,8 +144,27 @@ A habit is a repeatable action you complete for XP. Create one at `/habits/new`:
 | Target count | How many completions make up a full period |
 | Base XP reward | Global XP awarded per completion |
 | Stat rewards | XP added to specific attributes per completion |
+| Feste Wochentage | **Optional** weekday plan — see below |
 
 Completing a habit creates an auditable completion record, awards global XP **and** stat XP, writes the XP events, and updates your hero. A second click within a couple of seconds is ignored so you never double-award by accident. Inactive habits cannot be completed.
+
+#### Optional weekday planning
+
+A habit may be tied to weekdays, stored as **ISO weekdays** (`1` = Monday …
+`7` = Sunday) in `habit_schedule_days`. Numbers, not German labels, so the data
+stays language-independent and validatable; anything outside 1–7 is refused on
+the server, not only in the browser.
+
+- **No selection = flexible.** A habit without a plan keeps behaving exactly as
+  before: it is available every day and appears under "Jederzeit möglich".
+- Several weekdays per habit are normal; the same weekday can never be stored
+  twice (unique constraint on `(habit_id, iso_weekday)`).
+- Renaming, editing or deactivating a habit leaves the plan and every recorded
+  completion untouched. Clearing the selection removes the *plan*, never the
+  history.
+- **A missed planned day costs nothing.** No negative XP, no penalty, no
+  automatically created completion. The plan says what was intended, the
+  completions say what happened.
 
 ### Custom quests (`/quests`)
 
@@ -392,6 +411,51 @@ Duplicates never reach the check at all — they produce no row.
 quest only ever adds its own configured bonus when the period target is met; it
 never re-awards session XP, never modifies import rows and never recalculates
 attributes.
+
+## Today and Week
+
+Two read-only operational views. Both join what already exists — habits, their
+optional plan, recorded completions, quests and goals — and introduce no second
+reward, quest or momentum engine.
+
+### `/today`
+
+The current day in `APP_TIMEZONE`: weekday and date, the habits planned for
+today with their status (`offen` / `erledigt` / `pausiert`), the flexible habits
+that are available any day, the daily and weekly quests of the running period,
+and a link to the week. Each habit carries a quick action that posts to the
+existing completion route — same service, same XP rules, same double-click
+guard.
+
+### `/week`
+
+Monday–Sunday of the running week, or of any other week via `/week?date=` with
+an ISO date. An unparseable value falls back to the current week with a plain
+message rather than an error page. Each of the seven days is its own card with
+its planned habits, their completion status and the goal behind them; weekly
+quests are listed below with counter, target and whether the period was already
+rewarded.
+
+Quest progress is shown **only for the running period**. The counters in
+`app/quests.py` answer for the current window, so a past week reports "Zähler
+nur für den laufenden Zeitraum" instead of a number that would look historical
+but is not. Showing a quest never completes it — rewarding stays with the
+existing quest logic and its `QuestCompletion` deduplication.
+
+### Timezone, pauses and safety
+
+- Calendar weeks are Monday–Sunday in `APP_TIMEZONE`, derived from
+  `momentum.week_start()` and `quests.app_today()`. `app/planning.py` never
+  reads a clock: the reference date is always passed in, which tests assert.
+- The aggregation is read-only — no XP, no `QuestCompletion`, no commit. Also
+  asserted by a test.
+- Pauses come from the recorded `GoalPauseInterval` history through the shared
+  `goal_progress.overlaps_pause()`. A paused item is marked neutrally and never
+  as a failure. Habits of completed or archived goals are not presented as
+  current work; their history stays intact.
+- The return target of a quick action is validated against an internal
+  allowlist (`safe_next`), so a crafted `next` cannot bounce the browser to
+  another host.
 
 ## Streaks and Momentum
 
