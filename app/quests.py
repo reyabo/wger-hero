@@ -151,7 +151,32 @@ def _period_window(quest: Quest) -> tuple[Optional[datetime], Optional[datetime]
 
 
 def _count_workouts_in_period(db: Session, quest: Quest) -> int:
+    """Count workouts in the quest's window, optionally restricted by name.
+
+    Without ``match_text`` this counts SyncEvent rows, exactly as before — one
+    row per imported wger session.
+
+    With ``match_text`` it counts XpEvent rows instead. SyncEvent carries no
+    title (only source, source_id, source_hash, synced_at, raw_summary,
+    xp_awarded, last_error), so there is nothing there to match a routine name
+    against. The workout name lives on XpEvent.title, which sync.py fills from
+    the wger session, so restricting a quest to one routine has to go through
+    the workout_complete events.
+    """
     start, end = _period_window(quest)
+
+    if quest.match_text:
+        q = db.query(XpEvent).filter(
+            XpEvent.source == "wger",
+            XpEvent.event_type == "workout_complete",
+            XpEvent.title.ilike(f"%{quest.match_text}%"),
+        )
+        if start is not None:
+            q = q.filter(XpEvent.created_at >= start)
+        if end is not None:
+            q = q.filter(XpEvent.created_at <= end)
+        return q.count()
+
     q = db.query(SyncEvent).filter(SyncEvent.source == "wger")
     if start is not None:
         q = q.filter(SyncEvent.synced_at >= start)
