@@ -47,7 +47,20 @@ from app.goals import (
 )
 from app.goal_progress import goal_week_summary, pause_windows
 from app.momentum import explain_momentum
-from app.habits import RECURRENCE_CHOICES, archive_habit, complete_habit, create_habit, delete_or_archive_habit, update_habit
+from app.planning import parse_reference_date, today_plan, week_plan
+from app.habits import (
+    RECURRENCE_CHOICES,
+    WEEKDAY_LABELS,
+    InvalidWeekdayError,
+    archive_habit,
+    complete_habit,
+    create_habit,
+    delete_or_archive_habit,
+    parse_weekdays,
+    scheduled_weekdays,
+    set_weekdays,
+    update_habit,
+)
 from app.japanese_import import (
     get_latest_import,
     get_recent_imports,
@@ -74,6 +87,7 @@ from app.quests import (
     delete_or_archive_quest,
     evaluate_quests,
     migrate_seeded_quests,
+    app_today,
     parse_period_range,
     seed_quests,
     update_quest,
@@ -158,6 +172,34 @@ def _csrf_input(request: Request) -> Markup:
 
 
 templates.env.globals["csrf_input"] = _csrf_input
+
+# Paths a form may ask to return to. An open redirect would let a crafted link
+# bounce the user off this host, so the value is matched against this list
+# rather than merely checked for a leading slash.
+_SAFE_RETURN_PREFIXES = ("/today", "/week", "/habits", "/goals", "/quests", "/")
+
+
+def safe_next(raw: str | None, default: str) -> str:
+    """Validate a ?next= / form return target as an internal path.
+
+    Accepts only a path on this host: it must start with a single slash and
+    match a known prefix. Protocol-relative values ("//evil.example"), absolute
+    URLs and backslash tricks all fall back to `default`.
+    """
+    value = (raw or "").strip()
+    if not value or not value.startswith("/") or value.startswith("//"):
+        return default
+    if "\\" in value or "://" in value or ".." in value:
+        return default
+    path = value.split("?", 1)[0].split("#", 1)[0]
+    for prefix in _SAFE_RETURN_PREFIXES:
+        if path == prefix:
+            return value
+        # "/" is an exact match only — as a prefix it would allow every path
+        # and make the whole allowlist pointless.
+        if prefix != "/" and path.startswith(prefix.rstrip("/") + "/"):
+            return value
+    return default
 
 
 def _cookie_kwargs(settings) -> dict:
@@ -416,6 +458,49 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@app.get("/today", response_class=HTMLResponse)
+async def today_page(request: Request, db: Session = Depends(get_db)):
+    """What is planned or open for the current local day."""
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    day = app_today()
+    data = today_plan(db, day)
+    return templates.TemplateResponse(
+        request=request,
+        name="today.html",
+        context={
+            **_hero_context(hero),
+            "day": day,
+            "plan": data["plan"],
+            "quests": data["quests"],
+            "monday": data["monday"],
+            "sunday": data["sunday"],
+            "weekday_labels": WEEKDAY_LABELS,
+        },
+    )
+
+
+@app.get("/week", response_class=HTMLResponse)
+async def week_page(
+    request: Request, date: str | None = None, db: Session = Depends(get_db)
+):
+    """The Monday–Sunday week around an optional reference date."""
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    today = app_today()
+    reference, date_error = parse_reference_date(date, today)
+    plan = week_plan(db, reference)
+    return templates.TemplateResponse(
+        request=request,
+        name="week.html",
+        context={
+            **_hero_context(hero),
+            "today": today,
+            "week": plan,
+            "date_error": date_error,
+            "weekday_labels": WEEKDAY_LABELS,
+        },
+    )
+
+
 @app.post("/sync")
 async def trigger_sync(request: Request, db: Session = Depends(get_db)):
     settings = get_settings()
@@ -664,12 +749,14 @@ async def habits_page(request: Request, db: Session = Depends(get_db)):
     )
 
 
-def _habit_form_context(habit: Habit | None) -> dict:
+def _habit_form_context(habit: Habit | None, db: Session | None = None) -> dict:
     from app.rewards import CATEGORIES, DURATION_LABELS, EFFORT_LABELS, CATEGORY_CHOICES, DURATION_CHOICES, EFFORT_CHOICES
     return {
         "habit": habit,
         "rewards": parse_stat_rewards(habit.stat_rewards) if habit else {},
         "recurrences": RECURRENCE_CHOICES,
+        "weekday_labels": WEEKDAY_LABELS,
+        "selected_weekdays": scheduled_weekdays(db, habit) if habit and db else [],
         "stat_keys": STAT_KEYS,
         "stat_names": STATS,
         "categories": CATEGORIES,
@@ -704,7 +791,12 @@ async def habit_create(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse(url="/habits/new", status_code=303)
     raw_xp = form.get("base_xp_reward")
     base_xp = _int_field(form, "base_xp_reward", 0) if raw_xp else None
-    create_habit(
+    try:
+        weekdays = parse_weekdays(form.getlist("weekdays"))
+    except InvalidWeekdayError:
+        logger.warning("Rejected habit creation: invalid weekday submitted")
+        return RedirectResponse(url="/habits/new", status_code=303)
+    habit = create_habit(
         db,
         title=title,
         description=form.get("description"),
@@ -717,6 +809,7 @@ async def habit_create(request: Request, db: Session = Depends(get_db)):
         duration_size=form.get("duration_size") or None,
         effort=form.get("effort") or None,
     )
+    set_weekdays(db, habit, weekdays)
     return RedirectResponse(url="/habits", status_code=303)
 
 
@@ -731,7 +824,7 @@ async def habit_edit(habit_id: int, request: Request, db: Session = Depends(get_
         name="habit_form.html",
         context={
             **_hero_context(hero),
-            **_habit_form_context(habit),
+            **_habit_form_context(habit, db),
             "form_action": f"/habits/{habit_id}/edit",
             "heading": "Edit Habit",
         },
@@ -746,6 +839,11 @@ async def habit_update(habit_id: int, request: Request, db: Session = Depends(ge
     form = await request.form()
     raw_xp = form.get("base_xp_reward")
     base_xp = _int_field(form, "base_xp_reward", habit.base_xp_reward) if raw_xp else None
+    try:
+        weekdays = parse_weekdays(form.getlist("weekdays"))
+    except InvalidWeekdayError:
+        logger.warning("Rejected habit update: invalid weekday submitted")
+        return RedirectResponse(url=f"/habits/{habit_id}/edit", status_code=303)
     update_habit(
         db,
         habit,
@@ -760,6 +858,7 @@ async def habit_update(habit_id: int, request: Request, db: Session = Depends(ge
         duration_size=form.get("duration_size") or None,
         effort=form.get("effort") or None,
     )
+    set_weekdays(db, habit, weekdays)
     return RedirectResponse(url="/habits", status_code=303)
 
 
@@ -773,7 +872,10 @@ async def habit_complete(habit_id: int, request: Request, db: Session = Depends(
     # Habit completions may advance habit_count quests and unlock achievements.
     evaluate_quests(db, hero)
     check_achievements(db, hero)
-    return RedirectResponse(url="/habits", status_code=303)
+    form = await request.form()
+    return RedirectResponse(
+        url=safe_next(form.get("next"), "/habits"), status_code=303
+    )
 
 
 

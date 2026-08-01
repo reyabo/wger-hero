@@ -250,7 +250,8 @@ def test_protected_page_redirects_to_login(secure_client):
 
 
 def test_protected_pages_all_redirect(secure_client):
-    for path in ("/habits", "/quests", "/stats", "/japanese", "/settings", "/achievements"):
+    for path in ("/habits", "/quests", "/stats", "/japanese", "/settings",
+                 "/achievements", "/today", "/week"):
         resp = secure_client.get(path, follow_redirects=False)
         assert resp.status_code == 303, f"{path} was reachable without a session"
 
@@ -427,3 +428,35 @@ def client_no_auth(monkeypatch):
 
     app.dependency_overrides.clear()
     cfg._settings = None
+
+
+def test_today_and_week_are_reachable_after_login(secure_client):
+    _login(secure_client)
+    for path in ("/today", "/week"):
+        assert secure_client.get(path).status_code == 200
+
+
+def test_completing_from_today_without_csrf_is_rejected(secure_client):
+    """The day view's quick action goes through the same CSRF gate as any POST."""
+    _login(secure_client)
+    page = secure_client.get("/habits/new")
+    token = _token_from(page.text)
+    secure_client.post(
+        "/habits/new",
+        data={"title": "Heute", "active": "on", "recurrence": "daily",
+              "target_count": "1", "base_xp_reward": "10", CSRF_FIELD: token},
+        follow_redirects=False,
+    )
+
+    resp = secure_client.post(
+        "/habits/1/complete", data={"next": "/today"}, follow_redirects=False
+    )
+    assert resp.status_code == 403
+
+    resp = secure_client.post(
+        "/habits/1/complete",
+        data={"next": "/today", CSRF_FIELD: token},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/today"

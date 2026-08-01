@@ -756,3 +756,125 @@ code {
 .momentum-help summary:hover { color: var(--accent-cyan); }
 .momentum-formula { list-style: none; margin: 0.5rem 0; font-size: 0.85rem; color: var(--text-muted); }
 .momentum-formula li { padding: 0.15rem 0; }
+
+/* --- Day and week views ------------------------------------------------- */
+
+.week-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0 1rem;
+}
+
+/* Day cards rather than a seven-column table: a narrow phone gets a single
+   readable column, wide screens fill up. Nothing ever scrolls horizontally. */
+.week-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+@media (min-width: 700px) {
+  .week-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (min-width: 1100px) {
+  .week-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+.day-card.is-today {
+  border-color: var(--accent, #c9a227);
+}
+
+.day-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.day-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.day-item-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.day-item-title { font-weight: 600; overflow-wrap: anywhere; }
+
+.day-item-goal {
+  font-size: 0.85rem;
+  opacity: 0.85;
+  text-decoration: underline;
+}
+
+.day-item.is-done { opacity: 0.75; }
+.day-item.is-paused { opacity: 0.85; font-style: italic; }
+
+/* The word carries the status; colour only reinforces it. */
+.status-badge {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.status-open { color: #9fb4c7; }
+.status-done { color: #7fbf7f; }
+.status-paused { color: #b9a97a; }
+
+/* Comfortable touch targets on a phone. */
+.day-item-action .btn,
+.week-nav .btn {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.weekday-picker {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin: 1rem 0;
+}
+
+.weekday-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.weekday-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 44px;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.weekday-option input { min-width: 20px; min-height: 20px; }
+
+.day-item-action .btn:focus-visible,
+.week-nav .btn:focus-visible,
+.weekday-option:focus-within {
+  outline: 2px solid var(--accent, #c9a227);
+  outline-offset: 2px;
+}

@@ -16,7 +16,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.models import Habit, HabitCompletion, HeroProfile, XpEvent
+from app.models import Habit, HabitCompletion, HabitScheduleDay, HeroProfile, XpEvent
 from app.rewards import (
     CATEGORY_CHOICES,
     DURATION_CHOICES,
@@ -33,6 +33,80 @@ logger = logging.getLogger(__name__)
 DOUBLE_CLICK_WINDOW_SECONDS = 2
 
 RECURRENCE_CHOICES = ("daily", "weekly", "monthly", "flexible")
+
+# ISO weekdays, the only accepted schedule values. Numbers rather than German
+# labels, so the stored data stays language-independent and validatable.
+ISO_WEEKDAYS = (1, 2, 3, 4, 5, 6, 7)
+WEEKDAY_LABELS = {
+    1: "Montag",
+    2: "Dienstag",
+    3: "Mittwoch",
+    4: "Donnerstag",
+    5: "Freitag",
+    6: "Samstag",
+    7: "Sonntag",
+}
+WEEKDAY_SHORT = {1: "Mo", 2: "Di", 3: "Mi", 4: "Do", 5: "Fr", 6: "Sa", 7: "So"}
+
+
+class InvalidWeekdayError(ValueError):
+    """A schedule value that is not an ISO weekday was submitted."""
+
+
+def parse_weekdays(raw_values) -> list[int]:
+    """Validate submitted weekdays into a sorted, duplicate-free ISO list.
+
+    Raises InvalidWeekdayError on anything that is not 1…7, so a manipulated
+    form is refused on the server rather than silently corrected. An empty
+    selection is valid and means "not planned for a fixed day".
+    """
+    days: set[int] = set()
+    for value in raw_values or []:
+        text = str(value).strip()
+        if not text:
+            continue
+        try:
+            day = int(text)
+        except ValueError:
+            raise InvalidWeekdayError(f"Kein gültiger Wochentag: {text[:20]}")
+        if day not in ISO_WEEKDAYS:
+            raise InvalidWeekdayError(f"Kein gültiger Wochentag: {day}")
+        days.add(day)
+    return sorted(days)
+
+
+def scheduled_weekdays(db: Session, habit: Habit) -> list[int]:
+    """The ISO weekdays a habit is planned for, ascending. Empty = flexible."""
+    rows = (
+        db.query(HabitScheduleDay)
+        .filter(HabitScheduleDay.habit_id == habit.id)
+        .order_by(HabitScheduleDay.iso_weekday)
+        .all()
+    )
+    return [row.iso_weekday for row in rows]
+
+
+def set_weekdays(db: Session, habit: Habit, days: list[int]) -> list[int]:
+    """Replace a habit's plan with exactly `days`, without touching history.
+
+    Only the difference is written, so re-saving an unchanged habit leaves the
+    rows alone. Completions are never read or modified here — clearing a plan
+    removes the plan, never the record of what was actually done.
+    """
+    days = parse_weekdays(days)
+    current = set(scheduled_weekdays(db, habit))
+    wanted = set(days)
+
+    for day in current - wanted:
+        db.query(HabitScheduleDay).filter(
+            HabitScheduleDay.habit_id == habit.id,
+            HabitScheduleDay.iso_weekday == day,
+        ).delete()
+    for day in sorted(wanted - current):
+        db.add(HabitScheduleDay(habit_id=habit.id, iso_weekday=day))
+
+    db.commit()
+    return sorted(wanted)
 
 
 @dataclass

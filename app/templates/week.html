@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Woche — wger-hero{% endblock %}
+
+{% block content %}
+<h1>Woche</h1>
+<p class="muted">
+  {{ week.monday.strftime('%d.%m.%Y') }} – {{ week.sunday.strftime('%d.%m.%Y') }} ·
+  <a href="/today">Zur Tagesansicht</a>
+</p>
+
+{% if date_error %}
+<p class="notice">{{ date_error }}</p>
+{% endif %}
+
+<nav class="week-nav" aria-label="Wochennavigation">
+  <a class="btn btn-small" href="/week?date={{ week.previous.isoformat() }}">← Vorherige Woche</a>
+  <a class="btn btn-small" href="/week">Aktuelle Woche</a>
+  <a class="btn btn-small" href="/week?date={{ week.next.isoformat() }}">Nächste Woche →</a>
+</nav>
+
+<div class="week-grid">
+  {% for day in week.days %}
+  <section class="card day-card {% if day.day == today %}is-today{% endif %}">
+    <h2 class="card-title">
+      {{ day.weekday_label }}
+      <span class="muted small">{{ day.day.strftime('%d.%m.') }}</span>
+      {% if day.day == today %}<span class="status-badge status-open">heute</span>{% endif %}
+    </h2>
+
+    {% if day.planned %}
+    <ul class="day-list">
+      {% for item in day.planned %}
+      <li class="day-item {% if item.done %}is-done{% elif item.paused %}is-paused{% endif %}">
+        <div class="day-item-main">
+          <span class="day-item-title">{{ item.habit.title }}</span>
+          {% if item.goal %}
+          <a class="day-item-goal" href="/goals/{{ item.goal.slug }}">{{ item.goal.short_label or item.goal.title }}</a>
+          {% endif %}
+          <span class="status-badge status-{{ 'done' if item.done else ('paused' if item.paused else 'open') }}">
+            {{ item.status_label }}
+          </span>
+        </div>
+        {% if day.day <= today %}
+        <form method="post" action="/habits/{{ item.habit.id }}/complete" class="day-item-action">
+          {{ csrf_input(request) }}
+          <input type="hidden" name="next" value="/week?date={{ week.monday.isoformat() }}">
+          <button type="submit" class="btn btn-small">Erledigt eintragen</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted small">Nichts fest eingeplant.</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
+
+<section class="card">
+  <h2 class="card-title">Wochenquests</h2>
+  {% if week.quests %}
+  <ul class="day-list">
+    {% for q in week.quests %}
+    <li class="day-item {% if q.paused %}is-paused{% endif %}">
+      <div class="day-item-main">
+        <span class="day-item-title">{{ q.quest.title }}</span>
+        {% if q.goal %}
+        <a class="day-item-goal" href="/goals/{{ q.goal.slug }}">{{ q.goal.short_label or q.goal.title }}</a>
+        {% endif %}
+        <span class="muted small">{{ q.current }} / {{ q.target }}</span>
+        <span class="status-badge status-{{ 'done' if q.rewarded else ('paused' if q.paused else 'open') }}">
+          {{ q.status_label }}
+        </span>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">Für diese Woche sind keine Wochenquests aktiv.</p>
+  {% endif %}
+</section>
+
+{% if week.quests %}
+<p class="muted small">
+  Quests werden hier nur angezeigt. Belohnt wird ausschließlich über die
+  bestehende Questlogik auf der <a href="/quests">Questseite</a>.
+</p>
+{% endif %}
+{% endblock %}

@@ -126,6 +126,28 @@ Erwartet: `0` und eine Indexdefinition, die auf `WHERE ended_at IS NULL` endet.
 Fehlt der Zusatz, wäre pro Ziel nur **eine** Pause überhaupt möglich — dann
 nicht weitermachen, sondern Abschnitt 8 (Rückweg).
 
+### 3e. Nach Revision 0005 (Wochenplanung der Gewohnheiten)
+
+`habit_schedule_days` startet leer. Bestehende Gewohnheiten bekommen **keine**
+Planung — sie bleiben flexibel und erscheinen wie bisher an jedem Tag. Weder
+Gewohnheiten noch Completions werden verändert.
+
+```bash
+docker compose exec wger-hero sqlite3 /data/wger_hero.db \
+  "SELECT count(*) FROM habit_schedule_days;
+   SELECT count(*) FROM habit_completions;
+   SELECT sql FROM sqlite_master WHERE type='table'
+     AND name='habit_schedule_days';" \
+                                           > "$LOG-09d-schedule.txt"    2>&1
+```
+
+Erwartet: `0`, die unveränderte Anzahl der Completions und eine Tabellen-
+definition mit `UNIQUE (habit_id, iso_weekday)`. Fehlt der Unique-Zusatz, könnte
+ein Wochentag doppelt gespeichert werden — dann nicht weitermachen, sondern
+Abschnitt 8 (Rückweg). Rückweg dieser Revision:
+`alembic downgrade 0004_goal_pause_intervals` plus Backup; das Löschen der
+Planungstabelle lässt Gewohnheiten und Completions unberührt (getestet).
+
 ## 4. Container neu bauen
 
 ```bash
