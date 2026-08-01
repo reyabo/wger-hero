@@ -62,7 +62,12 @@ class Quest(Base):
     period: Mapped[str] = mapped_column(String(20), default="weekly")
     target_value: Mapped[int] = mapped_column(Integer, default=1)
     current_value: Mapped[int] = mapped_column(Integer, default=0)
-    # Optional substring matched against habit titles for habit_count quests
+    # Stable link to one habit for habit_count quests. Takes precedence over
+    # match_text, which stays as a fallback for quests created before this
+    # existed. A renamed or archived habit keeps counting correctly.
+    habit_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    # Legacy fallback: substring matched against habit titles for habit_count
+    # quests, and the comma-separated term list for workout_variety.
     match_text: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     xp_reward: Mapped[int] = mapped_column(Integer, default=100)
     # JSON object of {stat_key: xp} awarded on completion
@@ -236,6 +241,33 @@ class JapaneseSaveImport(Base):
     # JSON object of {stat_key: xp} actually awarded for this import
     stat_rewards: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     warning_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class QuestCompletion(Base):
+    """One rewarded completion of a quest for one evaluated period.
+
+    Append-only: rows are never edited or deleted, not through the UI and not
+    by the services. The unique dedup_key is what actually prevents a
+    repeatable quest from paying twice for the same period — the check is in
+    the database, not only in a preceding Python query, so two near-simultaneous
+    completions cannot both slip through.
+    """
+
+    __tablename__ = "quest_completions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    quest_id: Mapped[int] = mapped_column(Integer, index=True)
+    # Evaluated window. NULL for a one-off quest, which has no window.
+    period_start: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    period_end: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    xp_awarded: Mapped[int] = mapped_column(Integer, default=0)
+    stat_xp_awarded: Mapped[int] = mapped_column(Integer, default=0)
+    # JSON object of {stat_key: xp} actually awarded, for auditing
+    stat_rewards: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Deterministic key, e.g. "quest:17:weekly:2026-07-27" — see quests.py
+    dedup_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

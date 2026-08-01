@@ -5,6 +5,7 @@ import re
 from datetime import date, datetime, timedelta
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Habit, HabitCompletion, HeroProfile, Quest, SyncEvent, XpEvent
@@ -24,7 +25,10 @@ logger = logging.getLogger(__name__)
 # the UI without touching code.
 HOME_HERO_MATCH_TEXT = "Tag 1,Tag 2,Tag 3,Beine,Push,Pull"
 
-QUEST_TYPE_CHOICES = ("manual", "habit_count", "workout_count", "workout_variety")
+QUEST_TYPE_CHOICES = (
+    "manual", "habit_count", "workout_count", "workout_variety",
+    "japanese_session_count",
+)
 PERIOD_CHOICES = ("daily", "weekly", "monthly", "once")
 
 DEFAULT_QUESTS = [
@@ -50,8 +54,27 @@ DEFAULT_QUESTS = [
 ]
 
 
+def app_today() -> date:
+    """Today in the configured application timezone.
+
+    Calendar weeks, period windows and dedup keys must all agree on when a day
+    starts. Using the server's local date would silently shift every boundary
+    if the container ran in another zone.
+    """
+    from zoneinfo import ZoneInfo
+
+    from app.config import get_settings
+
+    try:
+        tz = ZoneInfo(get_settings().APP_TIMEZONE)
+    except Exception:  # unknown zone name — fall back rather than crash
+        logger.warning("Unknown APP_TIMEZONE, falling back to system local date")
+        return date.today()
+    return datetime.now(tz).date()
+
+
 def _current_week_bounds() -> tuple[date, date]:
-    today = date.today()
+    today = app_today()
     start = today - timedelta(days=today.weekday())  # Monday
     end = start + timedelta(days=6)  # Sunday
     return start, end
@@ -190,7 +213,7 @@ def _period_window(quest: Quest) -> tuple[Optional[datetime], Optional[datetime]
     period = (quest.period or "weekly").lower()
     if period == "once":
         return None, None
-    today = date.today()
+    today = app_today()
     if period == "daily":
         start = today
     elif period == "monthly":
@@ -267,9 +290,18 @@ def _count_workout_variety_in_period(db: Session, quest: Quest) -> int:
 
 
 def _count_habit_completions_in_period(db: Session, quest: Quest) -> int:
+    """Count habit completions in the window.
+
+    A stable habit_id wins over match_text: it survives renaming and archiving,
+    where a title match would silently start counting the wrong rows or none at
+    all. match_text remains the fallback for quests created before habit_id
+    existed.
+    """
     start, end = _period_window(quest)
     q = db.query(HabitCompletion)
-    if quest.match_text:
+    if quest.habit_id is not None:
+        q = q.filter(HabitCompletion.habit_id == quest.habit_id)
+    elif quest.match_text:
         q = q.join(Habit, Habit.id == HabitCompletion.habit_id).filter(
             Habit.title.ilike(f"%{quest.match_text}%")
         )
@@ -280,12 +312,156 @@ def _count_habit_completions_in_period(db: Session, quest: Quest) -> int:
     return q.count()
 
 
-def _complete_quest(db: Session, hero: HeroProfile, quest: Quest, when: Optional[datetime] = None) -> None:
-    """Award a quest's global + stat XP and either close it or re-arm it.
+
+# ---------------------------------------------------------------------------
+# Japanese sessions as a quest source
+# ---------------------------------------------------------------------------
+
+def japanese_import_counts(record) -> bool:
+    """Whether one imported SAVE counts as a confirmed Japanese session.
+
+    THE counting rule — every caller must go through here so there is one
+    answer, not one per call site.
+
+    A row counts only when wger-hero itself scored it from session mode and
+    completion AND actually paid out. That excludes, in order of the fields it
+    reads:
+
+      * reward_calculation other than deterministic_session — baseline,
+        historical, warning and the legacy level-bar path. Legacy saves do earn
+        global XP for backward compatibility, but they carry no confirmed
+        session mode, so they are not evidence of a session.
+      * classification other than progress — duplicates and back-dated imports.
+      * xp_awarded == 0 — STATUS, aborted and no-performance sessions, which
+        are recorded as snapshots but represent no training.
+
+    Duplicates never reach this check at all: they produce no row.
+    """
+    from app.japanese_saves import CALC_DETERMINISTIC, CLASSIFICATION_PROGRESS
+
+    return (
+        (record.reward_calculation or "") == CALC_DETERMINISTIC
+        and (record.classification or "") == CLASSIFICATION_PROGRESS
+        and int(record.xp_awarded or 0) > 0
+    )
+
+
+def _count_japanese_sessions_in_period(db: Session, quest: Quest) -> int:
+    """Count confirmed Japanese sessions whose SAVE date falls in the window.
+
+    Uses save_date — the day the session happened — not the import timestamp,
+    so importing a few days late still credits the right week.
+    """
+    from app.models import JapaneseSaveImport
+
+    start, end = _period_window(quest)
+    q = db.query(JapaneseSaveImport)
+    if start is not None:
+        q = q.filter(JapaneseSaveImport.save_date >= start.date())
+    if end is not None:
+        q = q.filter(JapaneseSaveImport.save_date <= end.date())
+    return sum(1 for row in q.all() if japanese_import_counts(row))
+
+
+# ---------------------------------------------------------------------------
+# Completion records and deduplication
+# ---------------------------------------------------------------------------
+
+def completion_key(quest: Quest, start: Optional[datetime] = None) -> str:
+    """Deterministic key identifying "this quest, this period".
+
+    Derived from the quest id, its period type and the start of the evaluated
+    window, which _period_window() computes in the configured application
+    timezone — so the same calendar week always yields the same key.
+
+        quest:17:weekly:2026-07-27
+        quest:22:monthly:2026-08-01
+        quest:31:once
+
+    A one-off quest has no window and therefore exactly one key, which is what
+    stops it from ever being rewarded twice.
+
+    The date is normalized to the canonical start of the period — Monday for a
+    week, the 1st for a month. Without that, re-arming a repeatable quest mid
+    week would move period_start to "now" and produce a second key for the same
+    calendar week, paying out twice.
+    """
+    period = (quest.period or "weekly").lower()
+    if start is None:
+        start, _ = _period_window(quest)
+    if period == "once" or start is None:
+        return f"quest:{quest.id}:once"
+    return f"quest:{quest.id}:{period}:{_canonical_period_start(period, start.date()).isoformat()}"
+
+
+def _canonical_period_start(period: str, day: date) -> date:
+    """First day of the period `day` falls into, in the configured timezone."""
+    if period == "weekly":
+        return day - timedelta(days=day.weekday())
+    if period == "monthly":
+        return day.replace(day=1)
+    return day  # daily and anything else: the day itself
+
+
+def already_rewarded(db: Session, quest: Quest, key: Optional[str] = None) -> bool:
+    from app.models import QuestCompletion
+
+    key = key or completion_key(quest)
+    return (
+        db.query(QuestCompletion).filter(QuestCompletion.dedup_key == key).first()
+        is not None
+    )
+
+
+def _complete_quest(
+    db: Session, hero: HeroProfile, quest: Quest, when: Optional[datetime] = None
+) -> bool:
+    """Award a quest's global + stat XP once per period and close or re-arm it.
+
+    Returns True when a reward was actually booked, False when this period was
+    already rewarded.
+
+    Writes a QuestCompletion carrying the period's dedup_key in the same unit of
+    work as the XP. The unique index on that key is what makes the guarantee
+    hold: a preceding query alone would leave a window in which two concurrent
+    completions both see "not yet rewarded". If the insert loses that race the
+    whole unit is rolled back, so no partial XP survives.
 
     Does not commit — the caller owns the transaction.
     """
+    from app.models import QuestCompletion
+
     when = when or datetime.utcnow()
+    start, end = _period_window(quest)
+    key = completion_key(quest, start)
+
+    if already_rewarded(db, quest, key):
+        logger.info("Quest %s already rewarded for %s — skipping", quest.title, key)
+        return False
+
+    stat_rewards = parse_stat_rewards(quest.stat_rewards)
+
+    # Reserve the period first: if this violates the unique index we must not
+    # have touched the hero's XP yet.
+    completion = QuestCompletion(
+        quest_id=quest.id,
+        period_start=start,
+        period_end=end,
+        completed_at=when,
+        xp_awarded=quest.xp_reward,
+        stat_rewards=serialize_stat_rewards(stat_rewards),
+        dedup_key=key,
+        created_at=when,
+    )
+    db.add(completion)
+    try:
+        db.flush()
+    except IntegrityError:
+        # A concurrent completion won the race. Undo everything and report it
+        # as "already rewarded" rather than paying twice.
+        db.rollback()
+        logger.info("Concurrent completion for %s — no second reward", key)
+        return False
 
     hero.total_xp += quest.xp_reward
     db.add(
@@ -302,12 +478,13 @@ def _complete_quest(db: Session, hero: HeroProfile, quest: Quest, when: Optional
     )
     stat_total = award_stat_xp(
         db,
-        parse_stat_rewards(quest.stat_rewards),
+        stat_rewards,
         source="quest",
         source_id=quest.slug,
         title=quest.title,
         when=when,
     )
+    completion.stat_xp_awarded = stat_total
     hero.level = recalc_level(hero.total_xp)
 
     if quest.repeatable and (quest.period or "weekly").lower() != "once":
@@ -323,6 +500,7 @@ def _complete_quest(db: Session, hero: HeroProfile, quest: Quest, when: Optional
     logger.info(
         "Quest completed: %s (+%d XP, +%d stat XP)", quest.title, quest.xp_reward, stat_total
     )
+    return True
 
 
 def evaluate_quests(db: Session, hero: HeroProfile) -> list[str]:
@@ -350,12 +528,14 @@ def evaluate_quests(db: Session, hero: HeroProfile) -> list[str]:
             quest.current_value = _count_workouts_in_period(db, quest)
         elif qtype == "habit_count":
             quest.current_value = _count_habit_completions_in_period(db, quest)
+        elif qtype == "japanese_session_count":
+            quest.current_value = _count_japanese_sessions_in_period(db, quest)
         elif qtype == "manual":
             continue  # progressed only by explicit user action
 
         if quest.target_value and quest.current_value >= quest.target_value:
-            _complete_quest(db, hero, quest)
-            newly_completed.append(quest.title)
+            if _complete_quest(db, hero, quest):
+                newly_completed.append(quest.title)
 
     db.commit()
     return newly_completed
@@ -374,9 +554,9 @@ def complete_quest_manual(
             db.add(hero)
             db.flush()
     quest.current_value = max(quest.current_value, quest.target_value)
-    _complete_quest(db, hero, quest, when)
+    rewarded = _complete_quest(db, hero, quest, when)
     db.commit()
-    return True
+    return rewarded
 
 
 def _slugify(title: str) -> str:

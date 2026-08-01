@@ -65,17 +65,25 @@ Migration: nein. Neue Secrets: ja (nicht committen).
 
 Migration: ja (additiv).
 
-## 4 — Zusätzliche Quest-Quellen
+## 4 — Zusätzliche Quest-Quellen  ✅
 
-- [ ] `japanese_session_count` — nur zählbare Imports (nicht Baseline,
+- [x] `japanese_session_count` — nur zählbare Imports (nicht Baseline,
       Duplikat, historisch, Warnung, `STATUS`, abgebrochen); Regel zentral und
       DB-frei testbar
-- [ ] Stabile Habit-Bindung für `habit_count` (`match_text` bleibt Fallback)
-- [ ] Append-only `QuestCompletion` (Quest, Zeitraum, Zeitpunkt, XP, Stat-XP,
+- [x] Stabile Habit-Bindung für `habit_count` (`match_text` bleibt Fallback)
+- [x] Append-only `QuestCompletion` (Quest, Zeitraum, Zeitpunkt, XP, Stat-XP,
       Dedup-Schlüssel) — wiederholbare Quests nie doppelt belohnen
-- [ ] Tests: Nichtzählung je Sonderfall, Dedup, Bestandsquests unverändert
+- [x] Tests: Nichtzählung je Sonderfall, Dedup, Bestandsquests unverändert
 
-Migration: ja (neue Tabelle + additive Felder).
+Migration: `0003_quest_completions`, additiv, mit getestetem `downgrade()`.
+
+**Cutover für historische Abschlüsse.** Die Tabelle startet leer. Quests, die
+vor dieser Revision abgeschlossen wurden, haben keinen Completion-Datensatz —
+es wird keine Historie erfunden. Sie werden trotzdem nicht erneut belohnt,
+weil die bestehenden Wächter (`completed_at`, `active`) unverändert greifen.
+Ab dieser Revision ist der Datensatz die maßgebliche Quelle für „schon
+belohnt". Für Streaks und Meilensteine in Schritt 5 zählt entsprechend erst,
+was ab dem Cutover erfasst wurde.
 
 ## 5 — Momentum und Streaks
 

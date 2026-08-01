@@ -304,3 +304,77 @@ def test_goals_revision_downgrade_removes_only_what_it_added(db_url):
     assert "goals" not in tables
     assert {"habits", "quests", "hero_profile"} <= tables
     assert _snapshot(db_url) == before, "downgrade must not lose user data"
+
+
+# ---------------------------------------------------------------------------
+# Revision 0003: quest completions and the stable habit link
+# ---------------------------------------------------------------------------
+
+def test_quest_completions_revision_on_a_populated_database(db_url):
+    _seed_legacy_database(db_url)
+    before = _snapshot(db_url)
+
+    cfg = _alembic_config(db_url)
+    command.stamp(cfg, "0001_baseline")
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(db_url)
+    assert "quest_completions" in _tables(db_url)
+    quest_cols = {c["name"] for c in inspect(engine).get_columns("quests")}
+    assert "habit_id" in quest_cols
+    engine.dispose()
+
+    assert _snapshot(db_url) == before, "existing quest and XP data must survive"
+
+
+def test_dedup_key_is_unique_in_the_database(db_url):
+    """The guarantee has to come from the schema, not only from Python."""
+    from sqlalchemy.exc import IntegrityError
+
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(db_url)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO quest_completions (quest_id, dedup_key, xp_awarded,"
+            " stat_xp_awarded, completed_at, created_at)"
+            " VALUES (1, 'quest:1:weekly:2026-07-27', 100, 0,"
+            " '2026-07-27 10:00:00', '2026-07-27 10:00:00')"
+        ))
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO quest_completions (quest_id, dedup_key, xp_awarded,"
+                " stat_xp_awarded, completed_at, created_at)"
+                " VALUES (1, 'quest:1:weekly:2026-07-27', 100, 0,"
+                " '2026-07-27 11:00:00', '2026-07-27 11:00:00')"
+            ))
+        raise AssertionError("the unique index did not fire")
+    except IntegrityError:
+        pass
+    finally:
+        engine.dispose()
+
+
+def test_quest_completions_downgrade_keeps_user_data(db_url):
+    _seed_legacy_database(db_url)
+    before = _snapshot(db_url)
+
+    cfg = _alembic_config(db_url)
+    command.stamp(cfg, "0001_baseline")
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0002_goals")
+
+    tables = _tables(db_url)
+    assert "quest_completions" not in tables
+    assert "goals" in tables          # only this revision was rolled back
+    assert _snapshot(db_url) == before
+
+
+def test_full_downgrade_and_upgrade_round_trip(db_url):
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "base")
+    command.upgrade(cfg, "head")
+    assert {"goals", "quest_completions", "hero_profile"} <= _tables(db_url)

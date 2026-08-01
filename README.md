@@ -315,3 +315,61 @@ curl -H "Authorization: Token YOUR_TOKEN" \
 - No analytics or external tracking
 - Raw API payloads are not stored — only a sanitized summary
 - `.env` and `secrets/` are in `.gitignore`
+
+## Quest Completions and Deduplication
+
+Every rewarded quest period writes one append-only `QuestCompletion` row. Rows
+are never edited or deleted — not through the UI, not by the services.
+
+**Dedup key.** Derived deterministically from the quest id, its period type and
+the canonical start of the evaluated window, computed in `APP_TIMEZONE`:
+
+```
+quest:17:weekly:2026-07-27      # Monday of that week
+quest:22:monthly:2026-08-01     # 1st of that month
+quest:31:once                   # a one-off quest has exactly one key
+```
+
+The date is normalized to the start of the period, so re-arming a repeatable
+quest mid-week cannot produce a second key for the same calendar week.
+
+**The guarantee lives in the database.** `dedup_key` carries a unique index. A
+preceding "already rewarded?" query alone would leave a window in which two
+near-simultaneous completions both pass; the insert is attempted *before* any XP
+is touched, and if it loses that race the whole unit of work is rolled back. No
+partial XP can survive a failed completion.
+
+**Historic completions are not invented.** The table starts empty at revision
+`0003`. Quests finished earlier have no row and are not retro-filled; they are
+still not re-rewarded, because the existing `completed_at` / `active` guards
+continue to apply.
+
+## Stable Habit Binding
+
+`habit_count` quests can bind to one habit through `Quest.habit_id`. It takes
+precedence over `match_text`, which remains the fallback for quests created
+before the field existed. A stable id survives renaming and archiving, where a
+title match would silently start counting the wrong rows — or none at all.
+
+## Japanese Sessions as a Quest Source
+
+`japanese_session_count` counts confirmed Japanese sessions whose **`save_date`**
+falls inside the quest window, so importing a few days late still credits the
+right week.
+
+One rule, in `quests.japanese_import_counts()`. An import counts only when
+wger-hero itself scored it from session mode and completion **and** actually paid
+out:
+
+| Excluded | Why |
+|---|---|
+| `reward_calculation != deterministic_session` | baseline, historical, warning and the legacy level-bar path — no confirmed session mode |
+| `classification != progress` | duplicates and back-dated imports |
+| `xp_awarded == 0` | `STATUS`, aborted and no-performance sessions |
+
+Duplicates never reach the check at all — they produce no row.
+
+**No double reward.** The SAVE import stays the direct reward for a session. The
+quest only ever adds its own configured bonus when the period target is met; it
+never re-awards session XP, never modifies import rows and never recalculates
+attributes.
