@@ -37,6 +37,7 @@ from app.quests import (
     create_quest,
     delete_or_archive_quest,
     evaluate_quests,
+    migrate_seeded_quests,
     seed_quests,
     update_quest,
 )
@@ -80,6 +81,7 @@ async def lifespan(app: FastAPI):
         settings = get_settings()
         _ensure_hero(db, settings.HERO_NAME)
         seed_quests(db)
+        migrate_seeded_quests(db)
         seed_achievements(db)
         seed_default_habits(db)
     finally:

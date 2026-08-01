@@ -19,9 +19,12 @@ from app.xp import recalc_level
 
 logger = logging.getLogger(__name__)
 
-HOME_HERO_DAYS = {"tag 1", "tag 2", "tag 3", "beine", "push", "pull"}
+# Search terms for the seeded HOME HERO quest. Kept here only as the seed
+# value — the quest stores them in match_text, so a routine can be changed in
+# the UI without touching code.
+HOME_HERO_MATCH_TEXT = "Tag 1,Tag 2,Tag 3,Beine,Push,Pull"
 
-QUEST_TYPE_CHOICES = ("manual", "habit_count", "workout_count")
+QUEST_TYPE_CHOICES = ("manual", "habit_count", "workout_count", "workout_variety")
 PERIOD_CHOICES = ("daily", "weekly", "monthly", "once")
 
 DEFAULT_QUESTS = [
@@ -38,7 +41,8 @@ DEFAULT_QUESTS = [
         "slug": "home-hero-full-week",
         "title": "HOME HERO × SUPERMOVER 3 – Full Week",
         "description": "Complete Tag 1 – Beine, Tag 2 – Push, and Tag 3 – Pull in one week.",
-        "quest_type": "weekly",
+        "quest_type": "workout_variety",
+        "match_text": HOME_HERO_MATCH_TEXT,
         "target_value": 3,
         "xp_reward": 200,
         "attribute": "Strength",
@@ -69,6 +73,36 @@ def seed_quests(db: Session) -> None:
     db.commit()
 
 
+def migrate_seeded_quests(db: Session) -> int:
+    """Lift seeded quests onto newer mechanics. Idempotent, never destructive.
+
+    seed_quests() only ever inserts, so a quest created by an older version keeps
+    its old quest_type forever. HOME HERO used to be a hard-coded slug special
+    case; it is now an ordinary workout_variety quest whose day types live in
+    match_text. This raises an existing row to that shape exactly once.
+
+    Nothing is deleted, and XP, progress, period and active state are untouched.
+    Returns the number of quests changed.
+    """
+    changed = 0
+    quest = (
+        db.query(Quest).filter(Quest.slug == "home-hero-full-week").first()
+    )
+    if quest is not None and (quest.quest_type or "").lower() != "workout_variety":
+        quest.quest_type = "workout_variety"
+        # Only fill match_text if it is still empty — never overwrite terms the
+        # user has since edited.
+        if not (quest.match_text or "").strip():
+            quest.match_text = HOME_HERO_MATCH_TEXT
+        quest.updated_at = datetime.utcnow()
+        changed += 1
+
+    if changed:
+        db.commit()
+        logger.info("Migrated %d seeded quest(s) to data-driven matching", changed)
+    return changed
+
+
 def _count_workouts_this_week(db: Session) -> int:
     start, end = _current_week_bounds()
     return (
@@ -80,28 +114,6 @@ def _count_workouts_this_week(db: Session) -> int:
         )
         .count()
     )
-
-
-def _count_home_hero_days_this_week(db: Session) -> int:
-    """Count distinct HOME HERO day types completed this week (rough detection)."""
-    start, end = _current_week_bounds()
-    xp_events = (
-        db.query(XpEvent)
-        .filter(
-            XpEvent.source == "wger",
-            XpEvent.event_type == "workout_complete",
-            XpEvent.created_at >= datetime.combine(start, datetime.min.time()),
-            XpEvent.created_at <= datetime.combine(end, datetime.max.time()),
-        )
-        .all()
-    )
-    detected_days: set[str] = set()
-    for ev in xp_events:
-        title_lower = (ev.title or "").lower()
-        for day_kw in HOME_HERO_DAYS:
-            if day_kw in title_lower:
-                detected_days.add(day_kw)
-    return len(detected_days)
 
 
 def _period_end_from(start_dt: datetime, period: Optional[str]) -> Optional[datetime]:
@@ -185,6 +197,36 @@ def _count_workouts_in_period(db: Session, quest: Quest) -> int:
     return q.count()
 
 
+def _count_workout_variety_in_period(db: Session, quest: Quest) -> int:
+    """Count how many distinct terms from match_text appear in the window.
+
+    match_text is a comma-separated list of search terms (e.g. a routine's day
+    types). Each term is matched case-insensitively against the titles of the
+    workout_complete events in the quest's window and counts at most once, no
+    matter how often it occurs — three Push sessions are still one day type.
+
+    Returns 0 for an empty match_text rather than raising, so a half-configured
+    quest simply shows no progress.
+    """
+    terms = [t.strip().lower() for t in (quest.match_text or "").split(",")]
+    terms = [t for t in terms if t]
+    if not terms:
+        return 0
+
+    start, end = _period_window(quest)
+    q = db.query(XpEvent).filter(
+        XpEvent.source == "wger",
+        XpEvent.event_type == "workout_complete",
+    )
+    if start is not None:
+        q = q.filter(XpEvent.created_at >= start)
+    if end is not None:
+        q = q.filter(XpEvent.created_at <= end)
+
+    titles = [(ev.title or "").lower() for ev in q.all()]
+    return sum(1 for term in terms if any(term in title for title in titles))
+
+
 def _count_habit_completions_in_period(db: Session, quest: Quest) -> int:
     start, end = _period_window(quest)
     q = db.query(HabitCompletion)
@@ -255,7 +297,6 @@ def evaluate_quests(db: Session, hero: HeroProfile) -> list[str]:
     active_quests = db.query(Quest).filter(Quest.active == True).all()
 
     workouts_this_week = _count_workouts_this_week(db)
-    home_hero_days = _count_home_hero_days_this_week(db)
 
     for quest in active_quests:
         if quest.completed_at is not None:
@@ -264,8 +305,8 @@ def evaluate_quests(db: Session, hero: HeroProfile) -> list[str]:
         qtype = (quest.quest_type or "").lower()
         if quest.slug == "week-warrior":
             quest.current_value = workouts_this_week
-        elif quest.slug == "home-hero-full-week":
-            quest.current_value = home_hero_days
+        elif qtype == "workout_variety":
+            quest.current_value = _count_workout_variety_in_period(db, quest)
         elif qtype == "workout_count":
             quest.current_value = _count_workouts_in_period(db, quest)
         elif qtype == "habit_count":
