@@ -232,9 +232,14 @@ ever touched.
 | `START`, vollständig | +40 | +28 | +8 | +4 |
 | `BOSS`, vollständig | +80 | +56 | +16 | +8 |
 
-The first import is always a **baseline**: 0 global XP and 0 attribute XP. Saves
-without the two session lines fall back to the previous level-bar delta and are
-marked *Legacy-Berechnung*. Duplicate and back-dated saves never award anything.
+The first import is always a **baseline**: 0 global XP and 0 attribute XP.
+Duplicate and back-dated saves never award anything.
+
+Saves without the two session lines fall back to the previous level-bar delta and
+are marked *Legacy-Berechnung*. That path exists for backward compatibility only:
+it still grants **global XP**, but **no attribute XP** — its amount comes from the
+coach-maintained progress bar rather than a wger-hero rule, so only fully
+specified sessions move the radar.
 
 ## XP Rules (automatic, from wger)
 

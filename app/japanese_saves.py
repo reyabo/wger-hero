@@ -562,8 +562,15 @@ class DeltaResult:
 
     @property
     def awards_stat_xp(self) -> bool:
-        """Baseline credit is global-only; every other positive award splits."""
-        return self.xp_delta > 0 and self.reward_calculation != CALC_BASELINE
+        """Only a fully specified session moves the attributes.
+
+        Attribute XP requires a reward wger-hero derived itself from session
+        mode and completion. The legacy path still pays global XP for backward
+        compatibility, but its amount comes from the coach-maintained progress
+        bar — so it must not reach the radar. A baseline credit is likewise
+        global-only.
+        """
+        return self.xp_delta > 0 and self.reward_calculation == CALC_DETERMINISTIC
 
 
 def calculate_delta(

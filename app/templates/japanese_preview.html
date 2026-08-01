@@ -67,6 +67,13 @@
     </ul>
     <p class="muted small">Summe entspricht exakt den globalen XP dieser Sitzung.</p>
   </div>
+  {% elif preview.reward_calculation == 'legacy_level_delta' %}
+  <p class="muted small">
+    <strong>Legacy-Berechnung:</strong> Die globalen XP stammen aus der
+    Levelbalken-Differenz des Coaches, nicht aus einer wger-hero-Regel. Deshalb
+    werden hierfür <strong>keine Attribut-XP</strong> vergeben — nur vollständig
+    angegebene Sitzungen (Modus und Abschluss) verändern das Radar.
+  </p>
   {% else %}
   <p class="muted small">Diese Sitzung vergibt keine Attribut-XP.</p>
   {% endif %}

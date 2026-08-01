@@ -185,12 +185,47 @@ def test_reported_session_xp_is_stored_but_not_used(db):
     assert stat_totals(db) == {"knowledge": 28, "discipline": 8, "technique": 4}
 
 
-def test_legacy_save_still_uses_level_delta_and_awards_stats(db):
+def test_legacy_save_awards_global_xp_but_no_stat_xp(db):
+    """Backward compatibility only: the amount still comes from the coach's
+    progress bar, so it must not reach the radar."""
     import_save(db, save_with(xp=373, day="2026-07-01"))          # baseline
     result = import_save(db, save_with(xp=433, day="2026-07-02"))  # legacy delta = 60
     assert result.created.reward_calculation == "legacy_level_delta"
     assert result.xp_awarded == 60
-    assert stat_totals(db) == calculate_stat_rewards("knowledge_learning", 60)
+    assert hero(db).total_xp == 60                 # global XP still granted
+    assert stat_totals(db) == {}                   # but no attribute XP
+    assert db.query(StatXpEvent).count() == 0
+    assert result.created.stat_xp_awarded == 0
+
+
+def test_legacy_save_with_session_xp_also_awards_no_stat_xp(db):
+    import_save(db, save_with(xp=373, day="2026-07-01"))
+    result = import_save(db, save_with(xp=433, day="2026-07-02", session_xp=42))
+    assert result.created.reward_calculation == "legacy_level_delta"
+    assert result.xp_awarded == 42
+    assert hero(db).total_xp == 42
+    assert stat_totals(db) == {}
+
+
+def test_legacy_level_up_awards_no_stat_xp(db):
+    import_save(db, save_with(level=2, xp=990, day="2026-07-01"))
+    result = import_save(db, save_with(level=3, xp=20, day="2026-07-02"))
+    assert result.xp_awarded == 30
+    assert stat_totals(db) == {}
+
+
+def test_only_deterministic_sessions_move_the_radar(db):
+    """A legacy and a deterministic session of equal global XP differ on stats."""
+    # legacy: +40 global via the bar, no stats
+    import_save(db, save_with(xp=100, day="2026-07-01"))
+    import_save(db, save_with(xp=140, day="2026-07-02"))
+    assert hero(db).total_xp == 40
+    assert stat_totals(db) == {}
+
+    # deterministic START: also +40 global, but this one splits
+    import_save(db, save_with(mode="START", completion="vollständig", day="2026-07-03"))
+    assert hero(db).total_xp == 80
+    assert stat_totals(db) == calculate_stat_rewards("knowledge_learning", 40)
 
 
 def test_competence_deltas_do_not_change_stored_reward(db):
