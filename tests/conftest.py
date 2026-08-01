@@ -12,6 +12,10 @@ from sqlalchemy.orm import sessionmaker
 # way. "sqlite://" is pure in-memory and skips the mkdir path entirely.
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 os.environ.setdefault("WGER_BASE_URL", "https://wger.example.com")
+# Access protection is off by default in tests: without it every existing route
+# test would need a login round-trip and a CSRF token. tests/test_auth.py turns
+# it on explicitly and covers both modes.
+os.environ.setdefault("AUTH_ENABLED", "false")
 
 from app.models import Base  # noqa: E402  (import after env defaults)
 

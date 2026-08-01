@@ -24,6 +24,22 @@ class Settings(BaseSettings):
     # Only sync sessions on or after this date (ISO format: YYYY-MM-DD). Empty = all history.
     SYNC_FROM_DATE: Optional[date] = None
 
+    # --- Single-user access protection -------------------------------------
+    # Disabling this also disables CSRF enforcement: without a session there is
+    # nothing to bind a token to, and an unauthenticated app has no state worth
+    # protecting from cross-site requests. Intended for local tests only.
+    AUTH_ENABLED: bool = True
+    # Argon2 hash of the one password, from a read-only mounted secret file.
+    # Never a plaintext password, never the hash itself in env.
+    AUTH_PASSWORD_HASH_FILE: Optional[str] = None
+    # Random key signing the session cookie, from a secret file.
+    SESSION_SECRET_FILE: Optional[str] = None
+    SESSION_MAX_AGE_SECONDS: int = 604800  # 7 days
+    COOKIE_SECURE: bool = True
+    APP_TIMEZONE: str = "Europe/Berlin"
+    LOGIN_MAX_ATTEMPTS: int = 5
+    LOGIN_ATTEMPT_WINDOW_SECONDS: int = 300
+
     def get_token(self) -> str:
         # Prefer explicit file path, then Docker secret, then env var
         token_file: Optional[Path] = None

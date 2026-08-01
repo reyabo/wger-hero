@@ -7,9 +7,26 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 from sqlalchemy.orm import Session
 
 from app.achievements import check_achievements, seed_achievements
+from app.auth import (
+    CSRF_FIELD,
+    SESSION_COOKIE,
+    AuthConfigError,
+    LoginRateLimiter,
+    SessionData,
+    csrf_ok,
+    deserialize_session,
+    is_public_path,
+    is_state_changing,
+    load_password_hash,
+    load_session_secret,
+    new_session,
+    serialize_session,
+    verify_password,
+)
 from app.config import get_settings
 from app.database import get_db, init_db
 from app.habits import RECURRENCE_CHOICES, archive_habit, complete_habit, create_habit, delete_or_archive_habit, update_habit
@@ -107,6 +124,195 @@ app = FastAPI(title="wger-hero", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
 templates = Jinja2Templates(directory=str(_HERE / "templates"))
+
+_login_limiter = LoginRateLimiter()
+
+
+def _csrf_input(request: Request) -> Markup:
+    """Hidden CSRF field for a form. Empty string when auth (and thus CSRF) is off."""
+    token = getattr(request.state, "csrf_token", "")
+    if not token:
+        return Markup("")
+    return Markup(
+        f'<input type="hidden" name="{CSRF_FIELD}" value="{escape(token)}">'
+    )
+
+
+templates.env.globals["csrf_input"] = _csrf_input
+
+
+def _cookie_kwargs(settings) -> dict:
+    return {
+        "httponly": True,
+        "samesite": "lax",
+        "secure": bool(settings.COOKIE_SECURE),
+        "max_age": int(settings.SESSION_MAX_AGE_SECONDS),
+        "path": "/",
+    }
+
+
+def _set_session(response, session: SessionData, settings) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        serialize_session(session, load_session_secret(settings)),
+        **_cookie_kwargs(settings),
+    )
+
+
+async def _csrf_token_from_body(request: Request) -> str | None:
+    """Read the CSRF field without consuming the body for the route handler.
+
+    Middleware and route see different Request objects, so simply awaiting
+    request.form() here would drain the receive stream and leave the handler
+    with an empty body. Reading the raw body once and replaying it through a
+    replacement receive channel keeps the request intact downstream.
+    """
+    content_type = request.headers.get("content-type", "")
+    if not content_type.startswith(
+        ("application/x-www-form-urlencoded", "multipart/form-data")
+    ):
+        return None
+
+    body = await request.body()
+
+    async def replay() -> dict:
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    request._receive = replay  # noqa: SLF001 — the documented Starlette workaround
+
+    form = await request.form()
+    token = form.get(CSRF_FIELD)
+    # Re-arm the replay: request.form() consumed it again.
+    request._receive = replay  # noqa: SLF001
+    return token
+
+
+@app.middleware("http")
+async def access_control(request: Request, call_next):
+    """Single gate for authentication and CSRF.
+
+    Doing this in middleware rather than per-route means a newly added POST
+    route is protected by default instead of by remembering to decorate it.
+    """
+    settings = get_settings()
+
+    if not settings.AUTH_ENABLED:
+        request.state.csrf_token = ""
+        request.state.authenticated = True
+        return await call_next(request)
+
+    try:
+        secret = load_session_secret(settings)
+    except AuthConfigError as exc:
+        # Fail closed: without a signing key no session can be trusted.
+        logger.error("Auth is enabled but unusable: %s", exc)
+        return JSONResponse({"detail": "Auth not configured"}, status_code=503)
+
+    session = deserialize_session(
+        request.cookies.get(SESSION_COOKIE), secret, settings.SESSION_MAX_AGE_SECONDS
+    )
+    public = is_public_path(request.url.path)
+
+    # Everyone gets a CSRF token, including the anonymous login form.
+    issue_cookie = session is None
+    if session is None:
+        session = new_session(authenticated=False)
+    request.state.csrf_token = session.csrf
+    request.state.authenticated = session.authenticated
+
+    if is_state_changing(request.method):
+        submitted = await _csrf_token_from_body(request)
+        if not csrf_ok(session, submitted):
+            logger.warning("Rejected %s %s: CSRF check failed", request.method, request.url.path)
+            return _csrf_failure(request)
+
+    if not public and not session.authenticated:
+        if is_state_changing(request.method):
+            return JSONResponse({"detail": "Not authenticated"}, status_code=403)
+        return RedirectResponse(url="/login", status_code=303)
+
+    response = await call_next(request)
+
+    if issue_cookie:
+        _set_session(response, session, settings)
+    if not public:
+        # Authenticated pages must never be stored by a proxy or the SW.
+        response.headers["Cache-Control"] = "no-store, private"
+    return response
+
+
+def _csrf_failure(request: Request):
+    return JSONResponse(
+        {"detail": "Die Sitzung ist abgelaufen. Bitte die Seite neu laden."},
+        status_code=403,
+    )
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_form(request: Request):
+    settings = get_settings()
+    if not settings.AUTH_ENABLED:
+        return RedirectResponse(url="/", status_code=303)
+    if getattr(request.state, "authenticated", False):
+        return RedirectResponse(url="/", status_code=303)
+    return templates.TemplateResponse(request=request, name="login.html", context={})
+
+
+@app.post("/login")
+async def login_submit(request: Request):
+    settings = get_settings()
+    if not settings.AUTH_ENABLED:
+        return RedirectResponse(url="/", status_code=303)
+
+    client = request.client.host if request.client else "unknown"
+    if _login_limiter.is_blocked(client):
+        wait = _login_limiter.retry_after(client)
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "error": f"Zu viele Versuche. Bitte in {wait} Sekunden erneut versuchen."
+            },
+            status_code=429,
+        )
+
+    form = await request.form()
+    password = form.get("password") or ""
+
+    try:
+        stored = load_password_hash(settings)
+    except AuthConfigError as exc:
+        logger.error("Login impossible: %s", exc)
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={"error": "Anmeldung ist nicht konfiguriert."},
+            status_code=503,
+        )
+
+    if not verify_password(password, stored):
+        # Never log the attempt value, never distinguish causes to the user.
+        _login_limiter.record_failure(client)
+        logger.info("Failed login attempt")
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={"error": "Anmeldung fehlgeschlagen."},
+            status_code=401,
+        )
+
+    _login_limiter.reset(client)
+    response = RedirectResponse(url="/", status_code=303)
+    _set_session(response, new_session(authenticated=True), settings)
+    return response
+
+
+@app.post("/logout")
+async def logout(request: Request):
+    """POST only — a GET logout would be triggerable from any page."""
+    response = RedirectResponse(url="/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
 
 
 def _hero_context(hero: HeroProfile) -> dict:

@@ -38,18 +38,18 @@ Ziel: additive, reversible Migrationen; `_ADDED_COLUMNS` als dokumentierte
 
 Migration: ja (Baseline). Rollback: `alembic downgrade` + Backup.
 
-## 2 — Zugriffsschutz
+## 2 — Zugriffsschutz  ✅
 
-- [ ] Argon2-Hash aus Secret-Datei, Session-Key aus Secret-Datei
-- [ ] Login / POST-Logout, keine Registrierung, keine Passwortänderung
-- [ ] Signierte Sitzung, Cookie `HttpOnly` + `SameSite=Lax` + `Secure` (Prod)
-- [ ] Login-Versuche begrenzen (in-process, kein zusätzlicher Dienst)
-- [ ] CSRF für **alle** zustandsändernden Formulare, auch bestehende
-- [ ] Öffentlich nur: `/healthz`, `/login`, statische Assets, Manifest, SW, Offline
-- [ ] Neue Variablen: `AUTH_ENABLED`, `AUTH_PASSWORD_HASH_FILE`,
+- [x] Argon2-Hash aus Secret-Datei, Session-Key aus Secret-Datei
+- [x] Login / POST-Logout, keine Registrierung, keine Passwortänderung
+- [x] Signierte Sitzung, Cookie `HttpOnly` + `SameSite=Lax` + `Secure` (Prod)
+- [x] Login-Versuche begrenzen (in-process, kein zusätzlicher Dienst)
+- [x] CSRF für **alle** zustandsändernden Formulare, auch bestehende
+- [x] Öffentlich nur: `/healthz`, `/login`, statische Assets, Manifest, SW, Offline
+- [x] Neue Variablen: `AUTH_ENABLED`, `AUTH_PASSWORD_HASH_FILE`,
       `SESSION_SECRET_FILE`, `SESSION_MAX_AGE_SECONDS`, `COOKIE_SECURE`,
       `APP_TIMEZONE`
-- [ ] Tests: ungeschützt/geschützt, Login, Fehlpasswort, Logout, manipulierte
+- [x] Tests: ungeschützt/geschützt, Login, Fehlpasswort, Logout, manipulierte
       Sitzung, CSRF, Cookie-Flags, `AUTH_ENABLED=false`
 
 Migration: nein. Neue Secrets: ja (nicht committen).

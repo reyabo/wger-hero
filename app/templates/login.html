@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Anmelden — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>Anmelden</h1>
+</div>
+
+{% if error %}
+<div class="alert alert-error" role="alert">{{ error }}</div>
+{% endif %}
+
+<section class="card login-card">
+  <form method="POST" action="/login" class="form">
+    {{ csrf_input(request) }}
+    <div class="form-row">
+      <label for="password">Passwort</label>
+      <input type="password" id="password" name="password"
+             autocomplete="current-password" required autofocus>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Anmelden</button>
+    </div>
+  </form>
+  <p class="muted small">
+    Einbenutzerbetrieb. Es gibt keine Registrierung und keine Passwortänderung
+    über die Oberfläche — das Passwort wird als Argon2-Hash aus einer
+    schreibgeschützten Datei geprüft.
+  </p>
+</section>
+
+{% endblock %}

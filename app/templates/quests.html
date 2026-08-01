@@ -38,11 +38,13 @@
     <div class="quest-actions">
       {% if quest.quest_type == "manual" %}
       <form method="POST" action="/quests/{{ quest.id }}/complete">
+      {{ csrf_input(request) }}
         <button type="submit" class="btn btn-primary btn-sm">Complete</button>
       </form>
       {% endif %}
       <a href="/quests/{{ quest.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
       <form method="POST" action="/quests/{{ quest.id }}/delete" onsubmit="return confirm('Delete or archive this quest?')">
+      {{ csrf_input(request) }}
         <button type="submit" class="btn btn-ghost btn-sm">Delete</button>
       </form>
     </div>
@@ -63,6 +65,7 @@
     <p class="quest-desc muted">{{ quest.description }}</p>
     <div class="quest-actions">
       <form method="POST" action="/quests/{{ quest.id }}/delete" onsubmit="return confirm('Archive this quest?')">
+      {{ csrf_input(request) }}
         <button type="submit" class="btn btn-ghost btn-sm">Delete</button>
       </form>
     </div>
