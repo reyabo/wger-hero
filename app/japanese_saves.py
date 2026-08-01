@@ -280,8 +280,13 @@ class JapaneseSave:
 # Parser
 # ---------------------------------------------------------------------------
 
-# "Lv 2" / "Lv. 2" / "Lv.2"
-_LV = r"Lv\.?\s*(\d+)"
+# "Lv 2" / "Lv. 2" / "Lv.2" / "Level 2"
+_LV = r"(?:Lv\.?|Level)\s*(\d+)"
+
+# The Bunpro count is written either as bare "5 Punkte" or, in newer coach
+# output, as "10 Grammatikpunkte im SRS". Same number, same meaning — only the
+# wording differs, so it is a wording variant of one field, not a second field.
+_BUNPRO_POINTS = r"(?P<points>-?\d+)\s*(?:Grammatik)?Punkte?(?:\s+im\s+SRS)?"
 
 _PATTERNS: dict[str, re.Pattern] = {
     "datum": re.compile(
@@ -291,7 +296,7 @@ _PATTERNS: dict[str, re.Pattern] = {
     ),
     "wanikani": re.compile(
         r"^WaniKani:\s*" + _LV + r"\s*\|\s*Bunpro:\s*"
-        r"(?P<bunpro>[A-Za-z0-9]+)\s*,\s*(?P<points>-?\d+)\s*Punkte?\s*$",
+        r"(?P<bunpro>[A-Za-z0-9]+)\s*,\s*" + _BUNPRO_POINTS + r"\s*$",
         re.IGNORECASE,
     ),
     "charakter": re.compile(

@@ -196,6 +196,25 @@ Tagesquest: Erfüllt – Mini-Boss „Partikel-Golem“ besiegt.
 === END SAVE ===
 ```
 
+### Accepted wording variants
+
+The WaniKani/Bunpro line tolerates the coach's alternative phrasing. All four
+lines below are read identically (WaniKani level `2`, Bunpro level `N5`,
+`10` Bunpro points):
+
+```
+WaniKani: Lv 2 | Bunpro: N5, 10 Punkte
+WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS
+WaniKani: Lv 2|Bunpro: N5, 1 Grammatikpunkt im SRS
+WaniKani: Level 2 | Bunpro: N5, 10 Grammatikpunkte im SRS
+```
+
+`Lv`, `Lv.` and `Level` are interchangeable, `Punkt`/`Punkte`,
+`Grammatikpunkt`/`Grammatikpunkte` and the optional suffix `im SRS` are all
+accepted, and whitespace around `|` and `,` is optional. The number itself
+still has to be a non-negative integer — spelled-out numbers, a missing Bunpro
+count and negative values are rejected with a German error naming the line.
+
 ### Reward rules (deterministic, computed by wger-hero)
 
 XP comes from **session mode and completion only**. The five competence scores

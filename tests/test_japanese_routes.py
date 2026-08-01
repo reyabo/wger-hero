@@ -348,3 +348,55 @@ def test_archive_route_deactivates_only_the_seeded_habit(env):
 def test_archive_route_is_safe_without_habit(env):
     client, _ = env
     assert client.post("/japanese/archive-habit", follow_redirects=False).status_code == 303
+
+
+# ---------------------------------------------------------------------------
+# SRS grammar-point wording end to end (regression)
+# ---------------------------------------------------------------------------
+
+SRS_SAVE = VALID_SAVE.replace(
+    "WaniKani: Lv 1 | Bunpro: N5, 5 Punkte",
+    "WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS",
+)
+
+
+def test_preview_accepts_the_srs_wording(env):
+    client, _ = env
+    resp = client.post("/japanese/preview", data={"raw_save": SRS_SAVE})
+    assert resp.status_code == 200
+    assert "konnte nicht gelesen werden" not in resp.text
+
+
+def test_import_accepts_the_srs_wording(env):
+    client, Session = env
+    resp = client.post(
+        "/japanese/import", data={"raw_save": SRS_SAVE}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+
+    db = Session()
+    record = db.query(JapaneseSaveImport).one()
+    assert record.wanikani_level == 2
+    assert record.bunpro_level == "N5"
+    assert record.bunpro_points == 10
+    db.close()
+
+
+def test_srs_wording_keeps_the_baseline_rule(env):
+    """The first import stays a baseline: snapshot only, no XP."""
+    client, Session = env
+    client.post("/japanese/import", data={"raw_save": SRS_SAVE})
+    db = Session()
+    assert db.query(HeroProfile).first().total_xp == 0
+    assert db.query(XpEvent).count() == 0
+    db.close()
+
+
+def test_srs_wording_is_still_detected_as_a_duplicate(env):
+    client, Session = env
+    client.post("/japanese/import", data={"raw_save": SRS_SAVE})
+    resp = client.post("/japanese/preview", data={"raw_save": SRS_SAVE})
+    assert "Duplikat" in resp.text or "bereits" in resp.text.lower()
+    db = Session()
+    assert db.query(JapaneseSaveImport).count() == 1
+    db.close()
