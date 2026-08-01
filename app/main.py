@@ -29,6 +29,22 @@ from app.auth import (
 )
 from app.config import get_settings
 from app.database import get_db, init_db
+from app.goals import (
+    GOAL_STATUSES,
+    STATUS_ACTIVE,
+    STATUS_ARCHIVED,
+    STATUS_LABELS,
+    STATUS_PAUSED,
+    create_goal,
+    get_by_slug,
+    goal_progress,
+    habits_for_goal,
+    list_goals,
+    milestones_for_goal,
+    quests_for_goal,
+    set_status,
+    update_goal,
+)
 from app.habits import RECURRENCE_CHOICES, archive_habit, complete_habit, create_habit, delete_or_archive_habit, update_habit
 from app.japanese_import import (
     get_latest_import,
@@ -39,6 +55,7 @@ from app.japanese_import import (
 from app.japanese_saves import SaveParseError
 from app.models import (
     Achievement,
+    Goal,
     Habit,
     HabitCompletion,
     HeroProfile,
@@ -903,6 +920,120 @@ async def japanese_import_detail(
             "record_stat_rewards": parse_stat_rewards(record.stat_rewards),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Goals
+# ---------------------------------------------------------------------------
+
+@app.get("/goals", response_class=HTMLResponse)
+async def goals_page(request: Request, db: Session = Depends(get_db)):
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    show_archived = request.query_params.get("archived") == "1"
+    goals = list_goals(db, include_archived=show_archived)
+    return templates.TemplateResponse(
+        request=request,
+        name="goals.html",
+        context={
+            **_hero_context(hero),
+            "goals": goals,
+            "progress": {g.id: goal_progress(db, g) for g in goals},
+            "status_labels": STATUS_LABELS,
+            "show_archived": show_archived,
+        },
+    )
+
+
+@app.get("/goals/new", response_class=HTMLResponse)
+async def goal_new(request: Request, db: Session = Depends(get_db)):
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    return templates.TemplateResponse(
+        request=request,
+        name="goal_form.html",
+        context={**_hero_context(hero), "goal": None,
+                 "form_action": "/goals/new", "heading": "Neues Ziel"},
+    )
+
+
+@app.post("/goals/new")
+async def goal_create(request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    title = (form.get("title") or "").strip()
+    if not title:
+        return RedirectResponse(url="/goals/new", status_code=303)
+    goal = create_goal(
+        db,
+        title=title,
+        description=form.get("description"),
+        short_label=form.get("short_label"),
+        sort_order=_int_field(form, "sort_order", 0),
+    )
+    return RedirectResponse(url=f"/goals/{goal.slug}", status_code=303)
+
+
+@app.get("/goals/{slug}", response_class=HTMLResponse)
+async def goal_detail(slug: str, request: Request, db: Session = Depends(get_db)):
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    goal = get_by_slug(db, slug)
+    if goal is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="goal_detail.html",
+        context={
+            **_hero_context(hero),
+            "goal": goal,
+            "progress": goal_progress(db, goal),
+            "habits": habits_for_goal(db, goal),
+            "quests": quests_for_goal(db, goal),
+            "milestones": milestones_for_goal(db, goal),
+            "status_labels": STATUS_LABELS,
+        },
+    )
+
+
+@app.get("/goals/{slug}/edit", response_class=HTMLResponse)
+async def goal_edit(slug: str, request: Request, db: Session = Depends(get_db)):
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    goal = get_by_slug(db, slug)
+    if goal is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="goal_form.html",
+        context={**_hero_context(hero), "goal": goal,
+                 "form_action": f"/goals/{goal.slug}/edit", "heading": "Ziel bearbeiten"},
+    )
+
+
+@app.post("/goals/{slug}/edit")
+async def goal_update(slug: str, request: Request, db: Session = Depends(get_db)):
+    goal = get_by_slug(db, slug)
+    if goal is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    form = await request.form()
+    update_goal(
+        db,
+        goal,
+        title=(form.get("title") or goal.title),
+        description=form.get("description"),
+        short_label=form.get("short_label"),
+        sort_order=_int_field(form, "sort_order", goal.sort_order),
+    )
+    return RedirectResponse(url=f"/goals/{goal.slug}", status_code=303)
+
+
+@app.post("/goals/{slug}/status")
+async def goal_set_status(slug: str, request: Request, db: Session = Depends(get_db)):
+    """Pause, resume, complete or archive. Never deletes anything."""
+    goal = get_by_slug(db, slug)
+    if goal is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    form = await request.form()
+    target = (form.get("status") or "").strip()
+    if not set_status(db, goal, target):
+        raise HTTPException(status_code=400, detail="Unzulässiger Statuswechsel")
+    return RedirectResponse(url=f"/goals/{goal.slug}", status_code=303)
 
 
 @app.get("/stats", response_class=HTMLResponse)

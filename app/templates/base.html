@@ -12,6 +12,7 @@
       <a href="/" class="site-logo">⚔ wger-hero</a>
       <nav>
         <a href="/" {% if request.url.path == '/' %}class="active"{% endif %}>Übersicht</a>
+        <a href="/goals" {% if request.url.path.startswith('/goals') %}class="active"{% endif %}>Ziele</a>
         <a href="/habits" {% if request.url.path.startswith('/habits') %}class="active"{% endif %}>Habits</a>
         <a href="/quests" {% if request.url.path.startswith('/quests') %}class="active"{% endif %}>Quests</a>
         <a href="/achievements" {% if request.url.path.startswith('/achievements') %}class="active"{% endif %}>Achievements</a>

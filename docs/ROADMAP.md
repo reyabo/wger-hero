@@ -54,14 +54,14 @@ Migration: ja (Baseline). Rollback: `alembic downgrade` + Backup.
 
 Migration: nein. Neue Secrets: ja (nicht committen).
 
-## 3 — Ziele und Meilensteine
+## 3 — Ziele und Meilensteine  ✅
 
-- [ ] Modell `Goal` (Slug, Titel, Beschreibung, Status, Sortierung, Kurzlabel)
-- [ ] Additive Felder `goal_id`, `is_milestone`, `sort_order` an Habit/Quest
-- [ ] `/goals`, Detailseite, anlegen, bearbeiten, pausieren, reaktivieren,
+- [x] Modell `Goal` (Slug, Titel, Beschreibung, Status, Sortierung, Kurzlabel)
+- [x] Additive Felder `goal_id`, `is_milestone`, `sort_order` an Habit/Quest
+- [x] `/goals`, Detailseite, anlegen, bearbeiten, pausieren, reaktivieren,
       archivieren (**nie** löschen)
-- [ ] Pausiertes Ziel: keine Mahnung, kein XP-Verlust, Historie bleibt
-- [ ] Tests: CRUD, Statuswechsel, Archivierung ohne Datenverlust, Zuordnung
+- [x] Pausiertes Ziel: keine Mahnung, kein XP-Verlust, Historie bleibt
+- [x] Tests: CRUD, Statuswechsel, Archivierung ohne Datenverlust, Zuordnung
 
 Migration: ja (additiv).
 
