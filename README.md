@@ -392,3 +392,41 @@ Duplicates never reach the check at all — they produce no row.
 quest only ever adds its own configured bonus when the period target is met; it
 never re-awards session XP, never modifies import rows and never recalculates
 attributes.
+
+## Streaks and Momentum
+
+Two deliberately different answers to "how is it going".
+
+**Streak** is strict: consecutive fully satisfied calendar weeks (Mon–Sun in
+`APP_TIMEZONE`). A week counts when every weekly quest of the goal was rewarded
+in it. The running week counts only once it is already satisfied — an unfinished
+week never ends a streak. The best streak stays visible after a break.
+
+**Momentum** is forgiving on purpose, so one missed week is not a reason to give
+up. It is a weighted average over the last four **completed** weeks:
+
+| Week | Weight |
+|---|---:|
+| last week | 40 % |
+| the week before | 30 % |
+| two weeks before | 20 % |
+| three weeks before | 10 % |
+
+Each week contributes its fulfilment **capped at 100 %** — over-delivering in one
+week cannot paper over another. The result is 0–100 and is explained in the UI,
+including a per-week breakdown of what counted and what did not.
+
+Rules that keep it from feeling punitive:
+
+- The **running week is never scored**; it cannot be a failure yet.
+- **Paused weeks are removed** from the calculation and the remaining weights are
+  renormalized, so a deliberate break neither helps nor hurts.
+- **Missing history is not a failure** — weeks before a goal existed are treated
+  the same way and reported as "keine Daten".
+- With nothing scorable, momentum is **`None`** ("noch nicht genug Daten"), never
+  `0`, because zero reads as failure.
+- Nothing here can produce negative XP or a negative value.
+
+The scoring rules live in `app/momentum.py` and are pure — dates and numbers in,
+numbers out, no database and no clock of their own. `app/goal_progress.py` is the
+thin layer that maps stored `QuestCompletion` history onto them.
