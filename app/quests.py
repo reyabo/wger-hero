@@ -19,9 +19,12 @@ from app.xp import recalc_level
 
 logger = logging.getLogger(__name__)
 
-HOME_HERO_DAYS = {"tag 1", "tag 2", "tag 3", "beine", "push", "pull"}
+# Search terms for the seeded HOME HERO quest. Kept here only as the seed
+# value — the quest stores them in match_text, so a routine can be changed in
+# the UI without touching code.
+HOME_HERO_MATCH_TEXT = "Tag 1,Tag 2,Tag 3,Beine,Push,Pull"
 
-QUEST_TYPE_CHOICES = ("manual", "habit_count", "workout_count")
+QUEST_TYPE_CHOICES = ("manual", "habit_count", "workout_count", "workout_variety")
 PERIOD_CHOICES = ("daily", "weekly", "monthly", "once")
 
 DEFAULT_QUESTS = [
@@ -38,7 +41,8 @@ DEFAULT_QUESTS = [
         "slug": "home-hero-full-week",
         "title": "HOME HERO × SUPERMOVER 3 – Full Week",
         "description": "Complete Tag 1 – Beine, Tag 2 – Push, and Tag 3 – Pull in one week.",
-        "quest_type": "weekly",
+        "quest_type": "workout_variety",
+        "match_text": HOME_HERO_MATCH_TEXT,
         "target_value": 3,
         "xp_reward": 200,
         "attribute": "Strength",
@@ -69,6 +73,36 @@ def seed_quests(db: Session) -> None:
     db.commit()
 
 
+def migrate_seeded_quests(db: Session) -> int:
+    """Lift seeded quests onto newer mechanics. Idempotent, never destructive.
+
+    seed_quests() only ever inserts, so a quest created by an older version keeps
+    its old quest_type forever. HOME HERO used to be a hard-coded slug special
+    case; it is now an ordinary workout_variety quest whose day types live in
+    match_text. This raises an existing row to that shape exactly once.
+
+    Nothing is deleted, and XP, progress, period and active state are untouched.
+    Returns the number of quests changed.
+    """
+    changed = 0
+    quest = (
+        db.query(Quest).filter(Quest.slug == "home-hero-full-week").first()
+    )
+    if quest is not None and (quest.quest_type or "").lower() != "workout_variety":
+        quest.quest_type = "workout_variety"
+        # Only fill match_text if it is still empty — never overwrite terms the
+        # user has since edited.
+        if not (quest.match_text or "").strip():
+            quest.match_text = HOME_HERO_MATCH_TEXT
+        quest.updated_at = datetime.utcnow()
+        changed += 1
+
+    if changed:
+        db.commit()
+        logger.info("Migrated %d seeded quest(s) to data-driven matching", changed)
+    return changed
+
+
 def _count_workouts_this_week(db: Session) -> int:
     start, end = _current_week_bounds()
     return (
@@ -80,28 +114,6 @@ def _count_workouts_this_week(db: Session) -> int:
         )
         .count()
     )
-
-
-def _count_home_hero_days_this_week(db: Session) -> int:
-    """Count distinct HOME HERO day types completed this week (rough detection)."""
-    start, end = _current_week_bounds()
-    xp_events = (
-        db.query(XpEvent)
-        .filter(
-            XpEvent.source == "wger",
-            XpEvent.event_type == "workout_complete",
-            XpEvent.created_at >= datetime.combine(start, datetime.min.time()),
-            XpEvent.created_at <= datetime.combine(end, datetime.max.time()),
-        )
-        .all()
-    )
-    detected_days: set[str] = set()
-    for ev in xp_events:
-        title_lower = (ev.title or "").lower()
-        for day_kw in HOME_HERO_DAYS:
-            if day_kw in title_lower:
-                detected_days.add(day_kw)
-    return len(detected_days)
 
 
 def _period_end_from(start_dt: datetime, period: Optional[str]) -> Optional[datetime]:
@@ -123,6 +135,45 @@ def _period_end_from(start_dt: datetime, period: Optional[str]) -> Optional[date
         wk_start = start - timedelta(days=start.weekday())
         end = wk_start + timedelta(days=6)
     return datetime.combine(end, datetime.max.time())
+
+
+def parse_period_range(
+    start_raw: Optional[str], end_raw: Optional[str]
+) -> tuple[Optional[datetime], Optional[datetime], Optional[str]]:
+    """Validate an explicit ISO date range from a form.
+
+    Returns ``(start, end, error)``. Both empty is valid and yields
+    ``(None, None, None)``. A range is only accepted when both dates are given
+    and ``end >= start``; anything else returns a German error message and no
+    dates, so the caller can re-render the form instead of silently correcting.
+
+    start is normalized to the beginning of its day and end to the end of its
+    day, matching _period_end_from(), so a range is inclusive on both sides.
+    """
+    start_raw = (start_raw or "").strip()
+    end_raw = (end_raw or "").strip()
+
+    if not start_raw and not end_raw:
+        return None, None, None
+    if not start_raw or not end_raw:
+        return None, None, (
+            "Für einen festen Zeitraum müssen Start- und Enddatum gesetzt sein."
+        )
+
+    try:
+        start = date.fromisoformat(start_raw)
+        end = date.fromisoformat(end_raw)
+    except ValueError:
+        return None, None, "Ungültiges Datum (erwartet: JJJJ-MM-TT)."
+
+    if end < start:
+        return None, None, "Das Enddatum darf nicht vor dem Startdatum liegen."
+
+    return (
+        datetime.combine(start, datetime.min.time()),
+        datetime.combine(end, datetime.max.time()),
+        None,
+    )
 
 
 def _period_window(quest: Quest) -> tuple[Optional[datetime], Optional[datetime]]:
@@ -151,13 +202,68 @@ def _period_window(quest: Quest) -> tuple[Optional[datetime], Optional[datetime]
 
 
 def _count_workouts_in_period(db: Session, quest: Quest) -> int:
+    """Count workouts in the quest's window, optionally restricted by name.
+
+    Without ``match_text`` this counts SyncEvent rows, exactly as before — one
+    row per imported wger session.
+
+    With ``match_text`` it counts XpEvent rows instead. SyncEvent carries no
+    title (only source, source_id, source_hash, synced_at, raw_summary,
+    xp_awarded, last_error), so there is nothing there to match a routine name
+    against. The workout name lives on XpEvent.title, which sync.py fills from
+    the wger session, so restricting a quest to one routine has to go through
+    the workout_complete events.
+    """
     start, end = _period_window(quest)
+
+    if quest.match_text:
+        q = db.query(XpEvent).filter(
+            XpEvent.source == "wger",
+            XpEvent.event_type == "workout_complete",
+            XpEvent.title.ilike(f"%{quest.match_text}%"),
+        )
+        if start is not None:
+            q = q.filter(XpEvent.created_at >= start)
+        if end is not None:
+            q = q.filter(XpEvent.created_at <= end)
+        return q.count()
+
     q = db.query(SyncEvent).filter(SyncEvent.source == "wger")
     if start is not None:
         q = q.filter(SyncEvent.synced_at >= start)
     if end is not None:
         q = q.filter(SyncEvent.synced_at <= end)
     return q.count()
+
+
+def _count_workout_variety_in_period(db: Session, quest: Quest) -> int:
+    """Count how many distinct terms from match_text appear in the window.
+
+    match_text is a comma-separated list of search terms (e.g. a routine's day
+    types). Each term is matched case-insensitively against the titles of the
+    workout_complete events in the quest's window and counts at most once, no
+    matter how often it occurs — three Push sessions are still one day type.
+
+    Returns 0 for an empty match_text rather than raising, so a half-configured
+    quest simply shows no progress.
+    """
+    terms = [t.strip().lower() for t in (quest.match_text or "").split(",")]
+    terms = [t for t in terms if t]
+    if not terms:
+        return 0
+
+    start, end = _period_window(quest)
+    q = db.query(XpEvent).filter(
+        XpEvent.source == "wger",
+        XpEvent.event_type == "workout_complete",
+    )
+    if start is not None:
+        q = q.filter(XpEvent.created_at >= start)
+    if end is not None:
+        q = q.filter(XpEvent.created_at <= end)
+
+    titles = [(ev.title or "").lower() for ev in q.all()]
+    return sum(1 for term in terms if any(term in title for title in titles))
 
 
 def _count_habit_completions_in_period(db: Session, quest: Quest) -> int:
@@ -230,7 +336,6 @@ def evaluate_quests(db: Session, hero: HeroProfile) -> list[str]:
     active_quests = db.query(Quest).filter(Quest.active == True).all()
 
     workouts_this_week = _count_workouts_this_week(db)
-    home_hero_days = _count_home_hero_days_this_week(db)
 
     for quest in active_quests:
         if quest.completed_at is not None:
@@ -239,8 +344,8 @@ def evaluate_quests(db: Session, hero: HeroProfile) -> list[str]:
         qtype = (quest.quest_type or "").lower()
         if quest.slug == "week-warrior":
             quest.current_value = workouts_this_week
-        elif quest.slug == "home-hero-full-week":
-            quest.current_value = home_hero_days
+        elif qtype == "workout_variety":
+            quest.current_value = _count_workout_variety_in_period(db, quest)
         elif qtype == "workout_count":
             quest.current_value = _count_workouts_in_period(db, quest)
         elif qtype == "habit_count":
@@ -325,6 +430,8 @@ def create_quest(
     category: Optional[str] = None,
     duration_size: Optional[str] = None,
     effort: Optional[str] = None,
+    period_start: Optional[datetime] = None,
+    period_end: Optional[datetime] = None,
 ) -> Quest:
     """Create and persist a user-defined quest."""
     xp, computed_stats = _resolve_quest_xp(
@@ -350,6 +457,8 @@ def create_quest(
         category=category if category in CATEGORY_CHOICES else None,
         duration_size=duration_size if duration_size in DURATION_CHOICES else None,
         effort=effort if effort in EFFORT_CHOICES else None,
+        period_start=period_start,
+        period_end=period_end,
     )
     db.add(quest)
     db.commit()
@@ -374,6 +483,8 @@ def update_quest(
     category: Optional[str] = None,
     duration_size: Optional[str] = None,
     effort: Optional[str] = None,
+    period_start: Optional[datetime] = None,
+    period_end: Optional[datetime] = None,
 ) -> Quest:
     """Update an existing quest in place (slug is preserved)."""
     xp, computed_stats = _resolve_quest_xp(
@@ -395,6 +506,11 @@ def update_quest(
     quest.category = category if category in CATEGORY_CHOICES else None
     quest.duration_size = duration_size if duration_size in DURATION_CHOICES else None
     quest.effort = effort if effort in EFFORT_CHOICES else None
+    # An explicit window wins in _period_window(), so a stale one left over from
+    # a previous "once" range would silently pin a recurring quest to it. The
+    # caller passes None for every period other than "once", which clears it.
+    quest.period_start = period_start
+    quest.period_end = period_end
     quest.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(quest)

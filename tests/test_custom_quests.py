@@ -178,3 +178,89 @@ class TestWorkoutCountQuests:
         week_warrior = db.query(Quest).filter(Quest.slug == "week-warrior").first()
         assert week_warrior.completed_at is not None
         assert week_warrior.active is False
+
+
+def _add_workout_events(db, titles, when=None):
+    """Add workout_complete XpEvents — this is where the workout name lives."""
+    from app.models import XpEvent
+
+    for i, title in enumerate(titles):
+        db.add(
+            XpEvent(
+                event_type="workout_complete",
+                source="wger",
+                source_id=f"w{i}-{title}",
+                xp=100,
+                attribute="Strength",
+                title=title,
+                created_at=when or datetime.utcnow(),
+            )
+        )
+    db.commit()
+
+
+class TestWorkoutCountMatchText:
+    """workout_count must be restrictable to one routine via match_text."""
+
+    def test_match_text_counts_only_matching_workouts(self, db):
+        hero = _hero(db)
+        _add_workout_events(db, ["Rinne Arc – Push", "Beine", "Rinne Arc – Pull"])
+        quest = create_quest(
+            db,
+            title="Rinne Arc diese Woche",
+            quest_type="workout_count",
+            period="weekly",
+            target_value=5,
+            match_text="Rinne Arc",
+        )
+        evaluate_quests(db, hero)
+        db.refresh(quest)
+        assert quest.current_value == 2      # "Beine" is not counted
+
+    def test_match_text_is_case_insensitive(self, db):
+        hero = _hero(db)
+        _add_workout_events(db, ["RINNE ARC – Push", "rinne arc – pull"])
+        quest = create_quest(
+            db,
+            title="Arc",
+            quest_type="workout_count",
+            period="weekly",
+            target_value=5,
+            match_text="Rinne Arc",
+        )
+        evaluate_quests(db, hero)
+        db.refresh(quest)
+        assert quest.current_value == 2
+
+    def test_without_match_text_all_workouts_still_count(self, db):
+        """Existing quests must behave exactly as before."""
+        hero = _hero(db)
+        _add_syncs(db, 3)
+        quest = create_quest(
+            db,
+            title="Drei Workouts",
+            quest_type="workout_count",
+            period="weekly",
+            target_value=5,
+        )
+        evaluate_quests(db, hero)
+        db.refresh(quest)
+        assert quest.current_value == 3
+
+    def test_match_text_ignores_events_outside_the_window(self, db):
+        hero = _hero(db)
+        _add_workout_events(db, ["Rinne Arc – Push"])
+        _add_workout_events(
+            db, ["Rinne Arc – alt"], when=datetime.utcnow() - timedelta(days=40)
+        )
+        quest = create_quest(
+            db,
+            title="Arc",
+            quest_type="workout_count",
+            period="weekly",
+            target_value=5,
+            match_text="Rinne Arc",
+        )
+        evaluate_quests(db, hero)
+        db.refresh(quest)
+        assert quest.current_value == 1

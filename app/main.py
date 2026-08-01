@@ -37,6 +37,8 @@ from app.quests import (
     create_quest,
     delete_or_archive_quest,
     evaluate_quests,
+    migrate_seeded_quests,
+    parse_period_range,
     seed_quests,
     update_quest,
 )
@@ -80,6 +82,7 @@ async def lifespan(app: FastAPI):
         settings = get_settings()
         _ensure_hero(db, settings.HERO_NAME)
         seed_quests(db)
+        migrate_seeded_quests(db)
         seed_achievements(db)
         seed_default_habits(db)
     finally:
@@ -289,12 +292,51 @@ async def quest_new(request: Request, db: Session = Depends(get_db)):
     )
 
 
+def _quest_range_from_form(form) -> tuple[datetime | None, datetime | None, str | None]:
+    """Resolve the explicit period window a quest form submitted.
+
+    Only a period of "once" carries an explicit range; for every other period the
+    window is derived, so we clear the stored bounds to keep a stale range from
+    overriding it in _period_window().
+    """
+    if (form.get("period") or "weekly") != "once":
+        return None, None, None
+    return parse_period_range(form.get("period_start"), form.get("period_end"))
+
+
+def _quest_form_error(request: Request, db: Session, form, error: str, *,
+                      quest: Quest | None, action: str, heading: str):
+    """Re-render the quest form with the submitted values and an error."""
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    return templates.TemplateResponse(
+        request=request,
+        name="quest_form.html",
+        context={
+            **_hero_context(hero),
+            **_quest_form_context(quest),
+            "form_action": action,
+            "heading": heading,
+            "error": error,
+            "submitted": dict(form),
+        },
+        status_code=400,
+    )
+
+
 @app.post("/quests/new")
 async def quest_create(request: Request, db: Session = Depends(get_db)):
     form = await request.form()
     title = (form.get("title") or "").strip()
     if not title:
         return RedirectResponse(url="/quests/new", status_code=303)
+
+    period_start, period_end, error = _quest_range_from_form(form)
+    if error:
+        return _quest_form_error(
+            request, db, form, error,
+            quest=None, action="/quests/new", heading="New Quest",
+        )
+
     create_quest(
         db,
         title=title,
@@ -307,6 +349,8 @@ async def quest_create(request: Request, db: Session = Depends(get_db)):
         stat_rewards=_stat_rewards_from_form(form),
         repeatable=_checkbox(form, "repeatable"),
         active=_checkbox(form, "active"),
+        period_start=period_start,
+        period_end=period_end,
     )
     return RedirectResponse(url="/quests", status_code=303)
 
@@ -335,6 +379,14 @@ async def quest_update(quest_id: int, request: Request, db: Session = Depends(ge
     if quest is None:
         raise HTTPException(status_code=404, detail="Quest not found")
     form = await request.form()
+
+    period_start, period_end, error = _quest_range_from_form(form)
+    if error:
+        return _quest_form_error(
+            request, db, form, error,
+            quest=quest, action=f"/quests/{quest.id}/edit", heading="Edit Quest",
+        )
+
     update_quest(
         db,
         quest,
@@ -348,6 +400,8 @@ async def quest_update(quest_id: int, request: Request, db: Session = Depends(ge
         stat_rewards=_stat_rewards_from_form(form),
         repeatable=_checkbox(form, "repeatable"),
         active=_checkbox(form, "active"),
+        period_start=period_start,
+        period_end=period_end,
     )
     return RedirectResponse(url="/quests", status_code=303)
 
