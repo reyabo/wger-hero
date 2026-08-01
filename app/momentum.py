@@ -242,4 +242,10 @@ def explain_momentum() -> list[str]:
         "Pausierte Wochen und Wochen ohne Daten werden herausgerechnet, "
         "nicht als Fehlschlag gezählt."
     )
+    lines.append(
+        "Pausen stammen aus den gespeicherten Pausenzeiträumen des Ziels. "
+        "Der heutige Status wird nicht rückwirkend auf frühere Wochen "
+        "angewendet. Berührt eine Pause eine Woche, gilt die ganze Woche als "
+        "neutral. Keine Daten ist nicht dasselbe wie 0 %."
+    )
     return lines

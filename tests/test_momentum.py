@@ -278,3 +278,52 @@ def test_no_negative_values_anywhere():
     assert result.current >= 0 and result.best >= 0
     momentum = calculate_momentum(outcomes)
     assert momentum.value is None or momentum.value >= 0
+
+
+# ---------------------------------------------------------------------------
+# The module must stay pure
+# ---------------------------------------------------------------------------
+
+def test_momentum_module_imports_nothing_stateful():
+    """No database, no FastAPI, no clock of its own — like app/xp.py."""
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parent.parent / "app" / "momentum.py"
+    tree = ast.parse(source.read_text())
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+
+    for forbidden in ("sqlalchemy", "fastapi", "app"):
+        assert forbidden not in imported, f"app/momentum.py must not import {forbidden}"
+
+
+def test_momentum_module_never_reads_the_clock():
+    """Every date comes in as an argument, so tests can pin any week.
+
+    Checked on the syntax tree, not on the text: the docstring may well name
+    `quests.app_today` as the place where "today" is decided elsewhere.
+    """
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parent.parent / "app" / "momentum.py"
+    tree = ast.parse(source.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            assert name not in ("today", "now", "utcnow", "app_today"), (
+                f"app/momentum.py must not call {name}()"
+            )
+
+
+def test_the_pause_rule_is_stated_in_the_explanation():
+    lines = " ".join(explain_momentum())
+    assert "Pausenzeiträume" in lines
+    assert "nicht rückwirkend" in lines
+    assert "0 %" in lines

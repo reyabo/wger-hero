@@ -91,6 +91,18 @@
       </tbody>
     </table>
     {% endif %}
+
+    {% if pause_windows %}
+    <p class="muted small">Erfasste Pausen dieses Ziels:</p>
+    <ul class="momentum-formula">
+      {% for start, end in pause_windows %}
+      <li>
+        {{ start.strftime('%d.%m.%Y') }} –
+        {% if end %}{{ end.strftime('%d.%m.%Y') }}{% else %}läuft{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
   </details>
 </section>
 

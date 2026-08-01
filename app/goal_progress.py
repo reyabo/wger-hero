@@ -15,7 +15,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.goals import STATUS_PAUSED, counts_towards_progress
+from app.goals import counts_towards_progress, pause_intervals_of
 from app.models import Goal, QuestCompletion, Quest
 from app.momentum import (
     MOMENTUM_WEEKS,
@@ -27,7 +27,7 @@ from app.momentum import (
     completed_week_starts,
     week_start,
 )
-from app.quests import app_today
+from app.quests import app_date_of, app_today
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +52,36 @@ def weekly_quests_of(db: Session, goal: Goal) -> list[Quest]:
     )
 
 
+def pause_windows(db: Session, goal: Goal) -> list[tuple[date, Optional[date]]]:
+    """Recorded breaks as calendar days in the application timezone.
+
+    An open interval keeps `None` as its end, meaning "still running".
+    """
+    return [
+        (app_date_of(iv.started_at), app_date_of(iv.ended_at) if iv.ended_at else None)
+        for iv in pause_intervals_of(db, goal)
+    ]
+
+
+def week_was_paused(windows: list[tuple[date, Optional[date]]], monday: date) -> bool:
+    """Whether a break touched this calendar week at all.
+
+    Deliberately generous: *any* overlap neutralises the whole week. A pause
+    that starts on Wednesday must not leave Monday and Tuesday behind as an
+    unfinished week that reads as a failure.
+    """
+    sunday = monday + timedelta(days=6)
+    return any(
+        start <= sunday and (end is None or end >= monday) for start, end in windows
+    )
+
+
 def week_outcome(
-    db: Session, goal: Goal, monday: date, quests: Optional[list[Quest]] = None
+    db: Session,
+    goal: Goal,
+    monday: date,
+    quests: Optional[list[Quest]] = None,
+    windows: Optional[list[tuple[date, Optional[date]]]] = None,
 ) -> WeekOutcome:
     """How one calendar week went for a goal.
 
@@ -62,6 +90,7 @@ def week_outcome(
     existed carry has_data=False so they read as "no history", not as a failure.
     """
     quests = weekly_quests_of(db, goal) if quests is None else quests
+    windows = pause_windows(db, goal) if windows is None else windows
     start, end = _bounds(monday)
 
     if not quests:
@@ -83,24 +112,24 @@ def week_outcome(
         .count()
     )
 
-    # A goal paused *now* is not scored at all; per-week pause history is not
-    # recorded, so the current status is the honest approximation and is
-    # deliberately generous rather than punitive.
-    paused = goal.status == STATUS_PAUSED
-
+    # Whether *this* week was a break, from the recorded intervals. The current
+    # status is deliberately not applied backwards: resuming a goal must not
+    # turn old breaks into failures, and pausing today must not erase a week
+    # that really was missed while the goal was running.
     return WeekOutcome(
         week_start=monday,
         achieved=rewarded,
         target=len(quest_ids),
-        paused=paused,
+        paused=week_was_paused(windows, monday),
     )
 
 
 def goal_momentum(db: Session, goal: Goal, today: Optional[date] = None) -> MomentumResult:
     today = today or app_today()
     quests = weekly_quests_of(db, goal)
+    windows = pause_windows(db, goal)
     outcomes = [
-        week_outcome(db, goal, monday, quests)
+        week_outcome(db, goal, monday, quests, windows)
         for monday in completed_week_starts(today, MOMENTUM_WEEKS)
     ]
     return calculate_momentum(outcomes)
@@ -112,11 +141,12 @@ def goal_streak(
     """Current and best streak, looking back up to `history_weeks`."""
     today = today or app_today()
     quests = weekly_quests_of(db, goal)
+    windows = pause_windows(db, goal)
     completed = [
-        week_outcome(db, goal, monday, quests)
+        week_outcome(db, goal, monday, quests, windows)
         for monday in completed_week_starts(today, history_weeks)
     ]
-    current = week_outcome(db, goal, week_start(today), quests)
+    current = week_outcome(db, goal, week_start(today), quests, windows)
     return calculate_streak(completed, current_week=current)
 
 
@@ -124,7 +154,8 @@ def goal_week_summary(db: Session, goal: Goal, today: Optional[date] = None) -> 
     """Everything a goal card needs: this week, momentum, streaks, status."""
     today = today or app_today()
     quests = weekly_quests_of(db, goal)
-    this_week = week_outcome(db, goal, week_start(today), quests)
+    windows = pause_windows(db, goal)
+    this_week = week_outcome(db, goal, week_start(today), quests, windows)
     momentum = goal_momentum(db, goal, today)
     streak = goal_streak(db, goal, today)
     return {

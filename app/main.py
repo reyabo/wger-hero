@@ -45,7 +45,7 @@ from app.goals import (
     set_status,
     update_goal,
 )
-from app.goal_progress import goal_week_summary
+from app.goal_progress import goal_week_summary, pause_windows
 from app.momentum import explain_momentum
 from app.habits import RECURRENCE_CHOICES, archive_habit, complete_habit, create_habit, delete_or_archive_habit, update_habit
 from app.japanese_import import (
@@ -992,6 +992,7 @@ async def goal_detail(slug: str, request: Request, db: Session = Depends(get_db)
             "milestones": milestones_for_goal(db, goal),
             "week": goal_week_summary(db, goal),
             "momentum_explanation": explain_momentum(),
+            "pause_windows": pause_windows(db, goal),
             "status_labels": STATUS_LABELS,
         },
     )

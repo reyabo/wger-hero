@@ -430,3 +430,37 @@ Rules that keep it from feeling punitive:
 The scoring rules live in `app/momentum.py` and are pure — dates and numbers in,
 numbers out, no database and no clock of their own. `app/goal_progress.py` is the
 thin layer that maps stored `QuestCompletion` history onto them.
+
+### Which weeks count as paused
+
+Pausing a goal writes a `GoalPauseInterval` — a start, and an end once the goal
+leaves the paused state. Momentum and streaks read those intervals, **never the
+goal's current status applied backwards**. That distinction matters in both
+directions: resuming a goal must not turn its old break into a row of failed
+weeks, and pausing today must not retroactively excuse a week that really was
+missed while the goal was running.
+
+The neutralisation rule is deliberately generous and applied in one place
+(`goal_progress.week_was_paused`):
+
+> Any overlap of a pause interval with a calendar week neutralises the whole week.
+
+So a pause that starts on Wednesday does not leave Monday and Tuesday behind as
+an unfinished week. In momentum a neutral week is removed and the remaining
+weights are renormalized; in a streak it is **skipped**, so it neither extends
+nor breaks the run. The running week stays outside momentum regardless.
+
+Bookkeeping rules:
+
+- `active → paused` opens exactly one interval; pausing again changes nothing.
+- Leaving `paused` closes the open interval — including `completed` and
+  `archived`, because a goal in those states is not on a break either. No status
+  other than `paused` may leave an interval running.
+- At most one open interval per goal, enforced by a **partial unique index**
+  (`ux_goal_pause_open … WHERE ended_at IS NULL`) rather than by Python alone.
+  Several finished breaks per goal are normal.
+- Intervals are append-only: no edit and no delete route exists. Breaks taken
+  before revision `0004_goal_pause_intervals` have no row and none is invented —
+  those weeks are scored from the quest history exactly as before.
+- Stored timestamps are naive UTC; the calendar day they belong to is resolved
+  once, centrally, via `quests.app_date_of()` in `APP_TIMEZONE`.

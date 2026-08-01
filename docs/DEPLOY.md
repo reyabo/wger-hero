@@ -104,6 +104,28 @@ docker compose exec wger-hero sqlite3 /data/wger_hero.db \
 Erwartet: `0` und der Indexname. Fehlt der Index, ist die Migration
 unvollständig — dann nicht weitermachen, sondern Abschnitt 8 (Rückweg).
 
+### 3d. Nach Revision 0004 (Pausenzeiträume der Ziele)
+
+`goal_pause_intervals` startet ebenfalls leer. Pausen, die **vor** dieser
+Revision begonnen haben, bekommen keinen nachträglichen Datensatz — auch hier
+wird keine Historie erfunden. Ein bereits pausiertes Ziel bleibt pausiert und
+wird weiterhin nicht bewertet; seine zurückliegenden Wochen zählen so wie
+bisher. Erst ab dem nächsten Pausieren entsteht ein Intervall.
+
+Prüfen, dass die Tabelle und der **partielle** Unique-Index existieren:
+
+```bash
+docker compose exec wger-hero sqlite3 /data/wger_hero.db \
+  "SELECT count(*) FROM goal_pause_intervals;
+   SELECT sql FROM sqlite_master WHERE type='index'
+     AND name='ux_goal_pause_open';" \
+                                           > "$LOG-09c-pauses.txt"     2>&1
+```
+
+Erwartet: `0` und eine Indexdefinition, die auf `WHERE ended_at IS NULL` endet.
+Fehlt der Zusatz, wäre pro Ziel nur **eine** Pause überhaupt möglich — dann
+nicht weitermachen, sondern Abschnitt 8 (Rückweg).
+
 ## 4. Container neu bauen
 
 ```bash

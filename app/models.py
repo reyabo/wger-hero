@@ -1,7 +1,18 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -182,6 +193,40 @@ class Goal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class GoalPauseInterval(Base):
+    """One deliberate break of a goal, from the moment it was paused.
+
+    Momentum and streaks must know whether a week was paused *at the time*,
+    not whether the goal happens to be paused now. Without this record the only
+    available answer would be the current status applied backwards, which turns
+    old breaks into failures the moment a goal is resumed.
+
+    Append-only in the same sense as QuestCompletion: rows are created when a
+    goal is paused and are only ever changed by closing the open interval when
+    the goal leaves the paused state. There is no edit or delete route, and no
+    interval is invented for breaks that happened before this table existed.
+    """
+
+    __tablename__ = "goal_pause_intervals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    goal_id: Mapped[int] = mapped_column(Integer, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # NULL means the goal is still paused — at most one such row per goal,
+    # enforced by the partial unique index below rather than by Python alone.
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index(
+            "ux_goal_pause_open",
+            "goal_id",
+            unique=True,
+            sqlite_where=text("ended_at IS NULL"),
+        ),
     )
 
 

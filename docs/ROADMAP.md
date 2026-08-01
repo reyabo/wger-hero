@@ -93,10 +93,14 @@ was ab dem Cutover erfasst wurde.
       Erfüllungsgrad je Woche auf 0–100 gedeckelt, Ergebnis 0–100
 - [x] Laufende Woche nie als Fehlschlag; pausierte Zeiträume neutral; fehlende
       Daten sichtbar neutral
+- [x] `GoalPauseInterval`: Pausen werden historisch erfasst statt den heutigen
+      Status rückwirkend anzuwenden; jede Überlappung neutralisiert die ganze
+      Woche; höchstens ein offenes Intervall je Ziel (partieller Unique-Index)
 - [x] Modul ohne Datenbank unit-testbar; Formel im UI erklärt
 - [x] Tests: KW-Grenzen, DST, pausierte Wochen, Übererfüllung, Datenlücken
 
-Migration: nein.
+Migration: `0004_goal_pause_intervals`, additiv, mit getestetem `downgrade()`.
+Die Tabelle startet leer; Pausen vor dieser Revision werden nicht erfunden.
 
 ## 6 — Tages- und Wochenansicht
 
