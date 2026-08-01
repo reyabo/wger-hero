@@ -460,3 +460,33 @@ def test_completing_from_today_without_csrf_is_rejected(secure_client):
     )
     assert resp.status_code == 303
     assert resp.headers["location"] == "/today"
+
+
+def test_the_starter_campaign_is_protected(secure_client):
+    for path in ("/settings/starter",):
+        resp = secure_client.get(path, follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login"
+
+
+def test_activating_the_campaign_needs_authentication(secure_client):
+    resp = secure_client.post("/settings/starter", data={}, follow_redirects=False)
+    assert resp.status_code == 403
+
+
+def test_activating_the_campaign_needs_a_csrf_token(secure_client):
+    _login(secure_client)
+    page = secure_client.get("/settings/starter")
+    assert page.status_code == 200
+
+    assert secure_client.post("/settings/starter", data={}).status_code == 403
+
+    token = _token_from(page.text)
+    ok = secure_client.post("/settings/starter", data={CSRF_FIELD: token})
+    assert ok.status_code == 200
+    assert "Ergebnis der Aktivierung" in ok.text
+
+
+def test_the_pwa_files_stay_public(secure_client):
+    for path in ("/manifest.webmanifest", "/sw.js", "/offline"):
+        assert secure_client.get(path).status_code == 200

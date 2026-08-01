@@ -1,0 +1,28 @@
+{
+  "name": "wger-hero",
+  "short_name": "wger-hero",
+  "description": "Selbst gehosteter Trainingsbegleiter: Ziele, Gewohnheiten, Quests und Attribute — regelbasiert und nachvollziehbar.",
+  "id": "/",
+  "start_url": "/today",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#14161c",
+  "theme_color": "#14161c",
+  "lang": "de",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "/static/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
