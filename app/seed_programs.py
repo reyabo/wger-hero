@@ -176,28 +176,71 @@ def seed_program(db, key: str) -> tuple[int, int]:
     return habits_created, quests_created
 
 
-if __name__ == "__main__":
+def _print_starter(plan) -> None:
+    """Render a starter plan for the terminal. Never prints configuration."""
+    from app.starter import CONFLICT
+
+    mode = "Angewendet" if plan.applied else "Vorschau (dry-run, es wird nichts geschrieben)"
+    print(f"Starter-Kampagne — {mode}")
+    print()
+    for item in plan.items:
+        goal = f" [{item.goal}]" if item.goal else ""
+        print(f"  {item.kind:<12} {item.name}{goal}")
+        print(f"               {item.label}. {item.detail}")
+    print()
+    counts = plan.summary()
+    print("  ".join(f"{key}={value}" for key, value in counts.items()))
+    if counts.get(CONFLICT):
+        print("Konflikte gefunden — diese Einträge bleiben unverändert.")
+    if not plan.changes:
+        print("Keine Änderungen nötig — alles ist bereits vorhanden.")
+
+
+def _main(argv: list[str]) -> int:
     import os
-    import sys
 
     os.environ.setdefault("WGER_BASE_URL", "https://wger.example.com")
     from app.database import get_db, init_db
+    from app.starter import STARTER_KEY, StarterError, apply_starter, plan_starter
 
-    args = sys.argv[1:]
-    if not args or args[0] not in PROGRAMS:
-        print(f"Usage: python -m app.seed_programs {{{'|'.join(PROGRAMS)}}}")
-        sys.exit(1)
+    keys = list(PROGRAMS) + [STARTER_KEY]
+    args = [a for a in argv if not a.startswith("--")]
+    dry_run = "--dry-run" in argv
+
+    if not args or args[0] not in keys:
+        print(f"Usage: python -m app.seed_programs {{{'|'.join(keys)}}} [--dry-run]")
+        return 1
 
     init_db()
     db_gen = get_db()
     db = next(db_gen)
     try:
+        if args[0] == STARTER_KEY:
+            # Same service the settings page uses — there is no second seed path.
+            try:
+                plan = plan_starter(db) if dry_run else apply_starter(db)
+            except StarterError as exc:
+                print(str(exc))
+                return 2
+            _print_starter(plan)
+            return 0
+
+        if dry_run:
+            print("--dry-run wird für dieses Programm nicht unterstützt.")
+            return 1
         h, q = seed_program(db, args[0])
         print(f"{PROGRAMS[args[0]].label}: {h} Habit(s), {q} Quest(s) angelegt.")
         if not h and not q:
             print("Nichts angelegt — alle Einträge waren bereits vorhanden.")
+        return 0
     finally:
         try:
             next(db_gen)
         except StopIteration:
             pass
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(_main(sys.argv[1:]))

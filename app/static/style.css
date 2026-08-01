@@ -878,3 +878,19 @@ code {
   outline: 2px solid var(--accent, #c9a227);
   outline-offset: 2px;
 }
+
+/* --- Starter campaign preview ------------------------------------------- */
+
+/* Wide tables scroll inside their own box; the page body never does. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.status-create   { color: #7fbf7f; }
+.status-reuse    { color: #9fb4c7; }
+.status-extend   { color: #86b8d8; }
+.status-skip     { color: #8a8f98; }
+.status-conflict { color: #d0a05a; }
+
+tr.is-conflict { background: rgba(208, 160, 90, 0.08); }

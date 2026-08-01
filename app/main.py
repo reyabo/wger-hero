@@ -4,7 +4,12 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
@@ -48,6 +53,7 @@ from app.goals import (
 from app.goal_progress import goal_week_summary, pause_windows
 from app.momentum import explain_momentum
 from app.planning import parse_reference_date, today_plan, week_plan
+from app.starter import SAFETY_NOTE, StarterError, apply_starter, plan_starter
 from app.habits import (
     RECURRENCE_CHOICES,
     WEEKDAY_LABELS,
@@ -155,7 +161,8 @@ def _ensure_hero(db: Session, name: str) -> HeroProfile:
 
 app = FastAPI(title="wger-hero", lifespan=lifespan)
 
-app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
+STATIC_DIR = _HERE / "static"
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(_HERE / "templates"))
 
 _login_limiter = LoginRateLimiter()
@@ -456,6 +463,76 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             "japanese_latest": get_latest_import(db),
         },
     )
+
+
+# --- PWA -------------------------------------------------------------------
+# All three are public (see auth.PUBLIC_PATHS) and carry no user data. They are
+# served from the app root rather than /static so the service worker's scope can
+# be "/" — a worker may only control paths at or below its own.
+
+@app.get("/settings/starter", response_class=HTMLResponse)
+async def starter_preview(request: Request, db: Session = Depends(get_db)):
+    """Show what activating the starter campaign would change. Writes nothing."""
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    return templates.TemplateResponse(
+        request=request,
+        name="starter.html",
+        context={
+            **_hero_context(hero),
+            "plan": plan_starter(db),
+            "safety_note": SAFETY_NOTE,
+            "result": None,
+            "error": None,
+        },
+    )
+
+
+@app.post("/settings/starter", response_class=HTMLResponse)
+async def starter_apply(request: Request, db: Session = Depends(get_db)):
+    """Activate the campaign after an explicit, CSRF-protected confirmation."""
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    result = error = None
+    try:
+        result = apply_starter(db)
+    except StarterError as exc:
+        # A plain sentence, never a traceback — the details go to the log.
+        error = str(exc)
+    return templates.TemplateResponse(
+        request=request,
+        name="starter.html",
+        context={
+            **_hero_context(hero),
+            "plan": plan_starter(db),
+            "safety_note": SAFETY_NOTE,
+            "result": result,
+            "error": error,
+        },
+    )
+
+
+@app.get("/manifest.webmanifest", include_in_schema=False)
+async def manifest():
+    return FileResponse(
+        STATIC_DIR / "manifest.webmanifest",
+        media_type="application/manifest+json",
+    )
+
+
+@app.get("/sw.js", include_in_schema=False)
+async def service_worker():
+    return FileResponse(
+        STATIC_DIR / "sw.js",
+        media_type="text/javascript",
+        # The worker itself must not be pinned by an intermediate cache, or a
+        # fixed cache boundary could never be corrected after deployment.
+        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"},
+    )
+
+
+@app.get("/offline", response_class=HTMLResponse, include_in_schema=False)
+async def offline_page(request: Request):
+    """Static fallback shown by the service worker when navigation fails."""
+    return templates.TemplateResponse(request=request, name="offline.html", context={})
 
 
 @app.get("/today", response_class=HTMLResponse)

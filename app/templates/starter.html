@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Starter-Kampagne — wger-hero{% endblock %}
+
+{% macro plan_table(items) %}
+<div class="table-scroll">
+  <table class="xp-table">
+    <thead>
+      <tr><th>Bereich</th><th>Eintrag</th><th>Ziel</th><th>Ergebnis</th><th>Details</th></tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr {% if item.is_conflict %}class="is-conflict"{% endif %}>
+        <td>{{ item.kind }}</td>
+        <td>{{ item.name }}</td>
+        <td class="muted small">{{ item.goal or "—" }}</td>
+        <td><span class="status-badge status-{{ item.action }}">{{ item.label }}</span></td>
+        <td class="muted small">{{ item.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}
+
+{% block content %}
+<h1>Starter-Kampagne</h1>
+<p class="muted">
+  Drei vorbereitete Ziele: Kraftpfad, Weg des Japanischen und Körperkontrolle.
+  <a href="/settings">Zurück zu den Einstellungen</a>
+</p>
+
+{% if error %}
+<p class="notice">{{ error }}</p>
+{% endif %}
+
+{% if result %}
+<section class="card">
+  <h2 class="card-title">Ergebnis der Aktivierung</h2>
+  {{ plan_table(result.items) }}
+  {% if result.conflicts %}
+  <p class="muted small">
+    {{ result.conflicts | length }} Konflikt(e) — diese Einträge wurden bewusst
+    nicht verändert.
+  </p>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="card">
+  <h2 class="card-title">
+    {% if result %}Aktueller Stand{% else %}Vorschau{% endif %}
+  </h2>
+  <p class="muted small">
+    Diese Vorschau schreibt nichts. Vorhandene Einträge werden wiederverwendet,
+    nie überschrieben und nie umbenannt. Es entstehen keine XP, keine
+    Gewohnheits- oder Quest-Abschlüsse und keine Pausen.
+  </p>
+  {{ plan_table(plan.items) }}
+</section>
+
+{% if not result %}
+<section class="card">
+  <h2 class="card-title">Aktivieren</h2>
+  {% if plan.changes %}
+  <p>{{ plan.changes }} Eintrag/Einträge werden angelegt oder ergänzt.</p>
+  {% else %}
+  <p class="muted">Es ist bereits alles vorhanden — eine Aktivierung ändert nichts.</p>
+  {% endif %}
+  <form method="post" action="/settings/starter">
+    {{ csrf_input(request) }}
+    <button type="submit" class="btn">Starter-Kampagne anlegen</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2 class="card-title">Hinweis zur Routine K</h2>
+  <p class="muted">{{ safety_note }}</p>
+</section>
+{% endblock %}

@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}wger-hero{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#14161c">
+  <link rel="icon" href="/static/icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icons/icon.svg">
 </head>
 <body>
   <header class="site-header">
@@ -34,5 +38,15 @@
       <span>wger-hero &mdash; selbst gehosteter Trainingsbegleiter</span>
     </div>
   </footer>
+  <script>
+    // Defensive and non-blocking: an unsupported or failing registration must
+    // never affect the page, and nothing about the failure is logged — console
+    // output from an authenticated page could carry more than intended.
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", function () {
+        navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(function () {});
+      });
+    }
+  </script>
 </body>
 </html>

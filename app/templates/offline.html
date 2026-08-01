@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Offline — wger-hero</title>
+  <meta name="theme-color" content="#14161c">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!--
+    Deliberately static. This page is cached by the service worker, so it must
+    never contain goals, habits, quests or any other user data — a cached copy
+    would otherwise outlive a logout in the browser profile. There is no form
+    here either: wger-hero has no offline write path, and pretending otherwise
+    would mean losing an entry the user believed was saved.
+  -->
+  <main class="container">
+    <h1>Keine Verbindung</h1>
+    <p>
+      wger-hero ist gerade nicht erreichbar. Die App läuft auf deinem eigenen
+      Server — vermutlich fehlt die Netzwerkverbindung, oder der Dienst ist
+      kurz nicht erreichbar.
+    </p>
+    <p class="muted">
+      Offline werden keine Daten angezeigt und keine Eingaben gespeichert.
+      Nichts geht verloren: sobald die Verbindung wieder steht, ist der
+      gewohnte Stand da.
+    </p>
+    <p>
+      <a class="btn" href="/today">Erneut versuchen</a>
+    </p>
+  </main>
+</body>
+</html>

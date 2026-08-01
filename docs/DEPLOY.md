@@ -148,6 +148,64 @@ Abschnitt 8 (Rückweg). Rückweg dieser Revision:
 `alembic downgrade 0004_goal_pause_intervals` plus Backup; das Löschen der
 Planungstabelle lässt Gewohnheiten und Completions unberührt (getestet).
 
+### 3f. PWA und Starter-Kampagne (Schritt 7 und 8)
+
+**Keine neue Migration.** Beide Schritte kommen mit den vorhandenen Modellen
+aus: die PWA ist rein statisch, und die Starter-Kampagne legt ausschließlich
+Zeilen in `goals`, `habits`, `habit_schedule_days` und `quests` an. Der
+Datenbankstand bleibt deshalb bei `0005_habit_schedule_days`. Eine leere
+Revision wird bewusst nicht erzeugt.
+
+Die Starter-Kampagne ist **niemals** Teil einer Alembic-Revision — sie ist
+Daten, keine Schemaänderung, und wird nur auf ausdrückliche Anforderung
+angelegt.
+
+Prüfen, dass die PWA-Dateien ausgeliefert werden:
+
+```bash
+for path in /manifest.webmanifest /sw.js /offline \
+            /static/icons/icon.svg /static/icons/icon-maskable.svg; do
+  curl -sS -o /dev/null -w "$path: %{http_code}\n" "https://DEINE-DOMAIN$path"
+done                                       > "$LOG-09e-pwa.txt"        2>&1
+```
+
+Erwartet: überall `200`. Die Installation als App setzt **HTTPS** voraus — über
+Caddy, nicht über den direkten Port 8091. Ein Browser registriert sonst keinen
+Service Worker.
+
+## 4a. Starter-Kampagne aktivieren (optional, nach dem Deployment)
+
+Getrennter, bewusst ausgelöster Schritt. Nicht Teil des Deployments.
+
+```bash
+# 1. Dry-run: zeigt nur an, was passieren würde
+docker compose exec wger-hero python -m app.seed_programs starter --dry-run \
+                                           > "$LOG-20-starter-dry.txt"  2>&1
+
+# 2. Vorschau prüfen — besonders Zeilen mit "Konflikt"
+less "$LOG-20-starter-dry.txt"
+
+# 3. Datenbank sichern (WAL-konsistent, siehe Abschnitt 2)
+docker compose exec wger-hero sqlite3 /data/wger_hero.db \
+  ".backup '/data/backup-vor-starter.db'"  > "$LOG-21-starter-backup.txt" 2>&1
+
+# 4. Aktivieren
+docker compose exec wger-hero python -m app.seed_programs starter \
+                                           > "$LOG-22-starter-apply.txt" 2>&1
+
+# 5. Ergebnis prüfen
+less "$LOG-22-starter-apply.txt"
+
+# 6. Erneuter Dry-run: muss "Keine Änderungen nötig" melden
+docker compose exec wger-hero python -m app.seed_programs starter --dry-run \
+                                           > "$LOG-23-starter-recheck.txt" 2>&1
+```
+
+Schritt 6 ist die eigentliche Abnahme: meldet der zweite Dry-run noch offene
+Änderungen, ist etwas schiefgelaufen — dann nicht erneut aktivieren, sondern
+die Ausgabe prüfen. Dasselbe ist auch über die Oberfläche möglich:
+**Einstellungen → Starter-Kampagne**, Vorschau, dann Bestätigung.
+
 ## 4. Container neu bauen
 
 ```bash

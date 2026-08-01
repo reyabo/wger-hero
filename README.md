@@ -457,6 +457,107 @@ existing quest logic and its `QuestCompletion` deduplication.
   allowlist (`safe_next`), so a crafted `next` cannot bounce the browser to
   another host.
 
+## Progressive Web App
+
+wger-hero installs as a PWA on phone and desktop. Everything it needs is local —
+no CDN, no external font, no third-party script.
+
+| File | Served at | Purpose |
+|---|---|---|
+| `app/static/manifest.webmanifest` | `/manifest.webmanifest` | name, colours, icons, `start_url` `/today`, scope `/` |
+| `app/static/sw.js` | `/sw.js` | the service worker (served from the root so its scope may be `/`) |
+| `app/static/icons/*.svg` | `/static/icons/…` | local icons, one `any` and one `maskable` |
+| `app/templates/offline.html` | `/offline` | the static fallback page |
+
+**Installation needs HTTPS** (or `localhost`) — browsers refuse to register a
+service worker otherwise. Use the Caddy reverse proxy for this; the direct
+`http://…:8091` port is for debugging, not a supported installation path.
+
+### What the service worker caches — and what it must never touch
+
+It caches exactly one thing: the fixed, versioned list in `STATIC_ASSETS`
+(stylesheet, icons, manifest, offline page). There is no "cache every GET"
+strategy and no runtime caching.
+
+Never cached, by construction:
+
+- every dynamic or authenticated page — `/`, `/login`, `/today`, `/week`,
+  `/goals`, `/habits`, `/quests`, `/japanese`, `/settings`, `/stats`,
+  `/achievements`
+- every non-GET request, so no form submission, login or SAVE import
+- responses the server marks `Cache-Control: no-store, private`, which is every
+  authenticated page
+- anything from another origin
+
+Why so strict: a cached authenticated page would outlive a logout inside the
+browser profile. Pages are network-only, full stop. The offline page therefore
+carries no goals, habits, quests or XP — nothing personal can be served from
+cache after logout.
+
+**There is no offline write path.** The offline page shows no form and stores
+nothing, because silently swallowing an entry the user believed was saved would
+be worse than saying "no connection".
+
+`CACHE_VERSION` is bumped whenever an asset changes; the `activate` handler
+deletes every cache that does not match it. Registration is defensive: an
+unsupported or failing `serviceWorker` never affects the page, and nothing is
+logged to the console.
+
+## Starter campaign
+
+Three prepared goals an install can adopt — never automatically. Preview it at
+**Einstellungen → Starter-Kampagne** (`/settings/starter`) or from the CLI:
+
+```bash
+python -m app.seed_programs starter --dry-run   # preview, writes nothing
+python -m app.seed_programs starter             # activate
+```
+
+Web page and CLI call the same two functions in `app/starter.py`, so a preview
+can never disagree with what an activation does.
+
+### What it contains
+
+| Goal | Weekly quest | Habits | Milestones |
+|---|---|---|---|
+| **Kraftpfad** (`kraftpfad`) | *Dreifachschlag* — 3 wger workouts per week (`workout_count`) | — | first counted workout · 4 fulfilled weeks · 12 fulfilled weeks |
+| **Weg des Japanischen** (`weg-des-japanischen`) | *Fünf Schriftrollen* — 5 SRS reviews per week (`habit_count`, bound by habit id) · *Zwei Gespräche mit dem Sensei* — 2 confirmed sessions per week (`japanese_session_count`) | *SRS-Review*, planned Mon–Fri | first review · 20 reviews · 8 confirmed sessions · 4 weeks with both goals |
+| **Körperkontrolle** (`koerperkontrolle`, short label *Routine K*) | *Der Fünfer-Rhythmus* — all five planned routines in one week | the five existing CONTROL routines, planned Mon, Tue, Wed, Thu, Sat | the four existing CONTROL stages |
+
+Friday and Sunday stay deliberately free in Routine K.
+
+**Reuse instead of duplication.** If the seeded `week-warrior` quest exists it
+*is* "three workouts per week", so it is linked to Kraftpfad rather than
+duplicated — its title and reward are never touched, and no second
+*Dreifachschlag* is created. The same holds for the five CONTROL routines and
+their four stages: they are matched by exact title and only ever gain the goal
+link and the weekday plan.
+
+### Rules
+
+- **Idempotent.** Re-running changes nothing; a dry run afterwards reports no
+  changes.
+- **Matched by exact title and slug**, never by a fuzzy substring.
+- **Never overwrites.** A goal, habit or quest the user has edited keeps its
+  title, description and status. Nothing is renamed, nothing is deleted.
+- **Conflicts are reported, not resolved.** An entry that already belongs to a
+  different goal is listed as a conflict and left exactly as it is.
+- **No retroactive history.** No XP event, no habit completion, no quest
+  completion, no pause interval, no Japanese SAVE import. Milestones start at
+  zero and are only ever reached by real later activity.
+- **No network.** The campaign never talks to wger or anything else.
+- **All or nothing.** If activation fails, the rows this run created are removed
+  again, so no half-created goal survives. The browser sees one plain sentence;
+  the traceback goes to the log.
+
+### Routine K and privacy
+
+Routine K stores neutral titles only — no intimate free text, no body metrics,
+no outcome protocol; a test asserts this over the seeded data. The goal page
+shows a factual note: pause on lasting tension or pain, a pause costs no XP and
+breaks no streak, and see a doctor if complaints persist. That is a safety note,
+not a diagnosis or a treatment recommendation.
+
 ## Streaks and Momentum
 
 Two deliberately different answers to "how is it going".

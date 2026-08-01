@@ -121,33 +121,40 @@ Die Tabelle startet leer; Pausen vor dieser Revision werden nicht erfunden.
 Migration: `0005_habit_schedule_days`, additiv, mit getestetem `downgrade()`.
 Die Tabelle startet leer; für bestehende Habits wird keine Planung erfunden.
 
-## 7 — Mobile PWA
+## 7 — Mobile PWA  ✅
 
-- [ ] `manifest.webmanifest`, lokale Icons inkl. maskierbar
-- [ ] Service Worker: **nur** statische Assets, Icons, Manifest, Offline-Seite;
-      keine authentifizierten Seiten, keine POSTs, keine Fachdaten;
-      dynamische Routen `network-only`
-- [ ] Neutrale Offline-Seite, mobile Navigation, große Touch-Ziele, Fokuszustände
-- [ ] `Cache-Control` für authentifizierte Seiten
-- [ ] Tests: Manifest erreichbar, SW cached nichts Dynamisches
+- [x] `manifest.webmanifest`, lokale SVG-Icons inkl. maskierbar, `start_url`
+      `/today`, Scope `/`
+- [x] Service Worker: **nur** die feste Liste `STATIC_ASSETS` (CSS, Icons,
+      Manifest, Offline-Seite); keine authentifizierten Seiten, keine POSTs,
+      keine Fremdorigins; dynamische Routen `network-only`
+- [x] Neutrale Offline-Seite ohne Nutzerdaten, ohne Formular, ohne Offline-Schreibweg
+- [x] `Cache-Control: no-store, private` für authentifizierte Seiten bleibt
+- [x] Cache-Versionierung entfernt alte Caches beim `activate`
+- [x] Defensive Registrierung ohne Bibliothek, ohne Konsolenausgabe
+- [x] Tests: Manifest, Icons, SW-Grenzen statisch geprüft, Offline-Seite
 
 Migration: nein. Keine externen CDNs.
 
-## 8 — Starter-Kampagne
+## 8 — Starter-Kampagne  ✅
 
-- [ ] Idempotent, stabile Slugs, keine Duplikate, keine Überschreibung
-- [ ] Konflikt bei gleichem Namen mit abweichender Konfiguration **melden**
-- [ ] Vorhandene äquivalente Quest wiederverwenden (kein zweiter „Week Warrior“)
-- [ ] Vorhandenes `CONTROL`-Programm migrieren statt duplizieren
-- [ ] Ziel A Kraftpfad, Ziel B Weg des Japanischen, Ziel C Körperkontrolle
-      (neutrale Bezeichnungen, keine intimen Details)
-- [ ] Einstellungen: Vorschau → Bestätigung → Anlage → `/today`
-- [ ] CLI: `python -m app.seed_programs starter`
-- [ ] Sicherheits-/Pausenhinweis auf der Zielseite Körperkontrolle
-- [ ] Tests: Idempotenz, Konfliktmeldung, kein Duplikat von Week Warrior/CONTROL,
-      keine doppelte Japanisch-Belohnung
+- [x] Idempotent, stabile Slugs und exakte Titel, keine Duplikate, keine
+      Überschreibung, kein Umbenennen, kein Löschen
+- [x] Konflikt bei bereits anders zugeordnetem Eintrag **melden** statt lösen
+- [x] Vorhandene äquivalente Quest wiederverwenden (kein zweiter „Week Warrior“)
+- [x] Vorhandenes `CONTROL`-Programm wiederverwenden und nur um Zielbindung und
+      Wochenplanung ergänzen
+- [x] Ziel A Kraftpfad, Ziel B Weg des Japanischen, Ziel C Körperkontrolle
+      (neutrale Bezeichnungen, keine intimen Details, per Test geprüft)
+- [x] Einstellungen: Vorschau → CSRF-Bestätigung → Ergebnis
+- [x] CLI: `python -m app.seed_programs starter [--dry-run]`, gleicher Service
+- [x] Sicherheits-/Pausenhinweis auf der Starter- und Zielseite
+- [x] Keine XP, keine Completions, keine Pausen, keine SAVE-Imports, kein Netz
+- [x] Tests: Idempotenz, Konfliktmeldung, kein Duplikat von Week Warrior/CONTROL,
+      keine doppelte Japanisch-Belohnung, Web und CLI gleichwertig
 
-Migration: nein (nur Daten).
+Migration: nein (nur Daten). Der Datenbankstand bleibt bei
+`0005_habit_schedule_days` — die Kampagne ist niemals Teil einer Alembic-Revision.
 
 ## 9 — Oberfläche
 
