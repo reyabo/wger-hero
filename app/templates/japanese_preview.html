@@ -152,6 +152,7 @@
   {% endif %}
 
   <form method="POST" action="/japanese/import" class="form">
+  {{ csrf_input(request) }}
     <input type="hidden" name="raw_save" value="{{ raw_save }}">
 
     {% if preview.classification == 'baseline' %}

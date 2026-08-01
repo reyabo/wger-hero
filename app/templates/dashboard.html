@@ -98,6 +98,7 @@
     <div class="card-title">Sync</div>
     <p class="muted">Neueste Workouts von wger abrufen und XP vergeben.</p>
     <form method="POST" action="/sync">
+    {{ csrf_input(request) }}
       <button type="submit" class="btn btn-primary">Jetzt synchronisieren</button>
     </form>
     {% if recent_syncs %}

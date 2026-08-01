@@ -14,6 +14,7 @@
   kann dieselbe Sitzung doppelt belohnt werden.
   <form method="POST" action="/japanese/archive-habit" style="margin-top:0.6rem;"
         onsubmit="return confirm('Habit „Japanisch lernen“ archivieren? Bestehende Erledigungen und XP bleiben erhalten.')">
+  {{ csrf_input(request) }}
     <button type="submit" class="btn btn-ghost btn-sm">Habit archivieren</button>
   </form>
 </div>
@@ -73,6 +74,7 @@ Session-Abschluss: vollständig</pre>
   </details>
 
   <form method="POST" action="/japanese/preview" class="form">
+  {{ csrf_input(request) }}
     <div class="form-row">
       <label for="raw_save">SAVE-Block</label>
       <textarea id="raw_save" name="raw_save" rows="14" class="jp-textarea" required

@@ -14,6 +14,7 @@
 
 <section class="card">
   <form method="POST" action="{{ form_action }}" class="form">
+  {{ csrf_input(request) }}
     <div class="form-row">
       <label for="title">Title</label>
       <input type="text" id="title" name="title" required
