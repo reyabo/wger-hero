@@ -78,6 +78,11 @@ class Quest(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     period_start: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     period_end: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Optional link to a Goal. Quests without a goal keep working unchanged.
+    goal_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    # A one-off, goal-linked quest is displayed as a milestone of that goal.
+    is_milestone: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
     # Python-side defaults (not server_default) so values are always supplied on
     # insert, even on databases migrated via ALTER TABLE ADD COLUMN.
     created_at: Mapped[Optional[datetime]] = mapped_column(
@@ -129,6 +134,9 @@ class Habit(Base):
     category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     duration_size: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     effort: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # Optional link to a Goal. Habits without a goal keep working unchanged.
+    goal_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
@@ -145,6 +153,31 @@ class HabitCompletion(Base):
     completed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     xp_awarded: Mapped[int] = mapped_column(Integer, default=0)
     stat_xp_awarded: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class Goal(Base):
+    """A long-running personal goal that habits and quests can belong to.
+
+    A goal is never deleted through the UI — it is archived. Pausing is a
+    first-class state so a break is recorded as a deliberate choice rather than
+    showing up as a gap or a failure anywhere.
+    """
+
+    __tablename__ = "goals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    slug: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Neutral short label shown on compact cards, e.g. "Training".
+    short_label: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    # active | paused | completed | archived
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
 
 class JapaneseSaveImport(Base):

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ heading }} — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>{{ heading }}</h1>
+</div>
+
+<section class="card">
+  <form method="POST" action="{{ form_action }}" class="form">
+    {{ csrf_input(request) }}
+    <div class="form-row">
+      <label for="title">Titel</label>
+      <input type="text" id="title" name="title" required
+             value="{{ goal.title if goal else '' }}" placeholder="z. B. Kraftpfad">
+    </div>
+
+    <div class="form-row">
+      <label for="short_label">Kurzbezeichnung <span class="muted small">(optional)</span></label>
+      <input type="text" id="short_label" name="short_label"
+             value="{{ goal.short_label if goal and goal.short_label else '' }}"
+             placeholder="z. B. Training">
+    </div>
+
+    <div class="form-row">
+      <label for="description">Beschreibung</label>
+      <textarea id="description" name="description" rows="3">{{ goal.description if goal and goal.description else '' }}</textarea>
+    </div>
+
+    <div class="form-row">
+      <label for="sort_order">Reihenfolge</label>
+      <input type="number" id="sort_order" name="sort_order"
+             value="{{ goal.sort_order if goal else 0 }}">
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Speichern</button>
+      <a href="{{ '/goals/' ~ goal.slug if goal else '/goals' }}" class="btn btn-ghost">Abbrechen</a>
+    </div>
+  </form>
+</section>
+
+{% endblock %}

@@ -702,3 +702,42 @@ code {
   .jp-status-grid { grid-template-columns: 1fr 1fr; }
   .jp-textarea { font-size: 0.8rem; min-height: 11rem; }
 }
+
+/* Goals */
+.goal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; }
+.goal-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem; margin-bottom: 0.3rem; }
+.goal-title { font-size: 1.05rem; font-weight: 700; color: var(--text-main); }
+.goal-title:hover { color: var(--accent-cyan); text-decoration: none; }
+.goal-desc { font-size: 0.88rem; color: var(--text-muted); margin: 0.5rem 0; }
+.goal-card-foot { display: flex; justify-content: space-between; gap: 0.6rem; margin-top: 0.35rem; }
+.goal-next { margin-top: 0.7rem; padding-top: 0.7rem; border-top: 1px solid var(--border-subtle); font-size: 0.9rem; }
+.goal-next .label { display: block; margin-bottom: 0.15rem; }
+.goal-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
+.goal-status-active    { background: var(--accent-cyan-dim); color: var(--accent-cyan); border-color: var(--accent-cyan); }
+.goal-status-paused    { background: #1a1000; color: var(--accent-gold); border-color: var(--accent-gold); }
+.goal-status-completed { background: #052e1a; color: var(--success); border-color: var(--success); }
+.goal-status-archived  { background: #12161f; color: var(--text-muted); border-color: var(--border-subtle); }
+
+.goal-paused, .goal-archived { opacity: 0.85; }
+
+.milestone-list { list-style: none; }
+.milestone { display: flex; align-items: baseline; gap: 0.6rem; padding: 0.45rem 0; border-bottom: 1px solid var(--border-subtle); }
+.milestone:last-child { border-bottom: none; }
+.milestone-mark { color: var(--text-muted); width: 1.1rem; }
+.milestone.done .milestone-mark { color: var(--success); }
+.milestone.done .milestone-title { color: var(--text-muted); }
+.milestone-title { flex: 1; }
+
+.alert-info {
+  background: rgba(0, 212, 255, 0.08);
+  border: 1px solid rgba(0, 212, 255, 0.35);
+  color: var(--text-main);
+  border-radius: var(--radius);
+  padding: 0.8rem 1rem;
+  margin-bottom: 1rem;
+}
+
+@media (max-width: 640px) {
+  .goal-grid { grid-template-columns: 1fr; }
+}

@@ -76,55 +76,64 @@ def test_upgrade_downgrade_upgrade_round_trip(db_url):
 # ---------------------------------------------------------------------------
 
 def _seed_legacy_database(url: str) -> None:
-    """Build a database the way the app did before Alembic, with real rows."""
-    from datetime import datetime
+    """Build a database as it looked BEFORE the current revisions, with real rows.
 
-    from sqlalchemy.orm import sessionmaker
-
-    from app.models import Habit, HabitCompletion, HeroProfile, Quest, XpEvent
+    Deliberately does not use Base.metadata.create_all(): the models now carry
+    columns and tables that later revisions add, so create_all() would produce a
+    database that is already migrated. Running the baseline revision and then
+    dropping alembic's bookkeeping reproduces a genuine pre-Alembic install.
+    Rows are inserted with raw SQL for the same reason — the ORM would try to
+    write columns that do not exist yet.
+    """
+    cfg = _alembic_config(url)
+    command.upgrade(cfg, "0001_baseline")
 
     engine = create_engine(url)
-    Base.metadata.create_all(engine)
-    session = sessionmaker(bind=engine)()
-    session.add(HeroProfile(name="Hero", level=4, total_xp=4200))
-    session.add(
-        XpEvent(
-            event_type="workout_complete", source="wger", source_id="42",
-            xp=100, attribute="Strength", title="Bestand",
-        )
-    )
-    habit = Habit(title="Bestands-Habit", base_xp_reward=25)
-    session.add(habit)
-    session.flush()
-    session.add(
-        HabitCompletion(habit_id=habit.id, completed_at=datetime(2026, 1, 5), xp_awarded=25)
-    )
-    session.add(Quest(slug="legacy", title="Legacy", target_value=3, current_value=2))
-    session.commit()
-    session.close()
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE alembic_version"))
+        conn.execute(text(
+            "INSERT INTO hero_profile (name, level, total_xp) VALUES ('Hero', 4, 4200)"
+        ))
+        conn.execute(text(
+            "INSERT INTO xp_events (event_type, source, source_id, xp, attribute, title)"
+            " VALUES ('workout_complete', 'wger', '42', 100, 'Strength', 'Bestand')"
+        ))
+        conn.execute(text(
+            "INSERT INTO habits (title, active, recurrence, target_count,"
+            " base_xp_reward, created_at, updated_at)"
+            " VALUES ('Bestands-Habit', 1, 'daily', 1, 25,"
+            " '2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+        ))
+        conn.execute(text(
+            "INSERT INTO habit_completions (habit_id, completed_at, xp_awarded,"
+            " stat_xp_awarded) VALUES (1, '2026-01-05 00:00:00', 25, 0)"
+        ))
+        conn.execute(text(
+            "INSERT INTO quests (slug, title, quest_type, period, target_value,"
+            " current_value, xp_reward, attribute, active, repeatable)"
+            " VALUES ('legacy', 'Legacy', 'manual', 'weekly', 3, 2, 100, 'Strength', 1, 0)"
+        ))
     engine.dispose()
 
 
 def _snapshot(url: str) -> dict:
-    from sqlalchemy.orm import sessionmaker
-
-    from app.models import Habit, HabitCompletion, HeroProfile, Quest, XpEvent
-
+    """Read user data with raw SQL so it works before and after a migration."""
     engine = create_engine(url)
-    session = sessionmaker(bind=engine)()
     try:
-        hero = session.query(HeroProfile).first()
-        return {
-            "hero": (hero.level, hero.total_xp),
-            "xp_events": session.query(XpEvent).count(),
-            "habits": session.query(Habit).count(),
-            "completions": session.query(HabitCompletion).count(),
-            "quest_progress": session.query(Quest).filter(
-                Quest.slug == "legacy"
-            ).one().current_value,
-        }
+        with engine.connect() as conn:
+            hero = conn.execute(text("SELECT level, total_xp FROM hero_profile")).first()
+            return {
+                "hero": (hero[0], hero[1]),
+                "xp_events": conn.execute(
+                    text("SELECT count(*) FROM xp_events")).scalar(),
+                "habits": conn.execute(text("SELECT count(*) FROM habits")).scalar(),
+                "completions": conn.execute(
+                    text("SELECT count(*) FROM habit_completions")).scalar(),
+                "quest_progress": conn.execute(
+                    text("SELECT current_value FROM quests WHERE slug='legacy'")
+                ).scalar(),
+            }
     finally:
-        session.close()
         engine.dispose()
 
 
@@ -138,13 +147,17 @@ def test_existing_database_can_be_stamped(db_url):
     assert _snapshot(db_url) == before, "stamping must not touch any data"
 
 
-def test_stamped_database_is_already_at_head(db_url):
-    """After stamping, a further upgrade must be a no-op, not a re-create."""
+def test_stamped_database_upgrades_cleanly(db_url):
+    """The documented adoption path: stamp the baseline, then upgrade.
+
+    Stamping must not re-create what is already there, and the upgrade that
+    follows must apply the later revisions without touching user data.
+    """
     _seed_legacy_database(db_url)
     before = _snapshot(db_url)
 
     cfg = _alembic_config(db_url)
-    command.stamp(cfg, "head")
+    command.stamp(cfg, "0001_baseline")
     command.upgrade(cfg, "head")      # must not raise "table already exists"
 
     assert _snapshot(db_url) == before
@@ -228,3 +241,66 @@ def test_added_columns_transition_is_still_documented():
     assert dbmod._ADDED_COLUMNS, "transitional migrator was removed too early"
     source = Path(dbmod.__file__).read_text()
     assert "Alembic" in source, "the transitional status must be documented"
+
+
+# ---------------------------------------------------------------------------
+# Revision 0002: goals — additive on a populated database
+# ---------------------------------------------------------------------------
+
+def test_goals_revision_upgrades_a_populated_database(db_url):
+    """The riskiest case: new NOT NULL columns on tables that already have rows."""
+    _seed_legacy_database(db_url)
+    before = _snapshot(db_url)
+
+    cfg = _alembic_config(db_url)
+    command.stamp(cfg, "0001_baseline")
+    command.upgrade(cfg, "head")
+
+    tables = _tables(db_url)
+    assert "goals" in tables
+    columns = {
+        t: {c["name"] for c in inspect(create_engine(db_url)).get_columns(t)}
+        for t in ("habits", "quests")
+    }
+    assert {"goal_id", "sort_order"} <= columns["habits"]
+    assert {"goal_id", "is_milestone", "sort_order"} <= columns["quests"]
+    assert _snapshot(db_url) == before, "existing rows must survive untouched"
+
+
+def test_existing_rows_get_defaults_not_nulls(db_url):
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Habit, Quest
+
+    _seed_legacy_database(db_url)
+    cfg = _alembic_config(db_url)
+    command.stamp(cfg, "0001_baseline")
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(db_url)
+    session = sessionmaker(bind=engine)()
+    try:
+        habit = session.query(Habit).first()
+        quest = session.query(Quest).first()
+        assert habit.goal_id is None        # optional link stays empty
+        assert habit.sort_order == 0        # server_default filled it in
+        assert quest.is_milestone in (False, 0)
+        assert quest.sort_order == 0
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_goals_revision_downgrade_removes_only_what_it_added(db_url):
+    _seed_legacy_database(db_url)
+    before = _snapshot(db_url)
+
+    cfg = _alembic_config(db_url)
+    command.stamp(cfg, "0001_baseline")
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0001_baseline")
+
+    tables = _tables(db_url)
+    assert "goals" not in tables
+    assert {"habits", "quests", "hero_profile"} <= tables
+    assert _snapshot(db_url) == before, "downgrade must not lose user data"

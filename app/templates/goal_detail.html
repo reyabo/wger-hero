@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}{{ goal.title }} — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>{{ goal.title }}</h1>
+  <span class="tag goal-status-{{ goal.status }}">{{ status_labels[goal.status] }}</span>
+  <a href="/goals/{{ goal.slug }}/edit" class="btn btn-ghost btn-sm page-action">Bearbeiten</a>
+</div>
+
+{% if goal.short_label %}<p class="page-subtitle">{{ goal.short_label }}</p>{% endif %}
+{% if goal.description %}<p>{{ goal.description }}</p>{% endif %}
+
+{% if goal.status == 'paused' %}
+<div class="alert alert-info" role="status">
+  Dieses Ziel ist pausiert. Der Fortschritt bleibt vollständig erhalten, es wird
+  nicht bewertet, und Momentum sowie Serien nehmen keinen Schaden.
+</div>
+{% endif %}
+
+{% if goal.slug == 'koerperkontrolle' %}
+<div class="alert alert-info" role="note">
+  Bei anhaltender Verspannung, Druck, Brennen oder Schmerzen Training pausieren.
+  Pausen verursachen keine negativen XP und verschlechtern das Momentum nicht.
+  Bei anhaltenden oder ungewöhnlichen Beschwerden medizinisch abklären lassen.
+</div>
+{% endif %}
+
+<section class="card">
+  <div class="card-title">Fortschritt</div>
+  <div class="bar-wrap"><div class="bar" style="width: {{ progress.percent }}%"></div></div>
+  <div class="goal-card-foot">
+    <span class="muted small">{{ progress.milestones_done }} / {{ progress.milestones_total }} Meilensteine</span>
+    <span class="muted small">{{ progress.percent }}%</span>
+  </div>
+  {% if progress.next %}
+  <div class="goal-next"><span class="label">Nächster sinnvoller Schritt</span> {{ progress.next.title }}</div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="card-title">Status</div>
+  <div class="goal-actions">
+    {% if goal.status != 'active' %}
+    <form method="POST" action="/goals/{{ goal.slug }}/status">
+      {{ csrf_input(request) }}
+      <input type="hidden" name="status" value="active">
+      <button type="submit" class="btn btn-primary btn-sm">Fortsetzen</button>
+    </form>
+    {% endif %}
+    {% if goal.status == 'active' %}
+    <form method="POST" action="/goals/{{ goal.slug }}/status">
+      {{ csrf_input(request) }}
+      <input type="hidden" name="status" value="paused">
+      <button type="submit" class="btn btn-ghost btn-sm">Pausieren</button>
+    </form>
+    <form method="POST" action="/goals/{{ goal.slug }}/status">
+      {{ csrf_input(request) }}
+      <input type="hidden" name="status" value="completed">
+      <button type="submit" class="btn btn-ghost btn-sm">Abschließen</button>
+    </form>
+    {% endif %}
+    {% if goal.status != 'archived' %}
+    <form method="POST" action="/goals/{{ goal.slug }}/status"
+          onsubmit="return confirm('Ziel archivieren? Es wird ausgeblendet, aber nichts gelöscht.')">
+      {{ csrf_input(request) }}
+      <input type="hidden" name="status" value="archived">
+      <button type="submit" class="btn btn-ghost btn-sm">Archivieren</button>
+    </form>
+    {% endif %}
+  </div>
+  <p class="muted small">Ziele werden nie gelöscht — Archivieren blendet sie nur aus.</p>
+</section>
+
+<section class="card">
+  <div class="card-title">Meilensteine</div>
+  {% if milestones %}
+  <ul class="milestone-list">
+    {% for m in milestones %}
+    <li class="milestone {% if m.completed_at %}done{% endif %}">
+      <span class="milestone-mark">{% if m.completed_at %}✓{% else %}○{% endif %}</span>
+      <span class="milestone-title">{{ m.title }}</span>
+      <span class="muted small">
+        {% if m.completed_at %}erreicht {{ m.completed_at.strftime('%d.%m.%Y') }}
+        {% else %}noch offen · {{ m.current_value }} / {{ m.target_value }}{% endif %}
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">Noch keine Meilensteine für dieses Ziel.</p>
+  {% endif %}
+</section>
+
+<div class="grid-2">
+  <section class="card">
+    <div class="card-title">Laufende Quests</div>
+    {% if quests %}
+    {% for q in quests %}
+    <div class="quest-row">
+      <div class="quest-info"><span class="quest-name">{{ q.title }}</span></div>
+      <div class="quest-progress">
+        <span class="progress-text">{{ q.current_value }} / {{ q.target_value }}</span>
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="muted">Keine laufenden Quests.</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <div class="card-title">Gewohnheiten</div>
+    {% if habits %}
+    {% for h in habits %}
+    <div class="habit-row">
+      <div class="habit-info">
+        <span class="habit-name">{{ h.title }}</span>
+        {% if not h.active %}<span class="tag">archiviert</span>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="muted">Keine Gewohnheiten zugeordnet.</p>
+    {% endif %}
+  </section>
+</div>
+
+{% endblock %}

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Ziele — wger-hero{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>Ziele</h1>
+  <a href="/goals/new" class="btn btn-primary page-action">+ Neues Ziel</a>
+</div>
+
+{% if goals %}
+<div class="goal-grid">
+  {% for goal in goals %}
+  {% set p = progress[goal.id] %}
+  <section class="card goal-card goal-{{ goal.status }}">
+    <div class="goal-card-head">
+      <a href="/goals/{{ goal.slug }}" class="goal-title">{{ goal.title }}</a>
+      <span class="tag goal-status-{{ goal.status }}">{{ status_labels[goal.status] }}</span>
+    </div>
+    {% if goal.short_label %}
+    <div class="muted small">{{ goal.short_label }}</div>
+    {% endif %}
+    {% if goal.description %}
+    <p class="goal-desc">{{ goal.description }}</p>
+    {% endif %}
+
+    <div class="bar-wrap" aria-label="Meilenstein-Fortschritt">
+      <div class="bar" style="width: {{ p.percent }}%"></div>
+    </div>
+    <div class="goal-card-foot">
+      <span class="muted small">{{ p.milestones_done }} / {{ p.milestones_total }} Meilensteine</span>
+      <span class="muted small">{{ p.habits }} Gewohnheiten · {{ p.quests }} Quests</span>
+    </div>
+
+    {% if p.next %}
+    <div class="goal-next"><span class="label">Nächster Schritt</span> {{ p.next.title }}</div>
+    {% endif %}
+    {% if goal.status == 'paused' %}
+    <p class="muted small">Pausiert — der Fortschritt bleibt erhalten und wird nicht bewertet.</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
+{% else %}
+<section class="card">
+  <p class="muted">Noch keine Ziele. <a href="/goals/new">Erstes Ziel anlegen</a>.</p>
+</section>
+{% endif %}
+
+<p class="muted small">
+  {% if show_archived %}
+  <a href="/goals">Archivierte ausblenden</a>
+  {% else %}
+  <a href="/goals?archived=1">Archivierte anzeigen</a>
+  {% endif %}
+</p>
+
+{% endblock %}
