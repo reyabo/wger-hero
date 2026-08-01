@@ -13,10 +13,19 @@ logger = logging.getLogger(__name__)
 _engine = None
 _SessionLocal = None
 
+# TRANSITIONAL — superseded by Alembic (see migrations/ and docs/DEPLOY.md).
+#
 # Columns added to pre-existing tables after the initial release. create_all()
 # never ALTERs existing tables, so we add missing columns by hand. DDL defaults
 # are constants only (SQLite forbids non-constant ADD COLUMN defaults); runtime
 # values come from the Python-side defaults on the models.
+#
+# This list is deliberately kept until every live database has been adopted by
+# Alembic (`alembic stamp`, documented in docs/DEPLOY.md). Removing it earlier
+# would leave a database that was upgraded by this mechanism but never stamped
+# with no way to add the columns it is missing. It is additive and idempotent,
+# so running alongside Alembic is harmless; new schema changes go into a
+# revision, not into this list.
 _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "quests": [
         ("period", "VARCHAR(20)"),

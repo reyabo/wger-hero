@@ -76,3 +76,6 @@ training-export*
 *.tsv
 *.jsonl
 .claude/
+
+# Zeitgestempelte Testausgaben (Abschlussbericht, nicht eingecheckt)
+wger-hero-tests-*.txt
