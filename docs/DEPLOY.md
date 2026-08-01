@@ -86,6 +86,24 @@ docker compose exec wger-hero alembic current \
                                            >> "$LOG-09-upgrade.txt"  2>&1
 ```
 
+### 3c. Nach Revision 0003 (Quest-Abschlüsse)
+
+`quest_completions` startet leer. Bereits abgeschlossene Quests bekommen
+**keinen** nachträglichen Datensatz — es wird keine Historie erfunden. Sie
+werden dennoch nicht erneut belohnt, weil `completed_at` und `active` weiter
+greifen. Prüfen, dass die Tabelle existiert und der Unique-Index steht:
+
+```bash
+docker compose exec wger-hero sqlite3 /data/wger_hero.db \
+  "SELECT count(*) FROM quest_completions;
+   SELECT name FROM sqlite_master WHERE type='index'
+     AND name='ix_quest_completions_dedup_key';" \
+                                           > "$LOG-09b-completions.txt"  2>&1
+```
+
+Erwartet: `0` und der Indexname. Fehlt der Index, ist die Migration
+unvollständig — dann nicht weitermachen, sondern Abschnitt 8 (Rückweg).
+
 ## 4. Container neu bauen
 
 ```bash
