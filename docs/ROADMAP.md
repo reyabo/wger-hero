@@ -85,16 +85,16 @@ Ab dieser Revision ist der Datensatz die maßgebliche Quelle für „schon
 belohnt". Für Streaks und Meilensteine in Schritt 5 zählt entsprechend erst,
 was ab dem Cutover erfasst wurde.
 
-## 5 — Momentum und Streaks
+## 5 — Momentum und Streaks  ✅
 
-- [ ] Streak: aufeinanderfolgende vollständig erfüllte Perioden, KW Mo–So,
+- [x] Streak: aufeinanderfolgende vollständig erfüllte Perioden, KW Mo–So,
       `Europe/Berlin`; laufende Woche zählt nur bei Erfüllung; bester Streak bleibt
-- [ ] Momentum: 40/30/20/10 über die letzten vier **abgeschlossenen** Wochen,
+- [x] Momentum: 40/30/20/10 über die letzten vier **abgeschlossenen** Wochen,
       Erfüllungsgrad je Woche auf 0–100 gedeckelt, Ergebnis 0–100
-- [ ] Laufende Woche nie als Fehlschlag; pausierte Zeiträume neutral; fehlende
+- [x] Laufende Woche nie als Fehlschlag; pausierte Zeiträume neutral; fehlende
       Daten sichtbar neutral
-- [ ] Modul ohne Datenbank unit-testbar; Formel im UI erklärt
-- [ ] Tests: KW-Grenzen, DST, pausierte Wochen, Übererfüllung, Datenlücken
+- [x] Modul ohne Datenbank unit-testbar; Formel im UI erklärt
+- [x] Tests: KW-Grenzen, DST, pausierte Wochen, Übererfüllung, Datenlücken
 
 Migration: nein.
 

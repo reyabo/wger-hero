@@ -39,6 +39,62 @@
 </section>
 
 <section class="card">
+  <div class="card-title">Diese Woche, Momentum und Serie</div>
+  <div class="goal-metrics">
+    <div class="metric">
+      <span class="label">Diese Woche</span>
+      <span class="metric-value">{{ week.this_week.achieved }} / {{ week.this_week.target }}</span>
+    </div>
+    <div class="metric">
+      <span class="label">Momentum</span>
+      <span class="metric-value">
+        {% if week.momentum.has_value %}{{ week.momentum.value }} %{% else %}—{% endif %}
+      </span>
+    </div>
+    <div class="metric">
+      <span class="label">Aktuelle Serie</span>
+      <span class="metric-value">{{ week.streak.current }}</span>
+    </div>
+    <div class="metric">
+      <span class="label">Beste Serie</span>
+      <span class="metric-value">{{ week.streak.best }}</span>
+    </div>
+  </div>
+
+  {% if not week.scored %}
+  <p class="muted small">
+    Dieses Ziel wird derzeit nicht bewertet. Der Fortschritt bleibt erhalten.
+  </p>
+  {% elif not week.momentum.has_value %}
+  <p class="muted small">
+    Noch nicht genug abgeschlossene Wochen für einen Momentum-Wert.
+  </p>
+  {% endif %}
+
+  <details class="momentum-help">
+    <summary>Wie wird Momentum berechnet?</summary>
+    <ul class="momentum-formula">
+      {% for line in momentum_explanation %}<li>{{ line }}</li>{% endfor %}
+    </ul>
+    {% if week.momentum.contributions %}
+    <table class="xp-table">
+      <thead><tr><th>Woche</th><th class="right">Gewicht</th><th class="right">Erfüllung</th><th>Zählt</th></tr></thead>
+      <tbody>
+        {% for c in week.momentum.contributions %}
+        <tr>
+          <td class="muted small">{% if c.counted %}ab {{ c.week_start.strftime('%d.%m.%Y') }}{% else %}—{% endif %}</td>
+          <td class="right">{{ c.weight }} %</td>
+          <td class="right">{% if c.counted %}{{ c.fulfilment }} %{% else %}—{% endif %}</td>
+          <td class="muted small">{% if c.counted %}ja{% else %}{{ c.reason }}{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </details>
+</section>
+
+<section class="card">
   <div class="card-title">Status</div>
   <div class="goal-actions">
     {% if goal.status != 'active' %}
