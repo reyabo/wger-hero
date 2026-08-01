@@ -6,12 +6,18 @@
   <h1>{{ heading }}</h1>
 </div>
 
+{% if error %}
+<div class="alert alert-error">
+  <strong>Eingabe nicht übernommen:</strong> {{ error }}
+</div>
+{% endif %}
+
 <section class="card">
   <form method="POST" action="{{ form_action }}" class="form">
     <div class="form-row">
       <label for="title">Title</label>
       <input type="text" id="title" name="title" required
-             value="{{ quest.title if quest else '' }}" placeholder="e.g. Read 600 minutes this month">
+             value="{{ submitted.title if submitted else (quest.title if quest else '') }}" placeholder="e.g. Read 600 minutes this month">
     </div>
 
     <div class="form-row">
@@ -32,17 +38,30 @@
 
       <div class="form-row">
         <label for="period">Period</label>
-        <select id="period" name="period">
+        <select id="period" name="period" onchange="toggleRange()">
+          {% set sel_period = submitted.period if submitted else (quest.period if quest else 'weekly') %}
           {% for p in periods %}
-          <option value="{{ p }}" {% if quest and quest.period == p %}selected{% elif not quest and p == 'weekly' %}selected{% endif %}>{{ p }}</option>
+          <option value="{{ p }}" {% if sel_period == p %}selected{% endif %}>{{ p }}</option>
           {% endfor %}
         </select>
+      </div>
+
+      <div class="form-row" id="range-start">
+        <label for="period_start">Zeitraum von <span class="muted small">(nur bei „once“)</span></label>
+        <input type="date" id="period_start" name="period_start"
+               value="{{ submitted.period_start if submitted else (quest.period_start.strftime('%Y-%m-%d') if quest and quest.period_start else '') }}">
+      </div>
+
+      <div class="form-row" id="range-end">
+        <label for="period_end">Zeitraum bis</label>
+        <input type="date" id="period_end" name="period_end"
+               value="{{ submitted.period_end if submitted else (quest.period_end.strftime('%Y-%m-%d') if quest and quest.period_end else '') }}">
       </div>
 
       <div class="form-row">
         <label for="target_value">Target value</label>
         <input type="number" id="target_value" name="target_value" min="1"
-               value="{{ quest.target_value if quest else 1 }}">
+               value="{{ submitted.target_value if submitted else (quest.target_value if quest else 1) }}">
       </div>
 
       <div class="form-row">
@@ -84,7 +103,7 @@
     <div class="form-row">
       <label for="match_text">Match text <span class="muted small">(habit_count: only count habits whose title contains this)</span></label>
       <input type="text" id="match_text" name="match_text"
-             value="{{ quest.match_text if quest and quest.match_text else '' }}" placeholder="optional, e.g. Japanese">
+             value="{{ submitted.match_text if submitted else (quest.match_text if quest and quest.match_text else '') }}" placeholder="optional, e.g. Japanese">
     </div>
 
     <div class="form-row checkbox-row">
@@ -155,6 +174,16 @@ function updatePreview() {
 }
 
 updatePreview();
+</script>
+
+<script>
+function toggleRange() {
+  var isOnce = document.getElementById('period').value === 'once';
+  ['range-start', 'range-end'].forEach(function (id) {
+    document.getElementById(id).style.display = isOnce ? '' : 'none';
+  });
+}
+toggleRange();
 </script>
 
 {% endblock %}

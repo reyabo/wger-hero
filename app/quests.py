@@ -137,6 +137,45 @@ def _period_end_from(start_dt: datetime, period: Optional[str]) -> Optional[date
     return datetime.combine(end, datetime.max.time())
 
 
+def parse_period_range(
+    start_raw: Optional[str], end_raw: Optional[str]
+) -> tuple[Optional[datetime], Optional[datetime], Optional[str]]:
+    """Validate an explicit ISO date range from a form.
+
+    Returns ``(start, end, error)``. Both empty is valid and yields
+    ``(None, None, None)``. A range is only accepted when both dates are given
+    and ``end >= start``; anything else returns a German error message and no
+    dates, so the caller can re-render the form instead of silently correcting.
+
+    start is normalized to the beginning of its day and end to the end of its
+    day, matching _period_end_from(), so a range is inclusive on both sides.
+    """
+    start_raw = (start_raw or "").strip()
+    end_raw = (end_raw or "").strip()
+
+    if not start_raw and not end_raw:
+        return None, None, None
+    if not start_raw or not end_raw:
+        return None, None, (
+            "Für einen festen Zeitraum müssen Start- und Enddatum gesetzt sein."
+        )
+
+    try:
+        start = date.fromisoformat(start_raw)
+        end = date.fromisoformat(end_raw)
+    except ValueError:
+        return None, None, "Ungültiges Datum (erwartet: JJJJ-MM-TT)."
+
+    if end < start:
+        return None, None, "Das Enddatum darf nicht vor dem Startdatum liegen."
+
+    return (
+        datetime.combine(start, datetime.min.time()),
+        datetime.combine(end, datetime.max.time()),
+        None,
+    )
+
+
 def _period_window(quest: Quest) -> tuple[Optional[datetime], Optional[datetime]]:
     """
     Resolve a quest's counting window.
@@ -391,6 +430,8 @@ def create_quest(
     category: Optional[str] = None,
     duration_size: Optional[str] = None,
     effort: Optional[str] = None,
+    period_start: Optional[datetime] = None,
+    period_end: Optional[datetime] = None,
 ) -> Quest:
     """Create and persist a user-defined quest."""
     xp, computed_stats = _resolve_quest_xp(
@@ -416,6 +457,8 @@ def create_quest(
         category=category if category in CATEGORY_CHOICES else None,
         duration_size=duration_size if duration_size in DURATION_CHOICES else None,
         effort=effort if effort in EFFORT_CHOICES else None,
+        period_start=period_start,
+        period_end=period_end,
     )
     db.add(quest)
     db.commit()
@@ -440,6 +483,8 @@ def update_quest(
     category: Optional[str] = None,
     duration_size: Optional[str] = None,
     effort: Optional[str] = None,
+    period_start: Optional[datetime] = None,
+    period_end: Optional[datetime] = None,
 ) -> Quest:
     """Update an existing quest in place (slug is preserved)."""
     xp, computed_stats = _resolve_quest_xp(
@@ -461,6 +506,11 @@ def update_quest(
     quest.category = category if category in CATEGORY_CHOICES else None
     quest.duration_size = duration_size if duration_size in DURATION_CHOICES else None
     quest.effort = effort if effort in EFFORT_CHOICES else None
+    # An explicit window wins in _period_window(), so a stale one left over from
+    # a previous "once" range would silently pin a recurring quest to it. The
+    # caller passes None for every period other than "once", which clears it.
+    quest.period_start = period_start
+    quest.period_end = period_end
     quest.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(quest)
