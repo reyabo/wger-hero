@@ -1,0 +1,29 @@
+{#
+  The hero panel. Every number here already exists — name, level and the XP
+  split come from _hero_context(), which reads app/xp.py. Nothing is invented,
+  and there is no character artwork: the sigil is a CSS ring around a rune, so
+  the panel needs no image and imitates no one's figure.
+
+  `charged` is set only on a page that is showing a confirmed completion.
+#}
+<section class="hero-panel{% if charged %} is-charged{% endif %}" aria-labelledby="hero-name">
+  <div class="hero-sigil" aria-hidden="true">⚔</div>
+
+  <div class="hero-identity">
+    <div class="hero-name" id="hero-name">{{ hero.name }}</div>
+    <div class="hero-meta">
+      <span><strong>Level {{ level }}</strong></span>
+      <span>{{ xp_in_level }} / {{ xp_needed }} XP bis Level {{ level + 1 }}</span>
+      <span>Gesamt {{ hero.total_xp }} XP</span>
+    </div>
+  </div>
+
+  <div class="hero-xp-track"
+       role="progressbar"
+       aria-valuenow="{{ xp_pct }}"
+       aria-valuemin="0"
+       aria-valuemax="100"
+       aria-label="Fortschritt bis Level {{ level + 1 }}">
+    <div class="hero-xp-fill" style="width: {{ xp_pct }}%"></div>
+  </div>
+</section>

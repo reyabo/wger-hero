@@ -6,15 +6,16 @@
   <title>{% block title %}wger-hero{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
   <link rel="manifest" href="/manifest.webmanifest">
-  <meta name="theme-color" content="#14161c">
+  <meta name="theme-color" content="#070a13">
   <link rel="icon" href="/static/icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/icons/icon.svg">
 </head>
 <body>
+  <a class="skip-link" href="#main">Zum Inhalt springen</a>
   <header class="site-header">
     <div class="container">
       <a href="/" class="site-logo">⚔ wger-hero</a>
-      <nav>
+      <nav aria-label="Hauptnavigation">
         <a href="/" {% if request.url.path == '/' %}class="active"{% endif %}>Übersicht</a>
         <a href="/today" {% if request.url.path.startswith('/today') %}class="active"{% endif %}>Heute</a>
         <a href="/week" {% if request.url.path.startswith('/week') %}class="active"{% endif %}>Woche</a>
@@ -29,7 +30,7 @@
     </div>
   </header>
 
-  <main class="container">
+  <main class="container" id="main">
     {% block content %}{% endblock %}
   </main>
 
