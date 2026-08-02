@@ -1,339 +1,479 @@
 # DEPLOY — wger-hero
 
-Deployment auf dem Zielserver. **Diese Schritte werden nicht von Claude Code
-ausgeführt** — die Entwicklungsumgebung hat keinen Zugriff auf den Server, die
-Produktivdatenbank oder eine echte wger-Instanz.
+Verbindlicher Ablauf für ein Update der Produktivinstanz. Jeder Schritt schreibt
+sein Ergebnis in eine Datei, damit im Fehlerfall nachvollziehbar ist, wo es
+gehakt hat.
 
-Alle Beispiele leiten ihre Ausgabe in zeitgestempelte Dateien um. Gib niemals
-Secrets aus: keine Tokens, keine Hashes, keine Session-Keys.
-
-```bash
-TS=$(date +%Y-%m-%d_%H-%M-%S)
-LOG=/srv/data/wger-hero/deploy-$TS
-mkdir -p "$(dirname "$LOG")"
-```
-
-Umgebungsannahmen laut Projektvorgabe: Container `wger-hero`, intern Port 5000,
-Host-Port 8091, hinter Caddy, Datenbank `/srv/data/wger-hero/wger_hero.db`.
-Die konkrete Caddy- und Compose-Konfiguration des Servers ist hier **nicht**
-dokumentiert, weil sie in diesem Repository nicht vorliegt — nicht erfinden,
-sondern auf dem Server nachsehen.
+**Nichts hiervon wird aus einer Entwicklungssitzung heraus ausgeführt.** Diese
+Datei ist die Anleitung für den Betreiber am Server.
 
 ---
 
-## 1. Bestandsprüfung
+## 0. Vorbereitung und Annahmen
 
 ```bash
-docker compose ps                          > "$LOG-01-ps.txt"        2>&1
-docker compose exec wger-hero python -c "import app; print('ok')" \
-                                           > "$LOG-02-import.txt"    2>&1
-sqlite3 /srv/data/wger-hero/wger_hero.db ".tables" \
-                                           > "$LOG-03-tables.txt"    2>&1
-sqlite3 /srv/data/wger-hero/wger_hero.db \
-  "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version';" \
-                                           > "$LOG-04-alembic.txt"   2>&1
+TS=$(date +%F_%H-%M-%S)
+LOG=/srv/data/wger-hero/deploy-$TS
+mkdir -p /srv/data/wger-hero
+cd /pfad/zu/wger-hero
 ```
 
-Ist `alembic_version` **nicht** vorhanden, ist die Datenbank noch nicht
-übernommen → Abschnitt 3a. Ist sie vorhanden → Abschnitt 3b.
+Der Container heißt `wger-hero`, läuft intern auf Port 5000, veröffentlicht auf
+8091, hinter Caddy.
 
-## 2. Sicherung inklusive WAL-Zustand
+### Den Datenbankpfad zuerst feststellen
 
-Die Datenbank läuft im WAL-Modus. Ein blosses `cp` der `.db`-Datei ist **nicht**
-konsistent, weil die zuletzt geschriebenen Seiten noch in `-wal` liegen können.
-`.backup` schreibt einen konsistenten Stand, auch bei laufendem Container.
+Der Pfad steht **an genau einer Stelle** und wird hier als Variable gesetzt, weil
+er im Repository und auf dem Server abweichen kann:
 
 ```bash
-sqlite3 /srv/data/wger-hero/wger_hero.db \
-  ".backup '/srv/data/wger-hero/wger_hero.db.bak-$TS'" \
-                                           > "$LOG-05-backup.txt"    2>&1
-ls -l /srv/data/wger-hero/wger_hero.db.bak-$TS \
-                                           >> "$LOG-05-backup.txt"   2>&1
-sqlite3 "/srv/data/wger-hero/wger_hero.db.bak-$TS" "PRAGMA integrity_check;" \
-                                           > "$LOG-06-integrity.txt" 2>&1
+# Auf Fairbrook:
+DB_IN_CONTAINER=/data/wger_hero.sqlite
+DB_ON_HOST=/srv/data/wger-hero/wger_hero.sqlite
 ```
 
-`integrity_check` muss `ok` liefern. Erst dann weiter.
+> **Vor dem ersten Befehl prüfen.** Die `docker-compose.yml` im Repository setzt
+> als Vorgabe `DATABASE_URL=sqlite:////data/wger_hero.db` — mit `.db`. Ein
+> Eintrag unter `environment:` **überschreibt** `.env`, die Vorgabe gewinnt also
+> gegen eine dort gesetzte Variable. Weicht der Server davon ab, muss seine
+> `docker-compose.yml` den Pfad selbst setzen. Erst nachsehen, dann arbeiten:
+>
+> ```bash
+> docker compose exec wger-hero printenv DATABASE_URL
+> docker compose exec wger-hero ls -l /data
+> ```
+>
+> Die tatsächliche Ausgabe ist maßgeblich, nicht diese Datei.
 
-## 3. Migration
+---
 
-Migration ist ein **expliziter** Schritt. Die Anwendung migriert weder beim
-Import noch beim Start — das ist durch Tests abgesichert.
-
-### 3a. Bestehende Datenbank übernehmen (einmalig)
-
-Die Datenbank hat bereits alle Tabellen. Die Baseline-Revision darf hier
-**nicht** ausgeführt werden — sie würde an bereits existierenden Tabellen
-scheitern. Stattdessen wird der Stand gestempelt:
+## 1. Aktuellen Containerzustand prüfen
 
 ```bash
-docker compose exec wger-hero alembic stamp 0001_baseline \
-                                           > "$LOG-07-stamp.txt"     2>&1
-docker compose exec wger-hero alembic current \
-                                           >> "$LOG-07-stamp.txt"    2>&1
+docker compose ps                          > "$LOG-01-ps.txt"          2>&1
+docker compose logs --tail=200 wger-hero  >> "$LOG-01-ps.txt"          2>&1
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8091/healthz \
+                                          >> "$LOG-01-ps.txt"          2>&1
 ```
 
-Danach einmal Abschnitt 3b, um spätere Revisionen anzuwenden.
+Erwartet: Container `running`, Healthcheck `200`. Läuft die Instanz schon vorher
+nicht, wird nicht deployt, sondern erst die Ursache gesucht.
 
-### 3b. Migration anwenden
+## 2. Git-Stand prüfen
 
 ```bash
-docker compose exec wger-hero alembic current \
-                                           > "$LOG-08-before.txt"    2>&1
-docker compose exec wger-hero alembic upgrade head \
-                                           > "$LOG-09-upgrade.txt"   2>&1
-docker compose exec wger-hero alembic current \
-                                           >> "$LOG-09-upgrade.txt"  2>&1
+git fetch origin                           > "$LOG-02-git.txt"         2>&1
+git status --porcelain                    >> "$LOG-02-git.txt"         2>&1
+git log --oneline -5 origin/main          >> "$LOG-02-git.txt"         2>&1
 ```
 
-### 3c. Nach Revision 0003 (Quest-Abschlüsse)
+Erwartet: sauberes Arbeitsverzeichnis. Lokale Änderungen am Server sind ein
+Warnsignal — sie gehen beim Pull verloren oder erzeugen einen Konflikt.
 
-`quest_completions` startet leer. Bereits abgeschlossene Quests bekommen
-**keinen** nachträglichen Datensatz — es wird keine Historie erfunden. Sie
-werden dennoch nicht erneut belohnt, weil `completed_at` und `active` weiter
-greifen. Prüfen, dass die Tabelle existiert und der Unique-Index steht:
+## 3. SQLite-Integrität prüfen
 
 ```bash
-docker compose exec wger-hero sqlite3 /data/wger_hero.db \
-  "SELECT count(*) FROM quest_completions;
-   SELECT name FROM sqlite_master WHERE type='index'
-     AND name='ix_quest_completions_dedup_key';" \
-                                           > "$LOG-09b-completions.txt"  2>&1
-```
-
-Erwartet: `0` und der Indexname. Fehlt der Index, ist die Migration
-unvollständig — dann nicht weitermachen, sondern Abschnitt 8 (Rückweg).
-
-### 3d. Nach Revision 0004 (Pausenzeiträume der Ziele)
-
-`goal_pause_intervals` startet ebenfalls leer. Pausen, die **vor** dieser
-Revision begonnen haben, bekommen keinen nachträglichen Datensatz — auch hier
-wird keine Historie erfunden. Ein bereits pausiertes Ziel bleibt pausiert und
-wird weiterhin nicht bewertet; seine zurückliegenden Wochen zählen so wie
-bisher. Erst ab dem nächsten Pausieren entsteht ein Intervall.
-
-Prüfen, dass die Tabelle und der **partielle** Unique-Index existieren:
-
-```bash
-docker compose exec wger-hero sqlite3 /data/wger_hero.db \
-  "SELECT count(*) FROM goal_pause_intervals;
-   SELECT sql FROM sqlite_master WHERE type='index'
-     AND name='ux_goal_pause_open';" \
-                                           > "$LOG-09c-pauses.txt"     2>&1
-```
-
-Erwartet: `0` und eine Indexdefinition, die auf `WHERE ended_at IS NULL` endet.
-Fehlt der Zusatz, wäre pro Ziel nur **eine** Pause überhaupt möglich — dann
-nicht weitermachen, sondern Abschnitt 8 (Rückweg).
-
-### 3e. Nach Revision 0005 (Wochenplanung der Gewohnheiten)
-
-`habit_schedule_days` startet leer. Bestehende Gewohnheiten bekommen **keine**
-Planung — sie bleiben flexibel und erscheinen wie bisher an jedem Tag. Weder
-Gewohnheiten noch Completions werden verändert.
-
-```bash
-docker compose exec wger-hero sqlite3 /data/wger_hero.db \
-  "SELECT count(*) FROM habit_schedule_days;
+docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "PRAGMA integrity_check;
+   PRAGMA foreign_key_check;
+   SELECT count(*) FROM xp_events;
    SELECT count(*) FROM habit_completions;
-   SELECT sql FROM sqlite_master WHERE type='table'
-     AND name='habit_schedule_days';" \
-                                           > "$LOG-09d-schedule.txt"    2>&1
+   SELECT count(*) FROM quest_completions;
+   SELECT count(*) FROM japanese_save_imports;" \
+                                           > "$LOG-03-integrity.txt"   2>&1
 ```
 
-Erwartet: `0`, die unveränderte Anzahl der Completions und eine Tabellen-
-definition mit `UNIQUE (habit_id, iso_weekday)`. Fehlt der Unique-Zusatz, könnte
-ein Wochentag doppelt gespeichert werden — dann nicht weitermachen, sondern
-Abschnitt 8 (Rückweg). Rückweg dieser Revision:
-`alembic downgrade 0004_goal_pause_intervals` plus Backup; das Löschen der
-Planungstabelle lässt Gewohnheiten und Completions unberührt (getestet).
+Erwartet: `ok`, keine Fremdschlüsselverletzung, plausible Zahlen. Diese Zahlen
+sind später der Vergleichsmaßstab.
 
-### 3f. PWA und Starter-Kampagne (Schritt 7 und 8)
+## 4. Konsistentes Online-Backup erstellen
 
-**Keine neue Migration.** Beide Schritte kommen mit den vorhandenen Modellen
-aus: die PWA ist rein statisch, und die Starter-Kampagne legt ausschließlich
-Zeilen in `goals`, `habits`, `habit_schedule_days` und `quests` an. Der
-Datenbankstand bleibt deshalb bei `0005_habit_schedule_days`. Eine leere
-Revision wird bewusst nicht erzeugt.
+`.backup` ist WAL-konsistent — im Gegensatz zu einem `cp` der Datei, das mitten
+in einer Transaktion einen unbrauchbaren Stand einfängt.
 
-Die Starter-Kampagne ist **niemals** Teil einer Alembic-Revision — sie ist
-Daten, keine Schemaänderung, und wird nur auf ausdrückliche Anforderung
-angelegt.
+```bash
+docker compose exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
+  ".backup '/data/backup-$TS.sqlite'"      > "$LOG-04-backup.txt"      2>&1
+ls -l /srv/data/wger-hero/backup-$TS.sqlite \
+                                          >> "$LOG-04-backup.txt"      2>&1
+docker compose exec wger-hero sqlite3 -readonly "/data/backup-$TS.sqlite" \
+  "PRAGMA integrity_check;"               >> "$LOG-04-backup.txt"      2>&1
+```
 
-Prüfen, dass die PWA-Dateien ausgeliefert werden:
+Erwartet: Datei vorhanden, nicht leer, `ok`. **Ohne geprüftes Backup wird nicht
+weitergemacht.**
+
+## 5. Altes Image als Rollback taggen
+
+```bash
+docker image inspect wger-hero-wger-hero:latest --format '{{.Id}}' \
+                                           > "$LOG-05-image.txt"       2>&1
+docker tag wger-hero-wger-hero:latest wger-hero:rollback-$TS \
+                                          >> "$LOG-05-image.txt"       2>&1
+docker image ls | grep wger-hero          >> "$LOG-05-image.txt"       2>&1
+```
+
+Damit existiert ein benanntes Ziel für Abschnitt 19.
+
+## 6. Neues Image bauen
+
+```bash
+git pull origin main                       > "$LOG-06-pull.txt"        2>&1
+docker compose build                      >> "$LOG-06-pull.txt"        2>&1
+```
+
+Der Build kopiert `app/`, `alembic.ini` **und** `migrations/` ins Image — ohne
+die beiden letzten wäre der Migrationsbefehl in Abschnitt 7 und 10 im Container
+nicht ausführbar.
+
+## 7. Migration auf einer Kopie testen
+
+Erst auf einer Kopie, nie zuerst auf den Echtdaten.
+
+```bash
+cp /srv/data/wger-hero/backup-$TS.sqlite \
+   /srv/data/wger-hero/migrationstest-$TS.sqlite \
+                                           > "$LOG-07-migtest.txt"     2>&1
+docker compose run --rm \
+  -e DATABASE_URL="sqlite:////data/migrationstest-$TS.sqlite" \
+  wger-hero python -m alembic current     >> "$LOG-07-migtest.txt"     2>&1
+docker compose run --rm \
+  -e DATABASE_URL="sqlite:////data/migrationstest-$TS.sqlite" \
+  wger-hero python -m alembic upgrade head \
+                                          >> "$LOG-07-migtest.txt"     2>&1
+docker compose run --rm \
+  -e DATABASE_URL="sqlite:////data/migrationstest-$TS.sqlite" \
+  wger-hero python -m alembic current     >> "$LOG-07-migtest.txt"     2>&1
+docker compose exec wger-hero sqlite3 -readonly \
+  "/data/migrationstest-$TS.sqlite" "PRAGMA integrity_check;" \
+                                          >> "$LOG-07-migtest.txt"     2>&1
+```
+
+Erwartet am Ende: Revision `0006_optional_learning_metrics (head)` und `ok`.
+Schlägt hier etwas fehl, wird **nicht** produktiv migriert.
+
+**Erstübernahme einer Bestandsdatenbank:** ist noch nie mit Alembic gearbeitet
+worden, existiert keine `alembic_version`-Tabelle. Dann **nicht** `upgrade`,
+sondern erst `alembic stamp 0001_baseline` und danach `alembic upgrade head`.
+Ein `upgrade` über ein bestehendes Schema scheitert laut — das ist Absicht und
+durch einen Test abgesichert.
+
+## 8. Container stoppen
+
+```bash
+docker compose stop wger-hero              > "$LOG-08-stop.txt"        2>&1
+docker compose ps                         >> "$LOG-08-stop.txt"        2>&1
+```
+
+## 9. Finales Offline-Backup erstellen
+
+Zwischen Abschnitt 4 und jetzt kann noch geschrieben worden sein. Bei
+gestopptem Container ist die Datei ruhig:
+
+```bash
+cp /srv/data/wger-hero/wger_hero.sqlite \
+   /srv/data/wger-hero/offline-$TS.sqlite  > "$LOG-09-offline.txt"     2>&1
+ls -l /srv/data/wger-hero/*.sqlite*       >> "$LOG-09-offline.txt"     2>&1
+```
+
+`-wal` und `-shm` gehören zur Datenbank. Bei gestopptem Container sind sie in
+der Regel bereits eingearbeitet; existieren sie noch, werden sie **mitkopiert**
+und nicht einzeln gelöscht.
+
+## 10. Produktive Migration ausführen
+
+```bash
+docker compose run --rm wger-hero python -m alembic current \
+                                           > "$LOG-10-migrate.txt"     2>&1
+docker compose run --rm wger-hero python -m alembic upgrade head \
+                                          >> "$LOG-10-migrate.txt"     2>&1
+docker compose run --rm wger-hero python -m alembic current \
+                                          >> "$LOG-10-migrate.txt"     2>&1
+```
+
+Die Anwendung migriert **nie** von selbst — weder beim Import noch beim Start.
+Das ist eine feste Architekturregel und durch einen Test abgesichert.
+
+## 11. Neuen Container starten
+
+```bash
+docker compose up -d                       > "$LOG-11-up.txt"          2>&1
+docker compose ps                         >> "$LOG-11-up.txt"          2>&1
+docker compose logs --tail=100 wger-hero  >> "$LOG-11-up.txt"          2>&1
+```
+
+## 12. Healthcheck
+
+```bash
+sleep 5
+curl -sS http://127.0.0.1:8091/healthz     > "$LOG-12-health.txt"      2>&1
+curl -sS -o /dev/null -w 'login: %{http_code}\n' \
+  http://127.0.0.1:8091/login             >> "$LOG-12-health.txt"      2>&1
+```
+
+## 13. Datenbankintegrität
+
+```bash
+docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "PRAGMA integrity_check;"                > "$LOG-13-integrity.txt"   2>&1
+```
+
+## 14. Fremdschlüssel- und Bestandsprüfung
+
+```bash
+docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "PRAGMA foreign_key_check;
+   SELECT count(*) FROM xp_events;
+   SELECT count(*) FROM habit_completions;
+   SELECT count(*) FROM quest_completions;
+   SELECT count(*) FROM goal_pause_intervals;
+   SELECT count(*) FROM habit_schedule_days;
+   SELECT count(*) FROM japanese_save_imports;" \
+                                           > "$LOG-14-counts.txt"      2>&1
+```
+
+Die Zahlen müssen zu Abschnitt 3 passen. Eine gesunkene Zahl ist ein Abbruch­
+grund — dann Abschnitt 19.
+
+## 15. PWA-Smoke-Test
 
 ```bash
 for path in /manifest.webmanifest /sw.js /offline \
-            /static/icons/icon.svg /static/icons/icon-maskable.svg; do
+            /static/icons/icon.svg /static/icons/icon-maskable.svg \
+            /static/style.css; do
   curl -sS -o /dev/null -w "$path: %{http_code}\n" "https://DEINE-DOMAIN$path"
-done                                       > "$LOG-09e-pwa.txt"        2>&1
+done                                       > "$LOG-15-pwa.txt"         2>&1
 ```
 
-Erwartet: überall `200`. Die Installation als App setzt **HTTPS** voraus — über
-Caddy, nicht über den direkten Port 8091. Ein Browser registriert sonst keinen
-Service Worker.
+Erwartet: überall `200`. Die Installation als App setzt **HTTPS** voraus, also
+den Weg über Caddy — über den direkten Port 8091 registriert kein Browser einen
+Service Worker. Der Port ist zum Debuggen da, nicht als Installationsweg.
 
-### 3g. Nach Revision 0006 (optionale Lernstandskennzahlen)
+## 16. SAVE-Smoke-Test
 
-`japanese_save_imports.wanikani_level` und `.bunpro_points` werden nullable.
-Bestandswerte bleiben **unverändert** — eine NOT-NULL-Bedingung zu lösen kann
-vorhandene Daten nicht ungültig machen, und kein Wert wird umgeschrieben.
-SQLite kann keine Spalte in place ändern, daher baut `batch_alter_table` die
-Tabelle neu und Alembic kopiert die Zeilen unverändert.
+Rein rechnend, ohne Schreibzugriff:
 
 ```bash
-docker compose exec wger-hero sqlite3 /data/wger_hero.db \
-  "SELECT count(*) FROM japanese_save_imports;
-   SELECT count(*) FROM japanese_save_imports WHERE bunpro_points IS NULL;
-   SELECT sql FROM sqlite_master WHERE type='table'
-     AND name='japanese_save_imports';" \
-                                           > "$LOG-09f-save-metrics.txt"  2>&1
+docker compose exec wger-hero python - <<'PY' > "$LOG-16-save.txt" 2>&1
+from app.japanese_saves import parse_save
+BLOCK = """=== 状態 SAVE ===
+Datum: 2026-08-01 | Streak: 4
+WaniKani-Level: 2
+Bunpro-Level: N5
+Grammatikpunkte im SRS: 37
+Charakter: Lv 2 (見習い) | 433 / 1000 XP
+語彙 180 | 文法 250 | 読解 0 | 聴解 0 | 会話 215
+=== END SAVE ==="""
+s = parse_save(BLOCK)
+print("wanikani_level:", s.wanikani_level)
+print("bunpro_level:  ", s.bunpro_level)
+print("bunpro_points: ", s.bunpro_points)
+print("hash:          ", s.normalized_hash())
+PY
 ```
 
-Erwartet: die unveränderte Anzahl der Imports, `0` NULL-Werte direkt nach der
-Migration und eine Tabellendefinition, in der `wanikani_level` und
-`bunpro_points` **kein** `NOT NULL` mehr tragen.
-
-**Rückweg mit Datenverlust in genau einer Richtung.**
-`alembic downgrade 0005_habit_schedule_days` stellt `NOT NULL` wieder her und
-muss dafür jede Zeile füllen: Imports, die nach dieser Revision „nicht
-angegeben" gespeichert haben, werden dabei zu `0`. Gezählte Werte bleiben
-unangetastet. Vorher sichern — wie bei jeder Migration, siehe Abschnitt 2.
-
-## 4a. Starter-Kampagne aktivieren (optional, nach dem Deployment)
-
-Getrennter, bewusst ausgelöster Schritt. Nicht Teil des Deployments.
+## 17. Starter-Dry-run
 
 ```bash
-# 1. Dry-run: zeigt nur an, was passieren würde
+docker compose exec wger-hero python -m app.seed_programs starter --dry-run \
+                                           > "$LOG-17-starter-dry.txt" 2>&1
+```
+
+Der Dry-run schreibt nichts. Die eigentliche Aktivierung ist ein getrennter,
+bewusster Schritt — siehe Abschnitt 18.
+
+## 18. Manuelle UI-Abnahme
+
+Die manuelle UI-Abnahme ist der letzte Schritt vor der Freigabe.
+
+Siehe [docs/UI_CHECKLIST.md](UI_CHECKLIST.md). Kurz: Login, `/today`, `/week`,
+ein Habit abschließen und die Reaktion prüfen, ein pausiertes Ziel ansehen, die
+Japanisch-Vorschau mit fehlenden Werten öffnen, Starter-Vorschau, Offline-Seite.
+
+---
+
+## 18a. Starter-Kampagne aktivieren (optional, getrennt)
+
+Nicht Teil des Deployments. Reihenfolge:
+
+```bash
+# 1. Dry-run
 docker compose exec wger-hero python -m app.seed_programs starter --dry-run \
                                            > "$LOG-20-starter-dry.txt"  2>&1
-
 # 2. Vorschau prüfen — besonders Zeilen mit "Konflikt"
 less "$LOG-20-starter-dry.txt"
-
-# 3. Datenbank sichern (WAL-konsistent, siehe Abschnitt 2)
-docker compose exec wger-hero sqlite3 /data/wger_hero.db \
-  ".backup '/data/backup-vor-starter.db'"  > "$LOG-21-starter-backup.txt" 2>&1
-
+# 3. Sichern
+docker compose exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
+  ".backup '/data/vor-starter-$TS.sqlite'" > "$LOG-21-starter-backup.txt" 2>&1
 # 4. Aktivieren
 docker compose exec wger-hero python -m app.seed_programs starter \
                                            > "$LOG-22-starter-apply.txt" 2>&1
-
 # 5. Ergebnis prüfen
 less "$LOG-22-starter-apply.txt"
-
-# 6. Erneuter Dry-run: muss "Keine Änderungen nötig" melden
+# 6. Abnahme: erneuter Dry-run muss "Keine Änderungen nötig" melden
 docker compose exec wger-hero python -m app.seed_programs starter --dry-run \
                                            > "$LOG-23-starter-recheck.txt" 2>&1
 ```
 
-Schritt 6 ist die eigentliche Abnahme: meldet der zweite Dry-run noch offene
-Änderungen, ist etwas schiefgelaufen — dann nicht erneut aktivieren, sondern
-die Ausgabe prüfen. Dasselbe ist auch über die Oberfläche möglich:
-**Einstellungen → Starter-Kampagne**, Vorschau, dann Bestätigung.
-
-## 4. Container neu bauen
-
-```bash
-git -C /pfad/zu/wger-hero pull origin main > "$LOG-10-pull.txt"      2>&1
-docker compose up -d --build               > "$LOG-11-build.txt"     2>&1
-docker compose ps                          >> "$LOG-11-build.txt"    2>&1
-```
-
-## 5. Healthcheck
-
-```bash
-curl -fsS http://127.0.0.1:8091/healthz    > "$LOG-12-health.txt"    2>&1
-```
-
-Erwartet: `{"status":"ok"}`.
-
-## 6. Funktionsprüfung
-
-Im Browser, angemeldet:
-
-- Übersicht lädt, XP und Level plausibel
-- Sync auslösen, keine neuen Fehler
-- Habits und Quests sichtbar, Fortschritt unverändert
-- `/japanese` lädt, letzter Import unverändert
-- `/stats` zeigt das Radar
-- `/settings` zeigt Token-Status ohne Wert
-
-Datenbestand gegenprüfen:
-
-```bash
-sqlite3 /srv/data/wger-hero/wger_hero.db \
-  "SELECT level,total_xp FROM hero_profile;
-   SELECT count(*) FROM xp_events;
-   SELECT count(*) FROM habit_completions;
-   SELECT count(*) FROM japanese_save_imports;" \
-                                           > "$LOG-13-counts.txt"    2>&1
-```
-
-Die Zahlen müssen zum Stand vor der Migration passen.
-
-## 7. Logprüfung
-
-```bash
-docker compose logs --tail=200 wger-hero   > "$LOG-14-logs.txt"      2>&1
-grep -iE "error|traceback|exception" "$LOG-14-logs.txt" \
-                                           > "$LOG-15-errors.txt"    2>&1 || true
-```
-
-`$LOG-15-errors.txt` sollte leer sein. Prüfe zusätzlich, dass **kein** Token,
-Hash oder Session-Key im Log steht.
-
-## 8. Rückweg
-
-Zuerst der reguläre Weg über Alembic:
-
-```bash
-docker compose exec wger-hero alembic downgrade -1 \
-                                           > "$LOG-16-downgrade.txt" 2>&1
-docker compose up -d --build               >> "$LOG-16-downgrade.txt" 2>&1
-```
-
-Wenn das nicht reicht, zurück auf das Backup. Container vorher stoppen, damit
-keine Schreibvorgänge laufen. Die alte Datei wird **nicht gelöscht**, sondern
-zur Seite gelegt:
-
-```bash
-docker compose stop wger-hero              > "$LOG-17-restore.txt"   2>&1
-mv /srv/data/wger-hero/wger_hero.db \
-   /srv/data/wger-hero/wger_hero.db.pre-restore-$TS \
-                                           >> "$LOG-17-restore.txt"  2>&1
-rm -f /srv/data/wger-hero/wger_hero.db-wal /srv/data/wger-hero/wger_hero.db-shm
-cp "/srv/data/wger-hero/wger_hero.db.bak-$TS" \
-   /srv/data/wger-hero/wger_hero.db        >> "$LOG-17-restore.txt"  2>&1
-docker compose start wger-hero             >> "$LOG-17-restore.txt"  2>&1
-curl -fsS http://127.0.0.1:8091/healthz    >> "$LOG-17-restore.txt"  2>&1
-```
-
-Die `-wal`/`-shm`-Dateien gehören zur alten Datenbank und müssen weg, sonst
-mischt SQLite den alten WAL-Inhalt in die wiederhergestellte Datei.
+Schritt 6 ist die eigentliche Abnahme. Meldet er noch offene Änderungen, nicht
+erneut aktivieren, sondern die Ausgabe prüfen. Derselbe Weg steht in der
+Oberfläche unter **Einstellungen → Starter-Kampagne**.
 
 ---
 
-## Secrets erzeugen
+## Revisionsspezifische Prüfungen
 
-Werden ausserhalb des Repositories erzeugt und schreibgeschützt eingebunden.
-Nie committen, nie ins Log schreiben.
+Nach einem Update, das eine dieser Revisionen zum ersten Mal anwendet.
+
+### Nach `0003_quest_completions`
+
+`quest_completions` startet leer. Vorher abgeschlossene Quests bekommen keinen
+nachträglichen Datensatz — es wird keine Historie erfunden. Sie werden trotzdem
+nicht erneut belohnt, weil `completed_at` und `active` weiter greifen.
 
 ```bash
-# Session-Schlüssel
-umask 077
-openssl rand -hex 32 > /srv/secrets/hero_session_secret
-
-# Passwort-Hash (Argon2), Passwort interaktiv, nicht in der Shell-History
-python - <<'EOF' > /srv/secrets/hero_password_hash
-from argon2 import PasswordHasher
-from getpass import getpass
-print(PasswordHasher().hash(getpass("Passwort: ")), end="")
-EOF
-
-chmod 400 /srv/secrets/hero_session_secret /srv/secrets/hero_password_hash
+docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT count(*) FROM quest_completions;
+   SELECT name FROM sqlite_master WHERE type='index'
+     AND name='ix_quest_completions_dedup_key';"
 ```
 
-Einbindung read-only per Compose, Pfade über `AUTH_PASSWORD_HASH_FILE` und
-`SESSION_SECRET_FILE`. Details in `.env.example`.
+Erwartet: `0` und der Indexname. Fehlt der Index, ist die Migration
+unvollständig — dann Abschnitt 19.
+
+### Nach `0004_goal_pause_intervals`
+
+`goal_pause_intervals` startet leer. Pausen, die vorher begonnen haben, bekommen
+keinen Datensatz. Ein bereits pausiertes Ziel bleibt pausiert; erst beim
+nächsten Pausieren entsteht ein Intervall.
+
+```bash
+docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT count(*) FROM goal_pause_intervals;
+   SELECT sql FROM sqlite_master WHERE type='index' AND name='ux_goal_pause_open';"
+```
+
+Erwartet: `0` und eine Indexdefinition, die auf `WHERE ended_at IS NULL` endet.
+Fehlt der Zusatz, wäre pro Ziel nur **eine** Pause überhaupt möglich.
+
+### Nach `0005_habit_schedule_days`
+
+`habit_schedule_days` startet leer. Bestehende Gewohnheiten bekommen keine
+Planung — sie bleiben flexibel und erscheinen wie bisher an jedem Tag.
+
+```bash
+docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT count(*) FROM habit_schedule_days;
+   SELECT count(*) FROM habit_completions;
+   SELECT sql FROM sqlite_master WHERE type='table' AND name='habit_schedule_days';"
+```
+
+Erwartet: `0`, die unveränderte Zahl der Completions und
+`UNIQUE (habit_id, iso_weekday)` in der Tabellendefinition.
+
+### Nach `0006_optional_learning_metrics`
+
+`japanese_save_imports.wanikani_level` und `.bunpro_points` werden nullable.
+Bestandswerte bleiben **unverändert**; eine bestehende `0` wird **nicht**
+rückwirkend zu `NULL`. Erst neue Imports ohne die jeweilige Zeile speichern
+`NULL` — „nicht angegeben".
+
+```bash
+docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT count(*) FROM japanese_save_imports;
+   SELECT count(*) FROM japanese_save_imports WHERE bunpro_points IS NULL;
+   SELECT sql FROM sqlite_master WHERE type='table' AND name='japanese_save_imports';"
+```
+
+Erwartet: die unveränderte Zahl der Imports, direkt nach der Migration `0`
+NULL-Werte, und eine Definition, in der `wanikani_level` und `bunpro_points`
+**kein** `NOT NULL` mehr tragen.
+
+> **Der Rückweg hinter `0006` ist verlustbehaftet.**
+> `alembic downgrade 0005_habit_schedule_days` stellt `NOT NULL` wieder her und
+> braucht dafür in jeder Zeile einen Wert. Zeilen, die „nicht angegeben"
+> gespeichert haben, werden zu `0`. Gezählte Werte bleiben unangetastet, aber
+> die Unterscheidung zwischen „nicht angegeben" und einer echten `0` ist danach
+> **weg** und lässt sich aus der Datenbank nicht rekonstruieren.
+>
+> **Für einen vollständig datentreuen Rollback hinter
+> `0006_optional_learning_metrics` ist das vor dem Deployment erstellte
+> SQLite-Backup zu verwenden. Ein Alembic-Downgrade allein stellt die
+> ursprüngliche NULL-Semantik nicht vollständig wieder her.**
+
+---
+
+## 19. Rückweg
+
+Es gibt zwei verschiedene Rückwege. Welcher gebraucht wird, hängt davon ab, ob
+die Datenbank schon verändert wurde.
+
+### 19a. Nur die Anwendung zurückrollen
+
+Wenn die Migration **nicht** gelaufen ist oder die alte Anwendung mit dem neuen
+Schema noch arbeiten kann — additive Revisionen erlauben das in der Regel:
+
+```bash
+docker compose stop wger-hero              > "$LOG-30-rollback.txt"    2>&1
+docker tag wger-hero:rollback-$TS wger-hero-wger-hero:latest \
+                                          >> "$LOG-30-rollback.txt"    2>&1
+docker compose up -d --no-build           >> "$LOG-30-rollback.txt"    2>&1
+curl -sS http://127.0.0.1:8091/healthz    >> "$LOG-30-rollback.txt"    2>&1
+```
+
+Die Datenbank bleibt unangetastet. Das ist der schonende Weg und der erste, den
+man versucht.
+
+### 19b. Die Datenbank zurückrollen
+
+Nur wenn die Daten selbst beschädigt sind oder hinter `0006` zurückgegangen
+werden muss.
+
+```bash
+# 1. Container stoppen
+docker compose stop wger-hero              > "$LOG-31-restore.txt"     2>&1
+
+# 2. Den fehlgeschlagenen Stand separat sichern — nicht überschreiben.
+mv /srv/data/wger-hero/wger_hero.sqlite \
+   /srv/data/wger-hero/fehlgeschlagen-$TS.sqlite \
+                                          >> "$LOG-31-restore.txt"     2>&1
+# -wal und -shm gehören dazu: mitnehmen, damit der Stand analysierbar bleibt.
+for suffix in -wal -shm; do
+  [ -f "/srv/data/wger-hero/wger_hero.sqlite$suffix" ] && \
+  mv "/srv/data/wger-hero/wger_hero.sqlite$suffix" \
+     "/srv/data/wger-hero/fehlgeschlagen-$TS.sqlite$suffix"
+done                                      >> "$LOG-31-restore.txt"     2>&1
+
+# 3. Backup prüfen, bevor es eingespielt wird.
+sqlite3 -readonly "/srv/data/wger-hero/offline-$TS.sqlite" \
+  "PRAGMA integrity_check;"               >> "$LOG-31-restore.txt"     2>&1
+
+# 4. Einspielen
+cp /srv/data/wger-hero/offline-$TS.sqlite \
+   /srv/data/wger-hero/wger_hero.sqlite   >> "$LOG-31-restore.txt"     2>&1
+
+# 5. Altes Image starten
+docker tag wger-hero:rollback-$TS wger-hero-wger-hero:latest \
+                                          >> "$LOG-31-restore.txt"     2>&1
+docker compose up -d --no-build           >> "$LOG-31-restore.txt"     2>&1
+curl -sS http://127.0.0.1:8091/healthz    >> "$LOG-31-restore.txt"     2>&1
+```
+
+**Nie** die produktive Datei ohne geprüftes Backup überschreiben, und **nie**
+den fehlgeschlagenen Stand einfach löschen: er ist die einzige Quelle für die
+Frage, was schiefgegangen ist.
+
+---
+
+## Smoke-Test-Skripte
+
+Rein lesend, nicht Teil des Deployments, jederzeit ausführbar:
+
+```bash
+bash scripts/smoke_full.sh          # Healthcheck, PWA, Seiten, DB, Starter-Dry-run
+bash scripts/smoke_today_week.sh    # Tages- und Wochenlogik
+bash scripts/smoke_pwa_starter.sh   # PWA-Assets und Starter-Vorschau
+```
+
+Jedes schreibt seine Ausgabe in eine TXT-Datei, gibt keine Secrets aus,
+aktiviert nichts und ändert nichts.

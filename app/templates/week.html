@@ -8,6 +8,8 @@
   <a href="/today">Zur Tagesansicht</a>
 </p>
 
+{% include "_reward.html" %}
+
 {% if date_error %}
 <p class="notice">{{ date_error }}</p>
 {% endif %}
@@ -30,7 +32,7 @@
     {% if day.planned %}
     <ul class="day-list">
       {% for item in day.planned %}
-      <li class="day-item {% if item.done %}is-done{% elif item.paused %}is-paused{% endif %}">
+      <li class="day-item {% if item.done %}is-done{% elif item.paused %}is-paused{% endif %}{% if reward and reward.habit_id == item.habit.id and day.day == today %} is-fresh{% endif %}">
         <div class="day-item-main">
           <span class="day-item-title">{{ item.habit.title }}</span>
           {% if item.goal %}

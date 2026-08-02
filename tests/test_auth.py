@@ -490,3 +490,27 @@ def test_activating_the_campaign_needs_a_csrf_token(secure_client):
 def test_the_pwa_files_stay_public(secure_client):
     for path in ("/manifest.webmanifest", "/sw.js", "/offline"):
         assert secure_client.get(path).status_code == 200
+
+
+def test_the_login_page_is_focused_and_leaks_nothing(secure_client):
+    html = secure_client.get("/login").text
+    assert 'name="password"' in html
+    assert "login-card" in html
+    assert "login-sigil" in html
+    # The page may *say* it checks an Argon2 hash; it may never show one, nor a
+    # secret path.
+    for leak in ("$argon2", "AUTH_PASSWORD_HASH_FILE", "SESSION_SECRET_FILE",
+                 "Traceback", "/run/secrets"):
+        assert leak not in html
+
+
+def test_a_wrong_password_says_so_without_internals(secure_client):
+    page = secure_client.get("/login")
+    token = _token_from(page.text)
+    resp = secure_client.post(
+        "/login", data={"password": "falsch", CSRF_FIELD: token}
+    )
+    assert resp.status_code in (200, 401)
+    for leak in ("$argon2", "Traceback", "SESSION_SECRET_FILE",
+                 "AUTH_PASSWORD_HASH_FILE"):
+        assert leak not in resp.text

@@ -14,7 +14,9 @@ set -uo pipefail
 
 CONTAINER="${CONTAINER:-wger-hero}"
 BASE="${BASE:-http://127.0.0.1:8091}"
-DB="${DB:-/data/wger_hero.db}"
+# On Fairbrook the file is wger_hero.sqlite — verify with
+#   docker exec wger-hero printenv DATABASE_URL
+DB="${DB:-/data/wger_hero.sqlite}"
 OUT="wger-hero-smoke-$(date +%F_%H-%M-%S).txt"
 
 exec > "$OUT" 2>&1

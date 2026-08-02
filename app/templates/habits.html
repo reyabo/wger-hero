@@ -8,6 +8,8 @@
   <a href="/habits/new" class="btn btn-primary page-action">+ New Habit</a>
 </div>
 
+{% include "_reward.html" %}
+
 {% set active_habits = habits | selectattr("active") | list %}
 {% set inactive_habits = habits | rejectattr("active") | list %}
 
@@ -15,7 +17,7 @@
   <div class="card-title">Active</div>
   {% if active_habits %}
     {% for habit in active_habits %}
-    <div class="habit-row">
+    <div class="habit-row{% if reward and reward.habit_id == habit.id %} is-fresh{% endif %}">
       <div class="habit-info">
         <span class="habit-name">{{ habit.title }}</span>
         {% if habit.description %}<span class="habit-desc">{{ habit.description }}</span>{% endif %}
@@ -52,7 +54,7 @@
   <section class="card">
     <div class="card-title">Inactive</div>
     {% for habit in inactive_habits %}
-    <div class="habit-row">
+    <div class="habit-row{% if reward and reward.habit_id == habit.id %} is-fresh{% endif %}">
       <div class="habit-info">
         <span class="habit-name muted">{{ habit.title }}</span>
         <div class="habit-meta">

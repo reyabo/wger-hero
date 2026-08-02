@@ -1,7 +1,11 @@
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
+
+from itsdangerous import URLSafeTimedSerializer
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import (
@@ -225,6 +229,78 @@ def _set_session(response, session: SessionData, settings) -> None:
         serialize_session(session, load_session_secret(settings)),
         **_cookie_kwargs(settings),
     )
+
+
+# --- The completion moment -------------------------------------------------
+#
+# A confirmed habit completion leaves one short-lived, signed cookie behind. The
+# next rendered page consumes it — reads it, shows it, deletes it. That is what
+# makes the reward moment appear exactly once: a reload has no cookie left, a
+# failed or deduplicated POST never set one, and a CSRF rejection never reaches
+# the route at all. No new table, no query parameter that survives in history.
+
+REWARD_COOKIE = "hero_reward"
+REWARD_MAX_AGE_SECONDS = 30
+
+
+# With AUTH_ENABLED=false there is no session secret file, and the reward
+# effect must still work. A per-process key is enough here: the flash lives for
+# seconds, carries no secret, and only decides whether an animation plays.
+_REWARD_FALLBACK_SECRET = secrets.token_urlsafe(32)
+
+
+def _reward_secret(settings) -> str:
+    try:
+        return load_session_secret(settings)
+    except Exception:  # noqa: BLE001 — auth off, or no secret configured
+        return _REWARD_FALLBACK_SECRET
+
+
+def _reward_serializer(settings) -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(_reward_secret(settings), salt="wger-hero-reward")
+
+
+def set_reward_flash(response, settings, payload: dict) -> None:
+    """Hand one confirmed success to the page that renders next."""
+    try:
+        token = _reward_serializer(settings).dumps(payload)
+    except Exception:  # noqa: BLE001 — a missing secret must not break a completion
+        logger.warning("Could not sign the reward flash; skipping the effect")
+        return
+    response.set_cookie(
+        REWARD_COOKIE,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=bool(settings.COOKIE_SECURE),
+        max_age=REWARD_MAX_AGE_SECONDS,
+        path="/",
+    )
+
+
+def take_reward_flash(request: Request, settings) -> Optional[dict]:
+    """Read the flash once. The caller must clear the cookie on its response."""
+    raw = request.cookies.get(REWARD_COOKIE)
+    if not raw:
+        return None
+    try:
+        payload = _reward_serializer(settings).loads(
+            raw, max_age=REWARD_MAX_AGE_SECONDS
+        )
+    except Exception:  # noqa: BLE001 — expired or tampered: simply no effect
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _render_with_reward(request: Request, name: str, context: dict):
+    """Render a page, consuming any pending reward flash exactly once."""
+    settings = get_settings()
+    reward = take_reward_flash(request, settings)
+    context = {**context, "reward": reward, "charged": bool(reward)}
+    response = templates.TemplateResponse(request=request, name=name, context=context)
+    if reward is not None:
+        response.delete_cookie(REWARD_COOKIE, path="/")
+    return response
 
 
 async def _csrf_token_from_body(request: Request) -> str | None:
@@ -541,10 +617,10 @@ async def today_page(request: Request, db: Session = Depends(get_db)):
     hero = _ensure_hero(db, get_settings().HERO_NAME)
     day = app_today()
     data = today_plan(db, day)
-    return templates.TemplateResponse(
-        request=request,
-        name="today.html",
-        context={
+    return _render_with_reward(
+        request,
+        "today.html",
+        {
             **_hero_context(hero),
             "day": day,
             "plan": data["plan"],
@@ -564,11 +640,11 @@ async def week_page(
     hero = _ensure_hero(db, get_settings().HERO_NAME)
     today = app_today()
     reference, date_error = parse_reference_date(date, today)
-    plan = week_plan(db, reference)
-    return templates.TemplateResponse(
-        request=request,
-        name="week.html",
-        context={
+    plan = week_plan(db, reference, today=today)
+    return _render_with_reward(
+        request,
+        "week.html",
+        {
             **_hero_context(hero),
             "today": today,
             "week": plan,
@@ -813,10 +889,10 @@ async def habits_page(request: Request, db: Session = Depends(get_db)):
         h.id: db.query(HabitCompletion).filter(HabitCompletion.habit_id == h.id).count()
         for h in habits
     }
-    return templates.TemplateResponse(
-        request=request,
-        name="habits.html",
-        context={
+    return _render_with_reward(
+        request,
+        "habits.html",
+        {
             **_hero_context(hero),
             "habits": habits,
             "habit_rewards": habit_rewards,
@@ -944,15 +1020,31 @@ async def habit_complete(habit_id: int, request: Request, db: Session = Depends(
     habit = db.get(Habit, habit_id)
     if habit is None:
         raise HTTPException(status_code=404, detail="Habit not found")
-    hero = _ensure_hero(db, get_settings().HERO_NAME)
-    complete_habit(db, habit, hero)
+    settings = get_settings()
+    hero = _ensure_hero(db, settings.HERO_NAME)
+    result = complete_habit(db, habit, hero)
     # Habit completions may advance habit_count quests and unlock achievements.
-    evaluate_quests(db, hero)
-    check_achievements(db, hero)
+    newly_completed = []
+    if result.ok:
+        newly_completed = evaluate_quests(db, hero)
+        check_achievements(db, hero)
+
     form = await request.form()
-    return RedirectResponse(
+    response = RedirectResponse(
         url=safe_next(form.get("next"), "/habits"), status_code=303
     )
+    # Only a genuinely recorded completion earns the reward moment. An inactive
+    # habit and a deduplicated double-click both return ok=False, so neither
+    # shows an effect and neither claims XP that was not awarded.
+    if result.ok:
+        set_reward_flash(response, settings, {
+            "habit_id": habit.id,
+            "title": habit.title,
+            "xp": int(result.xp_awarded),
+            "stat_xp": int(result.stat_xp_awarded),
+            "quests": newly_completed[:3],
+        })
+    return response
 
 
 
