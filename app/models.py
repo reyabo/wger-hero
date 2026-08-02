@@ -272,9 +272,13 @@ class JapaneseSaveImport(Base):
     save_date: Mapped[datetime] = mapped_column(Date, index=True)
     streak: Mapped[int] = mapped_column(Integer, default=0)
 
-    wanikani_level: Mapped[int] = mapped_column(Integer, default=0)
+    # All three are optional: a SAVE need not report a learning metric, and NULL
+    # means "not stated in that SAVE". That is deliberately different from 0,
+    # which is a counted zero. The columns were NOT NULL with default 0 until
+    # revision 0006, which could only record the difference by losing it.
+    wanikani_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     bunpro_level: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    bunpro_points: Mapped[int] = mapped_column(Integer, default=0)
+    bunpro_points: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Progress inside the *source* level bar — not cumulative lifetime XP.
     source_character_level: Mapped[int] = mapped_column(Integer, default=1)

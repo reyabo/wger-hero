@@ -5,17 +5,30 @@ Deliberately database-free so the rules stay unit-testable without a session —
 same principle as ``app/xp.py`` and ``app/rewards.py``. Nothing here calls a
 model, a session, or the network.
 
-The SAVE block is copy-pasted by the user and looks like this::
+The SAVE block is copy-pasted by the user. Only a small core is required —
+the date, the character line and the five scores::
 
     === 状態 SAVE ===
-    Datum: 2026-07-31 | Streak: 4
-    WaniKani: Lv 1 | Bunpro: N5, 5 Punkte
+    Datum: 2026-08-01 | Streak: 4
     Charakter: Lv 2 (見習い) | 433 / 1000 XP
     語彙 180 | 文法 250 | 読解 0 | 聴解 0 | 会話 215
+    === END SAVE ===
+
+Everything else is optional and independent: the learning metrics (as three
+separate lines or as the combined legacy line), the session pair, and the coach
+notes. A missing optional value is ``None`` — never ``0``, never a placeholder,
+and never the value from an earlier import::
+
+    === 状態 SAVE ===
+    Datum: 2026-08-01 | Streak: 4
+    WaniKani-Level: 2
+    Bunpro-Level: N5
+    Grammatikpunkte im SRS: 37
+    Charakter: Lv 2 (見習い) | 433 / 1000 XP
+    Session-Modus: START
+    Session-Abschluss: vollständig
+    語彙 180 | 文法 250 | 読解 0 | 聴解 0 | 会話 215
     Aktueller Grammatikpunkt: これ
-    Debuffs: keine
-    Neue Vokabeln heute: keine
-    Tagesquest: Erfüllt – Mini-Boss „Partikel-Golem“ besiegt.
     === END SAVE ===
 
 ``433 / 1000 XP`` is progress *inside the current source level*, not a lifetime
@@ -202,15 +215,23 @@ def _strip_markers_and_normalize(raw: str) -> str:
 # Parsed SAVE
 # ---------------------------------------------------------------------------
 
+def _opt_number(value: Optional[int]) -> str:
+    """Canonical text for an optional number: "" when unset, never "0"."""
+    return "" if value is None else str(value)
+
+
 @dataclass(frozen=True)
 class JapaneseSave:
     """One fully parsed and validated SAVE snapshot."""
 
     save_date: date
     streak: int
-    wanikani_level: int
-    bunpro_level: str
-    bunpro_points: int
+    # Independent, optional learning metrics. None means "not stated in this
+    # SAVE" and is deliberately not 0: a missing count and a counted zero are
+    # different facts, and only one of them may be stored as a number.
+    wanikani_level: Optional[int]
+    bunpro_level: Optional[str]
+    bunpro_points: Optional[int]
     character_level: int
     character_rank: str
     level_xp: int
@@ -220,10 +241,12 @@ class JapaneseSave:
     reading: int
     listening: int
     speaking: int
-    grammar_point: str
-    debuffs: str
-    new_vocabulary: str
-    daily_quest: str
+    # Optional coach notes. Absent or empty is None — no placeholder is
+    # invented and no value is carried over from an earlier import.
+    grammar_point: Optional[str]
+    debuffs: Optional[str]
+    new_vocabulary: Optional[str]
+    daily_quest: Optional[str]
     session_xp: Optional[int]
     raw: str
     # New deterministic-reward fields. None when the line is absent (old format)
@@ -249,9 +272,9 @@ class JapaneseSave:
         parts = [
             self.save_date.isoformat(),
             str(self.streak),
-            str(self.wanikani_level),
-            self.bunpro_level.upper(),
-            str(self.bunpro_points),
+            _opt_number(self.wanikani_level),
+            (self.bunpro_level or "").upper(),
+            _opt_number(self.bunpro_points),
             str(self.character_level),
             _normalize_text(self.character_rank),
             str(self.level_xp),
@@ -261,10 +284,10 @@ class JapaneseSave:
             str(self.reading),
             str(self.listening),
             str(self.speaking),
-            _normalize_text(self.grammar_point),
-            _normalize_text(self.debuffs),
-            _normalize_text(self.new_vocabulary),
-            _normalize_text(self.daily_quest),
+            _normalize_text(self.grammar_point or ""),
+            _normalize_text(self.debuffs or ""),
+            _normalize_text(self.new_vocabulary or ""),
+            _normalize_text(self.daily_quest or ""),
             "" if self.session_xp is None else str(self.session_xp),
             self.session_mode or _normalize_text(self.session_mode_raw or ""),
             self.session_completion or _normalize_text(self.session_completion_raw or ""),
@@ -288,16 +311,40 @@ _LV = r"(?:Lv\.?|Level)\s*(\d+)"
 # wording differs, so it is a wording variant of one field, not a second field.
 _BUNPRO_POINTS = r"(?P<points>-?\d+)\s*(?:Grammatik)?Punkte?(?:\s+im\s+SRS)?"
 
+# Bunpro levels the coach may report. JLPT N1–N5 are the levels Bunpro itself
+# organises its grammar by; nothing beyond them is invented here, and anything
+# else is refused rather than stored as an unknown string.
+BUNPRO_LEVELS = ("N1", "N2", "N3", "N4", "N5")
+
+# The optional Bunpro tail of the combined line: ", 10 Grammatikpunkte im SRS",
+# ", 5 Punkte", or nothing at all.
+_BUNPRO_TAIL = r"(?:\s*,\s*" + _BUNPRO_POINTS + r")?"
+
 _PATTERNS: dict[str, re.Pattern] = {
     "datum": re.compile(
         r"^Datum:\s*(?P<date>[0-9]{1,4}-[0-9]{1,2}-[0-9]{1,2})\s*\|\s*"
         r"Streak:\s*(?P<streak>-?\d+)\s*$",
         re.IGNORECASE,
     ),
+    # The combined legacy line. Everything after the WaniKani level is optional,
+    # so "WaniKani: Lv 2", "… | Bunpro: N5" and the full form all parse.
     "wanikani": re.compile(
-        r"^WaniKani:\s*" + _LV + r"\s*\|\s*Bunpro:\s*"
-        r"(?P<bunpro>[A-Za-z0-9]+)\s*,\s*" + _BUNPRO_POINTS + r"\s*$",
+        r"^WaniKani:\s*" + _LV +
+        r"(?:\s*\|\s*Bunpro:\s*(?P<bunpro>[A-Za-z0-9]+)" + _BUNPRO_TAIL + r")?\s*$",
         re.IGNORECASE,
+    ),
+    # The same Bunpro half on a line of its own, as older SAVEs wrote it.
+    "bunpro": re.compile(
+        r"^Bunpro:\s*(?P<bunpro>[A-Za-z0-9]+)" + _BUNPRO_TAIL + r"\s*$",
+        re.IGNORECASE,
+    ),
+    # Independent modern spellings. Each may appear alone, together with the
+    # others, or not at all. The value is captured loosely and validated below,
+    # so "zwei" produces a plain message instead of an unreadable-line error.
+    "wanikani_level": re.compile(r"^WaniKani-Level:\s*(?P<value>.*)$", re.IGNORECASE),
+    "bunpro_level": re.compile(r"^Bunpro-Level:\s*(?P<value>.*)$", re.IGNORECASE),
+    "srs_points": re.compile(
+        r"^Grammatikpunkte im SRS:\s*(?P<value>.*)$", re.IGNORECASE
     ),
     "charakter": re.compile(
         r"^Charakter:\s*" + _LV + r"\s*\((?P<rank>[^)]*)\)\s*\|\s*"
@@ -322,6 +369,10 @@ _PATTERNS: dict[str, re.Pattern] = {
 _FIELD_OF_KEY = {
     "datum": "save_date",
     "wanikani": "wanikani_level",
+    "bunpro": "bunpro_level",
+    "wanikani_level": "wanikani_level",
+    "bunpro_level": "bunpro_level",
+    "srs_points": "bunpro_points",
     "charakter": "character_level",
     "scores": "scores",
     "grammatikpunkt": "grammar_point",
@@ -333,33 +384,35 @@ _FIELD_OF_KEY = {
     "session_completion": "session_completion",
 }
 
+# The required core. Everything else is optional: the coach does not always
+# report a learning metric or a note, and a SAVE without them is a complete
+# snapshot, not a broken one. These three stay mandatory because the date drives
+# the baseline/historical classification, the character line drives the level
+# progress, and the five scores are the snapshot itself — dropping any of them
+# would leave existing XP or history logic undefined.
 _REQUIRED_KEYS = [
     "datum",
-    "wanikani",
     "charakter",
     "scores",
-    "grammatikpunkt",
-    "debuffs",
-    "vokabeln",
-    "tagesquest",
 ]
 
+# Only the required core can be reported as missing; everything else is
+# optional and its absence is a fact, not an error.
 _MISSING_MESSAGES = {
     "datum": "Zeile „Datum: … | Streak: …“ fehlt.",
-    "wanikani": "Zeile „WaniKani: … | Bunpro: …“ fehlt.",
     "charakter": "Zeile „Charakter: Lv … | … / … XP“ fehlt.",
     "scores": "Zeile mit den fünf Sprachwerten (語彙 / 文法 / 読解 / 聴解 / 会話) fehlt.",
-    "grammatikpunkt": "Zeile „Aktueller Grammatikpunkt: …“ fehlt.",
-    "debuffs": "Zeile „Debuffs: …“ fehlt.",
-    "vokabeln": "Zeile „Neue Vokabeln heute: …“ fehlt.",
-    "tagesquest": "Zeile „Tagesquest: …“ fehlt.",
 }
 
 # Prefix → key, used to detect a line that is *meant* as a field but malformed,
 # and to detect the same field appearing twice.
 _PREFIXES = [
     ("datum:", "datum"),
+    ("wanikani-level:", "wanikani_level"),
+    ("bunpro-level:", "bunpro_level"),
+    ("grammatikpunkte im srs:", "srs_points"),
     ("wanikani:", "wanikani"),
+    ("bunpro:", "bunpro"),
     ("charakter:", "charakter"),
     ("aktueller grammatikpunkt:", "grammatikpunkt"),
     ("debuffs:", "debuffs"),
@@ -369,6 +422,82 @@ _PREFIXES = [
     ("session-modus:", "session_mode"),
     ("session-abschluss:", "session_completion"),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Optional learning metrics: parse, then merge the two spellings
+# ---------------------------------------------------------------------------
+
+# Human-readable names, used in messages instead of internal field names.
+_METRIC_LABELS = {
+    "wanikani_level": "WaniKani-Level",
+    "bunpro_level": "Bunpro-Level",
+    "bunpro_points": "Grammatikpunkte im SRS",
+}
+
+
+def _parse_count(raw: str, field: str) -> tuple[Optional[int], Optional[FieldError]]:
+    """A non-negative integer, or a plain German message saying why not.
+
+    An empty value is an error, not "unset": the line was written, so it was
+    meant to state something, and silently dropping it would hide a typo.
+    """
+    text = (raw or "").strip()
+    expected = (
+        f"Ungültiger Wert für „{_METRIC_LABELS[field]}“: "
+        "Es wird eine nichtnegative Ganzzahl erwartet."
+    )
+    if not text:
+        return None, FieldError(field, expected)
+    if not re.fullmatch(r"-?\d+", text):
+        return None, FieldError(field, expected)
+    value = int(text)
+    if value < 0:
+        return None, FieldError(field, expected)
+    return value, None
+
+
+def _parse_bunpro_level(raw: str) -> tuple[Optional[str], Optional[FieldError]]:
+    """One of the known Bunpro levels, or a message listing them."""
+    text = (raw or "").strip().upper()
+    if text in BUNPRO_LEVELS:
+        return text, None
+    return None, FieldError(
+        "bunpro_level",
+        f"Unbekanntes Bunpro-Level: „{text[:20]}“. "
+        f"Erwartet wird eines von: {', '.join(BUNPRO_LEVELS)}.",
+    )
+
+
+def merge_metric(field: str, first, second) -> tuple[object, Optional[FieldError]]:
+    """Combine the combined-line value and the separate-line value of one metric.
+
+    Either may be None (not stated). If both are given they must agree —
+    a contradiction is reported, never resolved by quietly preferring one side.
+    """
+    if first is None:
+        return second, None
+    if second is None:
+        return first, None
+    if first == second:
+        return first, None
+    return None, FieldError(
+        field,
+        f"Widersprüchliche Angaben für „{_METRIC_LABELS[field]}“: "
+        f"{first} und {second}.",
+    )
+
+
+def _optional_note(found: dict, key: str) -> Optional[str]:
+    """A coach note, or None when the line is missing or written empty.
+
+    An absent note is not "keine" and not the previous import's value — the
+    SAVE simply did not say, and that is what gets stored.
+    """
+    match = found.get(key)
+    if match is None:
+        return None
+    return _normalize_text(match.group("value")) or None
 
 
 def _key_for_line(line: str) -> Optional[str]:
@@ -455,8 +584,85 @@ def parse_save(raw: str) -> JapaneseSave:
     if errors:
         raise SaveParseError(errors)
 
+    # --- optional learning metrics ------------------------------------------
+    # Two spellings may state the same three facts: the combined legacy line and
+    # the independent modern lines. Both are read into the same fields and then
+    # merged, so a SAVE may use either — or both, as long as they agree.
+    combined: dict[str, object] = {
+        "wanikani_level": None, "bunpro_level": None, "bunpro_points": None,
+    }
+    separate: dict[str, object] = dict(combined)
+
+    if "wanikani" in found:
+        match = found["wanikani"]
+        combined["wanikani_level"] = int(match.group(1))
+        if match.group("bunpro"):
+            level, error = _parse_bunpro_level(match.group("bunpro"))
+            errors.append(error) if error else None
+            combined["bunpro_level"] = level
+        if match.group("points") is not None:
+            value, error = _parse_count(match.group("points"), "bunpro_points")
+            errors.append(error) if error else None
+            combined["bunpro_points"] = value
+
+    if "bunpro" in found:
+        match = found["bunpro"]
+        level, error = _parse_bunpro_level(match.group("bunpro"))
+        errors.append(error) if error else None
+        # A standalone Bunpro line belongs to the same side as the combined one,
+        # which is why writing both halves of the old split format never
+        # conflicts with itself.
+        merged_level, conflict = merge_metric(
+            "bunpro_level", combined["bunpro_level"], level
+        )
+        errors.append(conflict) if conflict else None
+        combined["bunpro_level"] = merged_level
+        if match.group("points") is not None:
+            value, error = _parse_count(match.group("points"), "bunpro_points")
+            errors.append(error) if error else None
+            merged_points, conflict = merge_metric(
+                "bunpro_points", combined["bunpro_points"], value
+            )
+            errors.append(conflict) if conflict else None
+            combined["bunpro_points"] = merged_points
+
+    if "wanikani_level" in found:
+        value, error = _parse_count(found["wanikani_level"].group("value"), "wanikani_level")
+        errors.append(error) if error else None
+        separate["wanikani_level"] = value
+    if "bunpro_level" in found:
+        level, error = _parse_bunpro_level(found["bunpro_level"].group("value"))
+        errors.append(error) if error else None
+        separate["bunpro_level"] = level
+    if "srs_points" in found:
+        value, error = _parse_count(found["srs_points"].group("value"), "bunpro_points")
+        errors.append(error) if error else None
+        separate["bunpro_points"] = value
+
+    metrics: dict[str, object] = {}
+    for field_name in ("wanikani_level", "bunpro_level", "bunpro_points"):
+        value, conflict = merge_metric(
+            field_name, combined[field_name], separate[field_name]
+        )
+        if conflict:
+            errors.append(conflict)
+        metrics[field_name] = value
+
+    # --- session pair --------------------------------------------------------
+    # Mode and completion are one statement in two lines. Half of it cannot be
+    # evaluated deterministically, so it is refused rather than guessed at.
+    if ("session_mode" in found) != ("session_completion" in found):
+        errors.append(FieldError(
+            "session_mode",
+            "„Session-Modus“ und „Session-Abschluss“ müssen gemeinsam "
+            "angegeben werden.",
+        ))
+
+    if errors:
+        raise SaveParseError(errors)
+
     # --- typed extraction --------------------------------------------------
-    datum, wanikani = found["datum"], found["wanikani"]
+    datum = found["datum"]
     charakter, scores = found["charakter"], found["scores"]
 
     try:
@@ -467,8 +673,6 @@ def parse_save(raw: str) -> JapaneseSave:
 
     numbers = {
         "streak": int(datum.group("streak")),
-        "wanikani_level": int(wanikani.group(1)),
-        "bunpro_points": int(wanikani.group("points")),
         "character_level": int(charakter.group(1)),
         "level_xp": int(charakter.group("xp")),
         "level_xp_cap": int(charakter.group("cap")),
@@ -510,9 +714,9 @@ def parse_save(raw: str) -> JapaneseSave:
     return JapaneseSave(
         save_date=save_date,
         streak=numbers["streak"],
-        wanikani_level=numbers["wanikani_level"],
-        bunpro_level=wanikani.group("bunpro").upper(),
-        bunpro_points=numbers["bunpro_points"],
+        wanikani_level=metrics["wanikani_level"],
+        bunpro_level=metrics["bunpro_level"],
+        bunpro_points=metrics["bunpro_points"],
         character_level=numbers["character_level"],
         character_rank=charakter.group("rank").strip(),
         level_xp=numbers["level_xp"],
@@ -522,10 +726,10 @@ def parse_save(raw: str) -> JapaneseSave:
         reading=numbers["reading"],
         listening=numbers["listening"],
         speaking=numbers["speaking"],
-        grammar_point=_normalize_text(found["grammatikpunkt"].group("value")),
-        debuffs=_normalize_text(found["debuffs"].group("value")),
-        new_vocabulary=_normalize_text(found["vokabeln"].group("value")),
-        daily_quest=_normalize_text(found["tagesquest"].group("value")),
+        grammar_point=_optional_note(found, "grammatikpunkt"),
+        debuffs=_optional_note(found, "debuffs"),
+        new_vocabulary=_optional_note(found, "vokabeln"),
+        daily_quest=_optional_note(found, "tagesquest"),
         session_xp=session_xp,
         raw=raw,
         session_mode=session_mode,

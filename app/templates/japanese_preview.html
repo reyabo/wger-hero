@@ -127,9 +127,9 @@
 <section class="card">
   <div class="card-title">Weitere Angaben</div>
   <div class="jp-status-grid">
-    <div><span class="label">WaniKani</span><span class="jp-value">Lv {{ save.wanikani_level }}</span></div>
-    <div><span class="label">Bunpro</span><span class="jp-value">{{ save.bunpro_level }} · {{ save.bunpro_points }} Punkte</span></div>
-    <div><span class="label">Grammatikpunkt</span><span class="jp-value">{{ save.grammar_point }}</span></div>
+    <div><span class="label">WaniKani</span><span class="jp-value">{% if save.wanikani_level is none %}Nicht angegeben{% else %}Lv {{ save.wanikani_level }}{% endif %}</span></div>
+    <div><span class="label">Bunpro</span><span class="jp-value">{{ save.bunpro_level or "Nicht angegeben" }} · {% if save.bunpro_points is none %}Nicht angegeben{% else %}{{ save.bunpro_points }} Punkte{% endif %}</span></div>
+    <div><span class="label">Grammatikpunkt</span><span class="jp-value">{{ save.grammar_point or "Nicht angegeben" }}</span></div>
     <div><span class="label">Debuffs</span><span class="jp-value">{{ save.debuffs }}</span></div>
     <div><span class="label">Neue Vokabeln</span><span class="jp-value">{{ save.new_vocabulary }}</span></div>
     {% if save.session_xp is not none %}

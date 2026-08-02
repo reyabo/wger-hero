@@ -156,6 +156,18 @@ Migration: nein. Keine externen CDNs.
 Migration: nein (nur Daten). Der Datenbankstand bleibt bei
 `0005_habit_schedule_days` — die Kampagne ist niemals Teil einer Alembic-Revision.
 
+## Nachtrag — Flexibler Japanisch-SAVE
+
+- [x] Pflichtkern auf `Datum`, `Charakter` und die fünf Sprachwerte reduziert
+- [x] `WaniKani-Level`, `Bunpro-Level` und `Grammatikpunkte im SRS` als
+      unabhängige optionale Zeilen; kombiniertes Altformat bleibt gültig
+- [x] Fehlender Wert ist `None`, nicht `0`; `0` bleibt ein gültiger Wert
+- [x] Coach-Notizen optional, kein Ersatzwert, keine Übernahme aus früheren Imports
+- [x] Zentrale Konfliktprüfung bei doppelter Schreibweise
+
+Migration: `0006_optional_learning_metrics`, macht `wanikani_level` und
+`bunpro_points` nullable; Bestandswerte unverändert, `downgrade()` getestet.
+
 ## 9 — Oberfläche
 
 - [ ] Navigation: Heute, Woche, Ziele, Gewohnheiten, Quests, Japanisch,
