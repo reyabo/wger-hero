@@ -1,4 +1,5 @@
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -242,10 +243,21 @@ REWARD_COOKIE = "hero_reward"
 REWARD_MAX_AGE_SECONDS = 30
 
 
+# With AUTH_ENABLED=false there is no session secret file, and the reward
+# effect must still work. A per-process key is enough here: the flash lives for
+# seconds, carries no secret, and only decides whether an animation plays.
+_REWARD_FALLBACK_SECRET = secrets.token_urlsafe(32)
+
+
+def _reward_secret(settings) -> str:
+    try:
+        return load_session_secret(settings)
+    except Exception:  # noqa: BLE001 — auth off, or no secret configured
+        return _REWARD_FALLBACK_SECRET
+
+
 def _reward_serializer(settings) -> URLSafeTimedSerializer:
-    return URLSafeTimedSerializer(
-        load_session_secret(settings), salt="wger-hero-reward"
-    )
+    return URLSafeTimedSerializer(_reward_secret(settings), salt="wger-hero-reward")
 
 
 def set_reward_flash(response, settings, payload: dict) -> None:

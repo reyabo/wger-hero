@@ -58,8 +58,8 @@
   <div class="jp-status-grid">
     <div><span class="label">Letzter SAVE</span><span class="jp-value">{{ japanese_latest.save_date.strftime('%d.%m.%Y') }}</span></div>
     <div><span class="label">Streak</span><span class="jp-value">{{ japanese_latest.streak }}</span></div>
-    <div><span class="label">WaniKani</span><span class="jp-value">{% if japanese_latest.wanikani_level is none %}—{% else %}Lv {{ japanese_latest.wanikani_level }}{% endif %}</span></div>
-    <div><span class="label">Bunpro</span><span class="jp-value">{{ japanese_latest.bunpro_level or "—" }} · {% if japanese_latest.bunpro_points is none %}—{% else %}{{ japanese_latest.bunpro_points }} P.{% endif %}</span></div>
+    <div><span class="label">WaniKani</span><span class="jp-value">Lv {{ japanese_latest.wanikani_level or 0 }}</span></div>
+    <div><span class="label">Bunpro</span><span class="jp-value">{{ japanese_latest.bunpro_level or "—" }} · {{ japanese_latest.bunpro_points or 0 }} P.</span></div>
     <div><span class="label">Grammatikpunkt</span><span class="jp-value">{{ japanese_latest.current_grammar_point or "—" }}</span></div>
   </div>
   {% else %}

@@ -22,9 +22,19 @@
     </div>
     <p class="quest-desc">{{ quest.description }}</p>
     <div class="quest-meta">
+      {% if quest.is_milestone %}
+      <span class="tag tag-milestone">Meilenstein</span>
+      {% endif %}
       <span class="tag">{{ quest.quest_type }}</span>
       <span class="tag">{{ quest.period }}</span>
-      {% if quest.repeatable %}<span class="tag">repeatable</span>{% endif %}
+      {% if quest.repeatable %}<span class="tag">wiederholbar</span>{% endif %}
+      {% if quest.quest_type == "manual" %}
+      {# Not automatic: this one waits for an explicit confirmation, and the
+         card must not suggest otherwise. #}
+      <span class="tag tag-manual">manuell zu bestätigen</span>
+      {% else %}
+      <span class="tag tag-auto">zählt automatisch</span>
+      {% endif %}
       {% for key, amount in quest_rewards[quest.id].items() %}
       <span class="tag stat-tag">{{ stat_names[key] }} +{{ amount }}</span>
       {% endfor %}

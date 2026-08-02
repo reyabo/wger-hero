@@ -93,8 +93,8 @@
   <div class="card-title">Snapshot</div>
   <div class="jp-status-grid">
     <div><span class="label">SAVE-Datum</span><span class="jp-value">{{ record.save_date.strftime('%d.%m.%Y') }}</span></div>
-    <div><span class="label">WaniKani</span><span class="jp-value">{% if record.wanikani_level is none %}—{% else %}Lv {{ record.wanikani_level }}{% endif %}</span></div>
-    <div><span class="label">Bunpro</span><span class="jp-value">{{ record.bunpro_level or "—" }} · {% if record.bunpro_points is none %}—{% else %}{{ record.bunpro_points }} Punkte{% endif %}</span></div>
+    <div><span class="label">WaniKani</span><span class="jp-value">Lv {{ record.wanikani_level or 0 }}</span></div>
+    <div><span class="label">Bunpro</span><span class="jp-value">{{ record.bunpro_level or "—" }} · {{ record.bunpro_points or 0 }} Punkte</span></div>
     <div><span class="label">Rang</span><span class="jp-value">{{ record.source_character_rank or "—" }}</span></div>
     <div><span class="label">Grammatikpunkt</span><span class="jp-value">{{ record.current_grammar_point or "—" }}</span></div>
     <div><span class="label">Debuffs</span><span class="jp-value">{{ record.debuffs_text or "—" }}</span></div>
