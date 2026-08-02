@@ -155,12 +155,21 @@ def test_negative_value_rejected():
 
 
 def test_missing_required_field():
+    """A core line is still mandatory — the character line drives level progress."""
+    without_character = "\n".join(
+        ln for ln in VALID_SAVE.splitlines() if not ln.startswith("Charakter")
+    )
+    with pytest.raises(SaveParseError) as exc:
+        parse_save(without_character)
+    assert any(e.field == "character_level" for e in exc.value.errors)
+
+
+def test_an_optional_coach_line_is_no_longer_required():
+    """Debuffs used to be mandatory; a SAVE without it is a valid snapshot."""
     without_debuffs = "\n".join(
         ln for ln in VALID_SAVE.splitlines() if not ln.startswith("Debuffs")
     )
-    with pytest.raises(SaveParseError) as exc:
-        parse_save(without_debuffs)
-    assert any(e.field == "debuffs" for e in exc.value.errors)
+    assert parse_save(without_debuffs).debuffs is None
 
 
 def test_duplicate_required_field():
@@ -391,8 +400,11 @@ def test_parse_error_message_names_the_line_without_internals():
     with pytest.raises(SaveParseError) as excinfo:
         parse_save(_save(WaniKani=line))
     message = " ".join(e.message for e in excinfo.value.errors)
-    assert "WaniKani" in message
+    # The message now names the offending field itself rather than only quoting
+    # the whole line — still German, still free of any internal detail.
+    assert "Bunpro-Level" in message
     assert "\\s" not in message and "(?P<" not in message
+    assert "bunpro_level" not in message
 
 
 def test_srs_wording_does_not_change_the_session_reward():
@@ -410,3 +422,247 @@ def test_srs_wording_produces_a_stable_duplicate_hash():
     b = parse_save(_save(WaniKani="WaniKani: Lv 2 | Bunpro: N5, 10 Punkte"))
     c = parse_save(_save(WaniKani="WaniKani: Level 2|Bunpro: n5, 10 Grammatikpunkt im SRS"))
     assert a.normalized_hash() == b.normalized_hash() == c.normalized_hash()
+
+
+# ---------------------------------------------------------------------------
+# Flexible SAVE: a small required core plus independent optional fields
+# ---------------------------------------------------------------------------
+
+MINIMAL_SAVE = """=== 状態 SAVE ===
+Datum: 2026-08-01 | Streak: 4
+Charakter: Lv 2 (見習い) | 433 / 1000 XP
+語彙 180 | 文法 250 | 読解 0 | 聴解 0 | 会話 215
+=== END SAVE ==="""
+
+
+def _minimal(*extra_lines: str) -> str:
+    """The required core plus any number of optional lines."""
+    lines = MINIMAL_SAVE.splitlines()
+    return "\n".join(lines[:-1] + list(extra_lines) + [lines[-1]])
+
+
+def _without(label: str) -> str:
+    """The full documented SAVE with one line removed."""
+    return "\n".join(l for l in VALID_SAVE.splitlines() if not l.startswith(label))
+
+
+# --- the required core ------------------------------------------------------
+
+def test_the_minimal_save_is_valid():
+    save = parse_save(MINIMAL_SAVE)
+    assert save.save_date == date(2026, 8, 1)
+    assert save.streak == 4
+    assert save.character_level == 2
+    assert save.vocabulary == 180
+
+
+def test_the_minimal_save_leaves_the_learning_metrics_unset():
+    save = parse_save(MINIMAL_SAVE)
+    assert save.wanikani_level is None
+    assert save.bunpro_level is None
+    assert save.bunpro_points is None
+
+
+def test_the_minimal_save_leaves_the_coach_notes_unset():
+    save = parse_save(MINIMAL_SAVE)
+    assert save.grammar_point is None
+    assert save.debuffs is None
+    assert save.new_vocabulary is None
+    assert save.daily_quest is None
+
+
+@pytest.mark.parametrize("label", [
+    "Aktueller Grammatikpunkt:", "Debuffs:", "Neue Vokabeln heute:", "Tagesquest:",
+])
+def test_each_coach_line_may_be_missing_on_its_own(label):
+    parse_save(_without(label))
+
+
+def test_a_present_coach_line_is_still_stored():
+    save = parse_save(_minimal("Debuffs: Müdigkeit"))
+    assert save.debuffs == "Müdigkeit"
+    assert save.grammar_point is None
+
+
+def test_an_empty_coach_line_is_none_not_an_invented_value():
+    save = parse_save(_minimal("Debuffs:"))
+    assert save.debuffs is None
+
+
+@pytest.mark.parametrize("label", ["Datum:", "Charakter:", "語彙"])
+def test_the_required_core_cannot_be_reduced(label):
+    body = "\n".join(l for l in MINIMAL_SAVE.splitlines() if not l.startswith(label))
+    with pytest.raises(SaveParseError):
+        parse_save(body)
+
+
+# --- independent learning metrics -------------------------------------------
+
+def test_only_the_wanikani_level():
+    save = parse_save(_minimal("WaniKani-Level: 2"))
+    assert save.wanikani_level == 2
+    assert save.bunpro_level is None
+    assert save.bunpro_points is None
+
+
+def test_only_the_bunpro_level():
+    save = parse_save(_minimal("Bunpro-Level: N5"))
+    assert save.bunpro_level == "N5"
+    assert save.wanikani_level is None
+    assert save.bunpro_points is None
+
+
+def test_only_the_srs_points():
+    save = parse_save(_minimal("Grammatikpunkte im SRS: 37"))
+    assert save.bunpro_points == 37
+    assert save.wanikani_level is None
+    assert save.bunpro_level is None
+
+
+def test_zero_srs_points_is_an_explicit_value():
+    save = parse_save(_minimal("Grammatikpunkte im SRS: 0"))
+    assert save.bunpro_points == 0
+    assert save.bunpro_points is not None
+
+
+@pytest.mark.parametrize("value", ["1", "10", "37", "250"])
+def test_any_non_negative_srs_count_is_accepted(value):
+    assert parse_save(_minimal(f"Grammatikpunkte im SRS: {value}")).bunpro_points == int(value)
+
+
+def test_the_separate_form_carries_all_three_values():
+    save = parse_save(_minimal(
+        "WaniKani-Level: 2", "Bunpro-Level: N5", "Grammatikpunkte im SRS: 10"
+    ))
+    assert (save.wanikani_level, save.bunpro_level, save.bunpro_points) == (2, "N5", 10)
+
+
+# --- invalid optional values ------------------------------------------------
+
+@pytest.mark.parametrize("line,field", [
+    ("Grammatikpunkte im SRS: -1", "bunpro_points"),
+    ("Grammatikpunkte im SRS: viele", "bunpro_points"),
+    ("Grammatikpunkte im SRS:", "bunpro_points"),
+    ("WaniKani-Level: zwei", "wanikani_level"),
+    ("WaniKani-Level: -2", "wanikani_level"),
+    ("Bunpro-Level: unbekannt", "bunpro_level"),
+])
+def test_an_invalid_optional_value_is_rejected(line, field):
+    with pytest.raises(SaveParseError) as excinfo:
+        parse_save(_minimal(line))
+    assert any(e.field == field for e in excinfo.value.errors)
+
+
+def test_the_error_names_the_field_in_plain_german():
+    with pytest.raises(SaveParseError) as excinfo:
+        parse_save(_minimal("Grammatikpunkte im SRS: viele"))
+    message = " ".join(e.message for e in excinfo.value.errors)
+    assert "Grammatikpunkte im SRS" in message
+    assert "nichtnegative Ganzzahl" in message
+    assert "(?P<" not in message and "\\d" not in message
+
+
+# --- the combined legacy line -----------------------------------------------
+
+@pytest.mark.parametrize("line,expected", [
+    ("WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS", (2, "N5", 10)),
+    ("WaniKani: Lv 2|Bunpro: N5, 10 Grammatikpunkte im SRS", (2, "N5", 10)),
+    ("WaniKani: Level 2 | Bunpro: N5, 10 Grammatikpunkte im SRS", (2, "N5", 10)),
+    ("WaniKani: Lv 2 | Bunpro: N5, 1 Grammatikpunkt im SRS", (2, "N5", 1)),
+    ("WaniKani: Lv 2 | Bunpro: N5, 5 Punkte", (2, "N5", 5)),
+    ("WaniKani: Lv 2 | Bunpro: N5", (2, "N5", None)),
+    ("WaniKani: Lv 2", (2, None, None)),
+])
+def test_the_combined_line_keeps_working(line, expected):
+    save = parse_save(_minimal(line))
+    assert (save.wanikani_level, save.bunpro_level, save.bunpro_points) == expected
+
+
+def test_a_standalone_bunpro_line_is_understood():
+    save = parse_save(_minimal("Bunpro: N5"))
+    assert save.bunpro_level == "N5"
+    assert save.wanikani_level is None
+
+
+def test_the_old_split_form_still_works():
+    save = parse_save(_minimal("WaniKani: Lv 2", "Bunpro: N5"))
+    assert (save.wanikani_level, save.bunpro_level) == (2, "N5")
+
+
+# --- semantic equality ------------------------------------------------------
+
+def test_combined_and_separate_forms_mean_the_same():
+    combined = parse_save(_minimal("WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS"))
+    separate = parse_save(_minimal(
+        "WaniKani-Level: 2", "Bunpro-Level: N5", "Grammatikpunkte im SRS: 10"
+    ))
+    assert (combined.wanikani_level, combined.bunpro_level, combined.bunpro_points) == (2, "N5", 10)
+    assert combined.normalized_text() == separate.normalized_text()
+    assert combined.normalized_hash() == separate.normalized_hash()
+
+
+def test_an_unset_metric_is_not_the_same_as_zero():
+    absent = parse_save(MINIMAL_SAVE)
+    zero = parse_save(_minimal("Grammatikpunkte im SRS: 0"))
+    assert absent.normalized_hash() != zero.normalized_hash()
+
+
+# --- conflicts between both spellings ---------------------------------------
+
+def test_agreeing_duplicate_values_are_accepted():
+    save = parse_save(_minimal(
+        "WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS",
+        "WaniKani-Level: 2", "Bunpro-Level: N5", "Grammatikpunkte im SRS: 10",
+    ))
+    assert (save.wanikani_level, save.bunpro_level, save.bunpro_points) == (2, "N5", 10)
+
+
+def test_a_contradicting_srs_count_is_refused():
+    with pytest.raises(SaveParseError) as excinfo:
+        parse_save(_minimal(
+            "WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS",
+            "Grammatikpunkte im SRS: 37",
+        ))
+    message = " ".join(e.message for e in excinfo.value.errors)
+    assert "Widersprüchliche Angaben" in message
+    assert "10" in message and "37" in message
+
+
+def test_a_contradicting_wanikani_level_is_refused():
+    with pytest.raises(SaveParseError) as excinfo:
+        parse_save(_minimal("WaniKani: Lv 2", "WaniKani-Level: 3"))
+    assert any(e.field == "wanikani_level" for e in excinfo.value.errors)
+
+
+def test_a_contradicting_bunpro_level_is_refused():
+    with pytest.raises(SaveParseError) as excinfo:
+        parse_save(_minimal("Bunpro-Level: N5", "Bunpro: N4"))
+    assert any(e.field == "bunpro_level" for e in excinfo.value.errors)
+
+
+def test_neither_value_is_silently_preferred():
+    with pytest.raises(SaveParseError):
+        parse_save(_minimal(
+            "WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS",
+            "Grammatikpunkte im SRS: 37",
+        ))
+
+
+# --- the session pair -------------------------------------------------------
+
+def test_both_session_lines_are_read():
+    save = parse_save(_minimal("Session-Modus: START", "Session-Abschluss: vollständig"))
+    assert save.has_session_fields
+
+
+def test_neither_session_line_is_fine():
+    assert not parse_save(MINIMAL_SAVE).has_any_session_line
+
+
+@pytest.mark.parametrize("line", ["Session-Modus: START", "Session-Abschluss: vollständig"])
+def test_a_half_written_session_pair_is_refused(line):
+    with pytest.raises(SaveParseError) as excinfo:
+        parse_save(_minimal(line))
+    message = " ".join(e.message for e in excinfo.value.errors)
+    assert "Session-Modus" in message and "Session-Abschluss" in message
+    assert "gemeinsam" in message

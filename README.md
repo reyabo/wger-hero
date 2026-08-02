@@ -197,12 +197,131 @@ import is the **single reward channel** for Japanese sessions — the seeded
 "Japanisch lernen" habit is no longer created, because it would reward the same
 session twice.
 
-### Preferred format
+### The required core
+
+A SAVE is valid with just these three lines between the markers:
 
 ```
 === 状態 SAVE ===
-Datum: 2026-07-31 | Streak: 4
-WaniKani: Lv 1 | Bunpro: N5, 5 Punkte
+Datum: 2026-08-01 | Streak: 4
+Charakter: Lv 2 (見習い) | 433 / 1000 XP
+語彙 180 | 文法 250 | 読解 0 | 聴解 0 | 会話 215
+=== END SAVE ===
+```
+
+They stay mandatory for a reason: the date drives the baseline / historical
+classification, the character line drives the level progress, and the five
+scores *are* the snapshot. Everything else is optional and simply absent when
+the coach did not report it.
+
+### Optional learning metrics
+
+Three independent lines. Each may appear alone, in any combination, or not at
+all:
+
+```
+WaniKani-Level: 2
+Bunpro-Level: N5
+Grammatikpunkte im SRS: 37
+```
+
+| Line | Accepted |
+|---|---|
+| `WaniKani-Level` | a non-negative integer — `2` yes, `zwei` no |
+| `Bunpro-Level` | one of `N1` … `N5`; anything else is refused |
+| `Grammatikpunkte im SRS` | any non-negative integer, `0` included; `-1` and `viele` are refused |
+
+**Absent is not zero.** A missing line stores `None` — "the SAVE did not say" —
+and is shown as `—` / *Nicht angegeben*. A written `0` stores `0` and is shown
+as `0`. The two are different facts, they hash differently, and no value is
+ever carried over from an earlier import to fill a gap.
+
+If a line is written but its number is missing or unreadable, that is a
+validation error, not "unset" — a typo should be corrected, not swallowed.
+
+### Combined legacy line
+
+The older single-line spelling keeps working, with every part after the
+WaniKani level optional:
+
+```
+WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS
+WaniKani: Lv 2 | Bunpro: N5, 1 Grammatikpunkt im SRS
+WaniKani: Lv 2 | Bunpro: N5, 5 Punkte
+WaniKani: Lv 2 | Bunpro: N5
+WaniKani: Lv 2
+Bunpro: N5
+```
+
+`Lv`, `Lv.` and `Level` are interchangeable, singular and plural both work, the
+suffix `im SRS` is optional, and whitespace around `|` and `,` is optional.
+
+Both spellings feed the **same three fields**, so this:
+
+```
+WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS
+```
+
+and this:
+
+```
+WaniKani-Level: 2
+Bunpro-Level: N5
+Grammatikpunkte im SRS: 10
+```
+
+produce identical values, identical normalized text and the identical duplicate
+hash.
+
+### When both spellings appear
+
+A SAVE may contain both. If every stated value agrees, it is accepted. If two
+statements contradict each other, the SAVE is refused with a message naming the
+field and both values:
+
+```
+Widersprüchliche Angaben für „Grammatikpunkte im SRS“: 10 und 37.
+```
+
+Neither side is quietly preferred — a contradiction is a question only the user
+can answer.
+
+### Optional coach notes
+
+```
+Aktueller Grammatikpunkt: これ
+Debuffs: keine
+Neue Vokabeln heute: keine
+Tagesquest: Erfüllt – Mini-Boss „Partikel-Golem“ besiegt.
+```
+
+Every one of them may be missing, and an empty value counts as missing. Absent
+stores `None`; no placeholder is invented and nothing is copied from a previous
+import. None of them influences XP, classification or duplicate detection.
+
+### Session mode and completion
+
+`Session-Modus` and `Session-Abschluss` are one statement written on two lines.
+Both present enables the deterministic session reward; both absent keeps the
+legacy level-delta evaluation. **Exactly one of them is a validation error** —
+half a statement cannot be evaluated deterministically, and guessing the other
+half is precisely what this app does not do:
+
+```
+„Session-Modus“ und „Session-Abschluss“ müssen gemeinsam angegeben werden.
+```
+
+An unknown *value* in either line is something else: the SAVE still imports as
+a snapshot, but the reward becomes a warning case with 0 XP, exactly as before.
+
+### Full example
+
+```
+=== 状態 SAVE ===
+Datum: 2026-08-01 | Streak: 4
+WaniKani-Level: 2
+Bunpro-Level: N5
+Grammatikpunkte im SRS: 37
 Charakter: Lv 2 (見習い) | 433 / 1000 XP
 Session-Modus: START
 Session-Abschluss: vollständig
@@ -214,25 +333,6 @@ Neue Vokabeln heute: keine
 Tagesquest: Erfüllt – Mini-Boss „Partikel-Golem“ besiegt.
 === END SAVE ===
 ```
-
-### Accepted wording variants
-
-The WaniKani/Bunpro line tolerates the coach's alternative phrasing. All four
-lines below are read identically (WaniKani level `2`, Bunpro level `N5`,
-`10` Bunpro points):
-
-```
-WaniKani: Lv 2 | Bunpro: N5, 10 Punkte
-WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS
-WaniKani: Lv 2|Bunpro: N5, 1 Grammatikpunkt im SRS
-WaniKani: Level 2 | Bunpro: N5, 10 Grammatikpunkte im SRS
-```
-
-`Lv`, `Lv.` and `Level` are interchangeable, `Punkt`/`Punkte`,
-`Grammatikpunkt`/`Grammatikpunkte` and the optional suffix `im SRS` are all
-accepted, and whitespace around `|` and `,` is optional. The number itself
-still has to be a non-negative integer — spelled-out numbers, a missing Bunpro
-count and negative values are rejected with a German error naming the line.
 
 ### Reward rules (deterministic, computed by wger-hero)
 

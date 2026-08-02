@@ -37,8 +37,8 @@
   <div class="jp-status-grid">
     <div><span class="label">SAVE-Datum</span><span class="jp-value">{{ latest.save_date.strftime('%d.%m.%Y') }}</span></div>
     <div><span class="label">Streak</span><span class="jp-value">{{ latest.streak }}</span></div>
-    <div><span class="label">WaniKani</span><span class="jp-value">Lv {{ latest.wanikani_level }}</span></div>
-    <div><span class="label">Bunpro</span><span class="jp-value">{{ latest.bunpro_level }} · {{ latest.bunpro_points }} P.</span></div>
+    <div><span class="label">WaniKani</span><span class="jp-value">{% if latest.wanikani_level is none %}—{% else %}Lv {{ latest.wanikani_level }}{% endif %}</span></div>
+    <div><span class="label">Bunpro</span><span class="jp-value">{{ latest.bunpro_level or "—" }} · {% if latest.bunpro_points is none %}—{% else %}{{ latest.bunpro_points }} P.{% endif %}</span></div>
     <div><span class="label">Quell-Level</span><span class="jp-value">Lv {{ latest.source_character_level }} ({{ latest.source_level_xp }}/{{ latest.source_level_xp_cap }})</span></div>
     <div><span class="label">Grammatikpunkt</span><span class="jp-value">{{ latest.current_grammar_point or "—" }}</span></div>
   </div>

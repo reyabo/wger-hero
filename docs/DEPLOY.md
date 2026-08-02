@@ -173,6 +173,33 @@ Erwartet: überall `200`. Die Installation als App setzt **HTTPS** voraus — ü
 Caddy, nicht über den direkten Port 8091. Ein Browser registriert sonst keinen
 Service Worker.
 
+### 3g. Nach Revision 0006 (optionale Lernstandskennzahlen)
+
+`japanese_save_imports.wanikani_level` und `.bunpro_points` werden nullable.
+Bestandswerte bleiben **unverändert** — eine NOT-NULL-Bedingung zu lösen kann
+vorhandene Daten nicht ungültig machen, und kein Wert wird umgeschrieben.
+SQLite kann keine Spalte in place ändern, daher baut `batch_alter_table` die
+Tabelle neu und Alembic kopiert die Zeilen unverändert.
+
+```bash
+docker compose exec wger-hero sqlite3 /data/wger_hero.db \
+  "SELECT count(*) FROM japanese_save_imports;
+   SELECT count(*) FROM japanese_save_imports WHERE bunpro_points IS NULL;
+   SELECT sql FROM sqlite_master WHERE type='table'
+     AND name='japanese_save_imports';" \
+                                           > "$LOG-09f-save-metrics.txt"  2>&1
+```
+
+Erwartet: die unveränderte Anzahl der Imports, `0` NULL-Werte direkt nach der
+Migration und eine Tabellendefinition, in der `wanikani_level` und
+`bunpro_points` **kein** `NOT NULL` mehr tragen.
+
+**Rückweg mit Datenverlust in genau einer Richtung.**
+`alembic downgrade 0005_habit_schedule_days` stellt `NOT NULL` wieder her und
+muss dafür jede Zeile füllen: Imports, die nach dieser Revision „nicht
+angegeben" gespeichert haben, werden dabei zu `0`. Gezählte Werte bleiben
+unangetastet. Vorher sichern — wie bei jeder Migration, siehe Abschnitt 2.
+
 ## 4a. Starter-Kampagne aktivieren (optional, nach dem Deployment)
 
 Getrennter, bewusst ausgelöster Schritt. Nicht Teil des Deployments.
