@@ -12,16 +12,70 @@ Your [wger](https://wger.de) instance is one **automatic** data source (workout 
 
 ## Features
 
-- **Manual habits** — repeatable, user-defined actions with their own XP and stat rewards
-- **Custom quests** — `manual`, `habit_count`, and `workout_count` goals over daily/weekly/monthly/once periods
-- **Global XP vs. stat XP** — global XP drives your level; stat XP grows 10 attributes (data ready for a future radar screen)
+- **Goals** — long-running aims with status, pause history, momentum and streaks; archived, never deleted
+- **Manual habits** — repeatable, user-defined actions with their own XP and stat rewards, optionally planned on weekdays
+- **Custom quests** — `manual`, `habit_count`, `workout_count`, `workout_variety` and `japanese_session_count` over daily/weekly/monthly/once periods, with append-only `QuestCompletion` deduplication
+- **`/today` and `/week`** — read-only operational views over everything above
+- **Global XP vs. stat XP** — global XP drives your level; stat XP grows 10 attributes
+- **Japanese SAVE import** — a small required core plus independent optional metrics, deterministic session rewards
+- **Progressive Web App** — installable, with a deliberately tiny service worker and a static offline page
+- **Starter campaign** — three prepared goals, previewed and confirmed, idempotent, never automatic
 - Reads wger via the REST API (read-only) and awards XP for completed workouts, conditioning, and logged RIR
 - Simple level progression: `1000 + level × 250 XP` per level
 - Achievements (First Blood, Triple Threat, …)
 - Accidental double-click protection on habit completion
-- Clean server-rendered dashboard — no external CDN, no analytics, no tracking
+- Login, signed session cookies and CSRF on every state-changing form
+- Clean server-rendered interface — no external CDN, no fonts, no analytics, no tracking
 - Deduplication: syncing the same workout twice never awards XP twice
 - `/healthz` endpoint for container health checks
+
+## Architecture at a glance
+
+| Layer | What it is |
+|---|---|
+| HTTP | **FastAPI**, server-rendered **Jinja2** — no SPA, no client-side router |
+| Data | **SQLAlchemy 2.0** over **SQLite** (WAL in production), **Alembic** migrations |
+| Deployment | **Docker Compose**, one container behind **Caddy**, single user |
+| Auth | Argon2 password hash from a file, signed session cookie, CSRF on every POST |
+
+The domain rules live in modules that need neither FastAPI nor a database
+session, so they are unit-testable on their own: `xp.py`, `rewards.py`,
+`japanese_saves.py`, `momentum.py`, `goals.py` (its status rules). The
+database-facing services — `habits.py`, `quests.py`, `goal_progress.py`,
+`planning.py`, `japanese_import.py`, `starter.py` — map stored rows onto them
+and never reimplement a rule.
+
+Every reward is written as an auditable row: `XpEvent`, `StatXpEvent`,
+`HabitCompletion`, `QuestCompletion`, `JapaneseSaveImport`. Those tables are
+append-only. Nothing in the app recalculates history.
+
+## The interface
+
+Server-rendered, dark, and deliberately quiet. The navigation is Übersicht,
+Heute, Woche, Ziele, Habits, Quests, Achievements, Attribute, Japanisch,
+Einstellungen.
+
+`/today` leads with the hero panel — name, level, XP into the current level,
+total XP, all straight from `app/xp.py`. There is no character artwork: the
+sigil is a CSS ring around a rune, so no image is loaded and nobody's figure is
+imitated.
+
+**Completing a habit is a moment.** A confirmed completion writes one
+short-lived signed cookie; the next page consumes it, shows the reward and
+deletes it. That is what makes it appear exactly once — a reload has no cookie
+left, an inactive habit and a deduplicated double-click never set one, and a
+CSRF rejection never reaches the route. The text is bounded by the actual
+result: "+XP" only when XP was really awarded.
+
+Accessibility is part of it, not an afterthought: a skip link, visible focus
+rings, 44px touch targets, semantic headings, an `aria-live` region for the
+success message, and every status written as a **word** rather than signalled by
+colour alone. Under `prefers-reduced-motion` every animation is dropped and
+replaced by a standing border and background change, so a completed habit stays
+unmistakable without a single frame of movement.
+
+Nothing is ever labelled "failed". A paused goal is neutral, a missing week is
+"keine Daten", and a skipped day costs nothing.
 
 ## Quick Start (Docker)
 
@@ -172,9 +226,11 @@ A quest is a larger goal with a period. Create one at `/quests/new`:
 
 | Type | Progress source |
 |---|---|
-| `manual` | You mark it complete yourself |
-| `habit_count` | Number of habit completions in the period (optionally filtered by a *match text* against habit titles) |
-| `workout_count` | Number of synced wger workouts in the period |
+| `manual` | You mark it complete yourself — nothing counts it for you |
+| `habit_count` | Habit completions in the period, bound by a stable habit id (a *match text* against titles remains as the fallback for older quests) |
+| `workout_count` | Synced wger workouts in the period |
+| `workout_variety` | Distinct workout names from a comma-separated term list |
+| `japanese_session_count` | Confirmed Japanese sessions — see below for what counts |
 
 Periods are `daily` · `weekly` · `monthly` · `once`. Quests can carry their own stat rewards and can be marked **repeatable** to re-arm for the next period after completion. The built-in seeded quests (Week Warrior, HOME HERO × SUPERMOVER 3) keep working unchanged.
 
@@ -231,10 +287,24 @@ Grammatikpunkte im SRS: 37
 | `Bunpro-Level` | one of `N1` … `N5`; anything else is refused |
 | `Grammatikpunkte im SRS` | any non-negative integer, `0` included; `-1` and `viele` are refused |
 
-**Absent is not zero.** A missing line stores `None` — "the SAVE did not say" —
-and is shown as `—` / *Nicht angegeben*. A written `0` stores `0` and is shown
-as `0`. The two are different facts, they hash differently, and no value is
-ever carried over from an earlier import to fill a gap.
+**Absent is not zero — but it is *displayed* as zero.** Two separate rules:
+
+*Stored:* a missing line stores `None` (SQL `NULL`), meaning "the SAVE did not
+say". A written `0` stores `0`, a counted zero. They are different facts, they
+produce different normalized text and different duplicate hashes, and no value
+is ever carried over from an earlier import to fill a gap.
+
+*Displayed:* the two numeric metrics — `wanikani_level` and `bunpro_points` —
+are rendered as `0` when they are `NULL`. That is a presentation choice and
+nothing more. Rendering a page issues no `INSERT` and no `UPDATE`, never
+rewrites a `NULL` to `0`, and leaves the normalized text, the duplicate hash,
+the classification, the XP and the quest progress exactly as they were. A
+missing value and an imported `0` therefore look alike on screen while staying
+distinguishable inside — which is asserted by tests.
+
+The categorical `bunpro_level` is the exception: a missing level is shown as
+`—` / *Nicht angegeben*. Showing `0` or `N0` there would invent a level that
+does not exist.
 
 If a line is written but its number is missing or unreadable, that is a
 validation error, not "unset" — a typo should be corrected, not swallowed.
@@ -414,17 +484,100 @@ wger-hero/
 │   ├── wger_client.py  # wger API client (httpx)
 │   ├── sync.py         # Fetch → normalize → award XP
 │   ├── xp.py           # XP rules + level formula
-│   ├── habits.py       # Manual habit logic + completion rewards
-│   ├── quests.py       # Quest seeding, creation + progress
+│   ├── habits.py       # Manual habit logic, weekday plan + completion rewards
+│   ├── quests.py       # Quest seeding, creation, counters + progress
+│   ├── goals.py        # Goal status rules, pause bookkeeping
+│   ├── goal_progress.py# Stored history → week outcomes (pause overlap lives here)
+│   ├── momentum.py     # Pure momentum and streak calculation (no DB, no clock)
+│   ├── planning.py     # Read-only aggregation behind /today and /week
+│   ├── japanese_saves.py # SAVE parser, normalization, deterministic rewards
+│   ├── japanese_import.py# SAVE import service (snapshot + XP in one transaction)
+│   ├── starter.py      # Opt-in starter campaign: plan and apply
+│   ├── seed_programs.py# Optional programs + the starter CLI
 │   ├── stats.py        # 10-stat registry + stat-XP rewards
 │   ├── achievements.py # Achievement unlock logic
+│   ├── auth.py         # Password hash, session cookie, CSRF
 │   ├── templates/      # Jinja2 HTML templates
-│   └── static/         # CSS (no external CDN)
+│   └── static/         # CSS, manifest, service worker, local SVG icons
+├── migrations/         # Alembic revisions (0001 … 0006)
+├── docs/
+│   ├── ROADMAP.md      # What was built, in order, and what is left
+│   ├── DEPLOY.md       # The deployment and rollback procedure
+│   └── UI_CHECKLIST.md # Manual visual acceptance list
+├── scripts/            # Read-only smoke tests
 ├── tests/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .env.example
 └── pyproject.toml
+```
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+WGER_BASE_URL=https://wger.example.com python -m pytest
+```
+
+Every test runs against in-memory SQLite with a mocked wger client — nothing
+here talks to a real instance. New domain logic belongs in a module that is
+unit-testable without a database, like `xp.py` and `momentum.py`.
+
+For a local UI run, see [docs/UI_CHECKLIST.md](docs/UI_CHECKLIST.md).
+
+## Migrations
+
+Alembic, revisions `0001_baseline` through `0006_optional_learning_metrics`.
+
+- **The app never migrates by itself** — not on import, not on startup. A test
+  asserts that no application module touches Alembic at import time.
+- Every revision is additive and has a working `downgrade()`, and each is tested
+  against a populated SQLite database.
+- Adopting an existing pre-Alembic database: `alembic stamp 0001_baseline`, then
+  `alembic upgrade head`. Never `upgrade` first — it fails loudly on an existing
+  schema, which is deliberate.
+- `0006` is the one revision whose downgrade loses information; see below.
+
+| Revision | What it adds |
+|---|---|
+| `0001_baseline` | the schema as it stood when Alembic was introduced |
+| `0002_goals` | `goals`, plus `goal_id` / `is_milestone` / `sort_order` on habits and quests |
+| `0003_quest_completions` | append-only `quest_completions` with a unique dedup key |
+| `0004_goal_pause_intervals` | `goal_pause_intervals` with a partial unique index on the open one |
+| `0005_habit_schedule_days` | `habit_schedule_days`, ISO weekdays, unique per habit and day |
+| `0006_optional_learning_metrics` | makes `wanikani_level` and `bunpro_points` nullable |
+
+### About `0006`
+
+Both columns were `NOT NULL DEFAULT 0`, so "not stated" could only be recorded
+by writing a number that was never counted. Making them nullable is what lets
+`NULL` mean "not stated" and `0` mean "a counted zero".
+
+Existing values are untouched, and **an existing `0` is never rewritten to
+`NULL`**. Only new imports that omit the line store `NULL`.
+
+The downgrade is lossy in exactly one direction: restoring `NOT NULL` needs a
+value in every row, so rows that say "not stated" become `0`. Counted values
+survive, but the distinction is then gone and cannot be reconstructed from the
+database.
+
+> **For a fully faithful rollback behind `0006_optional_learning_metrics`, use
+> the SQLite backup taken before the deployment. An Alembic downgrade alone does
+> not fully restore the original NULL semantics.**
+
+## Deployment
+
+The full procedure — check, back up, tag a rollback image, build, test the
+migration on a copy, stop, back up offline, migrate, start, verify, smoke-test —
+is in [docs/DEPLOY.md](docs/DEPLOY.md), together with the two distinct rollback
+paths (application only, or database restore).
+
+Read-only smoke tests that change nothing and print no secrets:
+
+```bash
+bash scripts/smoke_full.sh
+bash scripts/smoke_today_week.sh
+bash scripts/smoke_pwa_starter.sh
 ```
 
 ## What Still Needs Live Verification
@@ -620,9 +773,16 @@ can never disagree with what an activation does.
 
 | Goal | Weekly quest | Habits | Milestones |
 |---|---|---|---|
-| **Kraftpfad** (`kraftpfad`) | *Dreifachschlag* — 3 wger workouts per week (`workout_count`) | — | first counted workout · 4 fulfilled weeks · 12 fulfilled weeks |
-| **Weg des Japanischen** (`weg-des-japanischen`) | *Fünf Schriftrollen* — 5 SRS reviews per week (`habit_count`, bound by habit id) · *Zwei Gespräche mit dem Sensei* — 2 confirmed sessions per week (`japanese_session_count`) | *SRS-Review*, planned Mon–Fri | first review · 20 reviews · 8 confirmed sessions · 4 weeks with both goals |
-| **Körperkontrolle** (`koerperkontrolle`, short label *Routine K*) | *Der Fünfer-Rhythmus* — all five planned routines in one week | the five existing CONTROL routines, planned Mon, Tue, Wed, Thu, Sat | the four existing CONTROL stages |
+| **Kraftpfad** (`kraftpfad`) | *Dreifachschlag* — 3 wger workouts per week (`workout_count`, counts itself) | — | first counted workout · 4 fulfilled weeks · 12 fulfilled weeks |
+| **Weg des Japanischen** (`weg-des-japanischen`) | *Fünf Schriftrollen* — 5 SRS reviews per week (`habit_count`, bound by habit id, counts itself) · *Zwei Gespräche mit dem Sensei* — 2 confirmed sessions per week (`japanese_session_count`, counts itself) | *SRS-Review*, planned Mon–Fri | first review · 20 reviews · 8 confirmed sessions · 4 weeks with both goals |
+| **Körperkontrolle** (`koerperkontrolle`, short label *Routine K*) | *Der Fünfer-Rhythmus* — all five planned routines in one week, **confirmed manually** | the five existing CONTROL routines, planned Mon, Tue, Wed, Thu, Sat | the four existing CONTROL stages |
+
+**Der Fünfer-Rhythmus is manual, not automatic.** It spans five distinct habits,
+while `habit_count` binds exactly one habit id or one match-text substring.
+Rather than invent a sixth quest source or a free-text heuristic, the quest waits
+for an explicit confirmation — the week view already shows which of the five
+routines are still open, and the quest card says "manuell zu bestätigen". A
+goal-scoped `habit_count` source would be the clean follow-up.
 
 Friday and Sunday stay deliberately free in Routine K.
 

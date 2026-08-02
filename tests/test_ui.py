@@ -425,3 +425,82 @@ def test_no_template_loads_an_external_resource():
         text = path.read_text()
         for marker in ("http://", "https://", "fonts.googleapis", "cdn."):
             assert marker not in text, f"{path.name} references {marker}"
+
+
+# ---------------------------------------------------------------------------
+# Documentation must match the code
+# ---------------------------------------------------------------------------
+
+def test_the_readme_documents_the_current_migration_head():
+    readme = (REPO_ROOT / "README.md").read_text()
+    heads = sorted(p.stem for p in (REPO_ROOT / "migrations" / "versions").glob("0*.py"))
+    assert heads[-1] in readme
+    for revision in heads:
+        assert revision in readme, f"{revision} is undocumented"
+
+
+def test_the_readme_states_the_lossy_downgrade():
+    readme = (REPO_ROOT / "README.md").read_text()
+    assert "0006_optional_learning_metrics" in readme
+    assert "SQLite backup" in readme
+
+
+def test_the_readme_does_not_promise_an_automatic_fuenfer_rhythmus():
+    readme = (REPO_ROOT / "README.md").read_text()
+    assert "Der Fünfer-Rhythmus is manual" in readme
+
+
+def test_the_deploy_doc_uses_the_real_database_filename():
+    """Fairbrook stores the database as .sqlite — .db would send the operator
+    to a file that is not there."""
+    deploy = (REPO_ROOT / "docs" / "DEPLOY.md").read_text()
+    assert "/data/wger_hero.sqlite" in deploy
+
+
+def test_the_deploy_doc_covers_the_whole_procedure():
+    deploy = (REPO_ROOT / "docs" / "DEPLOY.md").read_text()
+    for step in ("Online-Backup", "Rollback", "Offline-Backup", "Migration",
+                 "Healthcheck", "Fremdschlüssel", "PWA-Smoke-Test",
+                 "SAVE-Smoke-Test", "Starter-Dry-run", "manuelle UI-Abnahme",
+                 "Nur die Anwendung zurückrollen", "Die Datenbank zurückrollen"):
+        assert step in deploy, f"missing: {step}"
+
+
+def test_the_image_ships_the_migrations():
+    """The documented deployment runs alembic inside the container."""
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    assert "COPY migrations/" in dockerfile
+    assert "COPY alembic.ini" in dockerfile
+
+
+def test_the_roadmap_marks_every_step():
+    roadmap = (REPO_ROOT / "docs" / "ROADMAP.md").read_text()
+    for step in range(1, 11):
+        assert f"## {step} —" in roadmap
+    assert "Bekannte Einschränkungen" in roadmap
+    # Nothing left open in steps 1-10
+    body = roadmap.split("## Bekannte Einschränkungen")[0]
+    assert "- [ ]" not in body
+
+
+def test_the_ui_checklist_exists_and_stays_local():
+    checklist = (REPO_ROOT / "docs" / "UI_CHECKLIST.md").read_text()
+    assert "Lokal ausführen" in checklist
+    assert "prefers-reduced-motion" in checklist
+
+
+def test_the_smoke_test_changes_nothing():
+    script = (REPO_ROOT / "scripts" / "smoke_full.sh").read_text()
+    assert "--dry-run" in script
+    assert "sqlite3 -readonly" in script
+    # No writing verb anywhere near the database or the app
+    for forbidden in ("alembic upgrade", "seed_programs starter\n",
+                      "curl -X POST", "/complete"):
+        assert forbidden not in script
+
+
+def test_the_smoke_test_prints_no_secrets():
+    script = (REPO_ROOT / "scripts" / "smoke_full.sh").read_text()
+    for forbidden in ("printenv WGER_API_TOKEN", "cat .env", "/run/secrets",
+                      "AUTH_PASSWORD_HASH", "SESSION_SECRET"):
+        assert forbidden not in script

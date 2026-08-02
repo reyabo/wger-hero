@@ -168,21 +168,72 @@ Migration: nein (nur Daten). Der Datenbankstand bleibt bei
 Migration: `0006_optional_learning_metrics`, macht `wanikani_level` und
 `bunpro_points` nullable; Bestandswerte unverändert, `downgrade()` getestet.
 
-## 9 — Oberfläche
+## 9 — Oberfläche  ✅
 
-- [ ] Navigation: Heute, Woche, Ziele, Gewohnheiten, Quests, Japanisch,
-      Attribute, Erfolge, Einstellungen
-- [ ] Zielkarten mit Fortschritt, Momentum, Streaks, nächstem Meilenstein, Status
-- [ ] Sachliche, nicht wertende Texte (kein „gescheitert“, „Strafe“, „verloren“)
+- [x] Navigation: Übersicht, Heute, Woche, Ziele, Habits, Quests, Achievements,
+      Attribute, Japanisch, Einstellungen
+- [x] Dunkle Blau-Schwarz-Basis, elektrisches Blau und Cyan als Primärenergie,
+      Violett als kalter Akzent, Gold/Magenta/Rot sparsam; statisches Licht
+      statt animierter Hintergründe
+- [x] Hero-Bereich auf `/today`: Name, Level, XP-Leiste, Gesamt-XP — nur
+      vorhandene Werte, kein Bildmaterial, Sigil rein per CSS
+- [x] Belohnungsmoment beim Habit-Abschluss über eine kurzlebige signierte
+      Flash-Cookie; genau einmal, nur nach bestätigtem Erfolg
+- [x] Zielkarten mit Fortschritt, Momentum, Streaks, Meilenstein, Status
+- [x] Quests unterscheiden sichtbar zwischen „zählt automatisch" und
+      „manuell zu bestätigen"; Meilensteine sind markiert
+- [x] Login, Starter-Vorschau, Japanisch-Vorschau und Offline-Seite angeglichen
+- [x] Mobil: eine Spalte, kein horizontales Scrollen, 44px-Touchziele
+- [x] Barrierefreiheit: Skip-Link, sichtbarer Fokus, semantische Überschriften,
+      `aria-live` für die Erfolgsmeldung, Status immer auch als Wort
+- [x] `prefers-reduced-motion`: keine Animation, stattdessen stehender
+      Rahmen- und Flächenwechsel
+- [x] Sachliche, nicht wertende Texte (kein „gescheitert", „Strafe", „verloren")
+- [x] Fehlende numerische Japanisch-Metriken werden als `0` **dargestellt**;
+      gespeichert bleibt `NULL`, das Rendern schreibt nichts
 
-## 10 — Dokumentation
+Migration: nein.
 
-- [ ] `README.md`, `.env.example`, `docs/DEPLOY.md`, optional `docs/PRIVACY.md`
-- [ ] `CLAUDE.md` nur bei neuen verbindlichen Architekturregeln
-- [ ] Momentum-/Streak-Formeln, PWA-Cache-Grenzen, Secret-Erzeugung,
-      Backup vor Migration, Verhalten bei pausierten Zielen
+## 10 — Dokumentation  ✅
+
+- [x] `README.md` konsolidiert: Zweck, Architektur, alle Funktionsbereiche,
+      Entwicklung, Tests, Migrationen, Deployment-Übersicht
+- [x] `docs/DEPLOY.md` neu geordnet: 18 Schritte von der Zustandsprüfung bis
+      zur manuellen Abnahme, plus zwei getrennte Rückwege
+- [x] `docs/UI_CHECKLIST.md` als manuelle Sichtprüfliste
+- [x] SAVE-Format nach PR #20 vollständig dokumentiert, inklusive
+      NULL-/0-Semantik und Konfliktregel
+- [x] Migration `0006` und ihr verlustbehafteter Rückweg dokumentiert
+- [x] PWA-Cache-Grenzen, Starter-Kampagne, Momentum-/Streak-Formeln,
+      Pausenverhalten dokumentiert
+- [x] `scripts/smoke_full.sh` als rein lesender Abnahme-Smoke-Test
+
+Migration: nein.
 
 ---
+
+## Bekannte Einschränkungen
+
+Stand nach Schritt 10 — bewusst so, nicht vergessen:
+
+- **Service Worker nur statisch geprüft.** Es gibt keinen Browser in der
+  Testumgebung; die Cache-Grenze wird an der Quelle geprüft. Das trägt, weil die
+  Assetliste klein, fest und explizit ist.
+- **PWA-Icons sind SVG** (`sizes: "any"`), keine PNG-Größenstaffel.
+- **„Der Fünfer-Rhythmus" ist manuell.** `habit_count` bindet eine Habit-ID oder
+  einen Teilstring, nicht fünf Gewohnheiten. Eine ziel-bezogene Questquelle wäre
+  der saubere Folgeschritt.
+- **Keine historischen Questzähler** für beliebige vergangene Wochen. Die
+  zentralen Zähler beantworten den laufenden Zeitraum; eine vergangene Woche
+  meldet das offen, statt eine Zahl zu erfinden.
+- **Keine rückwirkend erfundenen Pausenintervalle.** Pausen vor Revision `0004`
+  haben keinen Datensatz.
+- **Der Rückweg hinter `0006` ist verlustbehaftet.** „Nicht angegeben" wird beim
+  Downgrade zu `0`; datentreu nur über das Backup.
+- **Fehlende numerische Japanisch-Metriken erscheinen als `0`** — ausschließlich
+  in der Darstellung. Gespeichert bleibt `NULL`.
+- **Die Wochenansicht zeigt keine wger-Trainings und keine Japanisch-Sessions
+  je Tag**; beides bleibt auf den bestehenden Seiten.
 
 ## Ausdrücklich nicht Teil dieses Umbaus
 
