@@ -292,7 +292,101 @@ Japanisch-Vorschau mit fehlenden Werten öffnen, Starter-Vorschau, Offline-Seite
 
 ---
 
-## 18a. Starter-Kampagne aktivieren (optional, getrennt)
+## 18a. Einmalige Stärke-Reparatur und Exercise-Logs aktivieren
+
+**Nur beim Update auf den Sync-Fix nötig.** Reihenfolge nicht vertauschen: erst
+die Bestandsreparatur, dann die Logs — sonst laufen ein Re-Sync und eine
+Reparatur gleichzeitig über dieselben Zeilen.
+
+Workouts, die eine ältere Version synchronisiert hat, haben ihre globalen XP,
+aber keine Stärke-Stat-XP. Die Reparatur ergänzt ausschließlich die fehlende
+Stat-Seite; globale XP, `XpEvent`- und `SyncEvent`-Zeilen bleiben unangetastet.
+
+```bash
+# 1. Zustand vorher festhalten
+docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT 'hero_total_xp', total_xp FROM hero_profile;
+   SELECT 'wger_events', count(*), sum(xp) FROM xp_events
+     WHERE source='wger' AND event_type='workout_complete';
+   SELECT 'wger_stat_events', count(*), coalesce(sum(xp),0) FROM stat_xp_events
+     WHERE source='wger';
+   SELECT 'strength', coalesce(xp,0) FROM hero_stats WHERE stat_key='strength';" \
+                                           > "$LOG-40-repair-before.txt"  2>&1
+
+# 2. Dry-run — schreibt nichts
+docker compose exec wger-hero python -m app.repair_wger_stat_xp --dry-run \
+                                           > "$LOG-41-repair-dry.txt"     2>&1
+
+# 3. Prüfen: „Kandidaten" muss zur Zahl der wger-Workouts aus Schritt 1 passen,
+#    „zusätzliche strength XP" zu deren XP-Summe, „globale XP Änderung" = 0.
+#    Konflikte hier zuerst klären, nicht überspringen.
+less "$LOG-41-repair-dry.txt"
+
+# 4. Sichern (die Reparatur schreibt gleich)
+docker compose exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
+  ".backup '/data/vor-reparatur-$TS.sqlite'" \
+                                           > "$LOG-42-repair-backup.txt"  2>&1
+
+# 5. Anwenden
+docker compose exec wger-hero python -m app.repair_wger_stat_xp --apply \
+                                           > "$LOG-43-repair-apply.txt"   2>&1
+
+# 6. Abnahme: erneuter Dry-run muss 0 zusätzliche XP melden
+docker compose exec wger-hero python -m app.repair_wger_stat_xp --dry-run \
+                                           > "$LOG-44-repair-recheck.txt" 2>&1
+
+# 7. Zustand nachher — globale XP unverändert, strength gestiegen
+docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT 'hero_total_xp', total_xp FROM hero_profile;
+   SELECT 'strength', xp FROM hero_stats WHERE stat_key='strength';
+   SELECT 'wger_stat_events', count(*), sum(xp) FROM stat_xp_events
+     WHERE source='wger';" \
+                                           > "$LOG-45-repair-after.txt"   2>&1
+```
+
+Erst wenn Schritt 6 „Nichts zu tun" meldet, weitermachen.
+
+### Exercise-Logs aktivieren
+
+```bash
+# 8. .env sichern und erst dann ändern
+cp .env ".env.bak-$TS"                     > "$LOG-46-env.txt"           2>&1
+sed -i 's/^WGER_FETCH_EXERCISE_LOGS=false/WGER_FETCH_EXERCISE_LOGS=true/' .env
+grep '^WGER_FETCH_EXERCISE_LOGS' .env     >> "$LOG-46-env.txt"           2>&1
+
+# 9. Container kontrolliert neu erstellen (env_file wird nur beim Erstellen gelesen)
+docker compose up -d --force-recreate      > "$LOG-47-recreate.txt"      2>&1
+curl -sS http://127.0.0.1:8091/healthz    >> "$LOG-47-recreate.txt"      2>&1
+
+# 10. VOR dem ersten echten Re-Sync noch einmal sichern: bestehende Sessions
+#     bekommen durch die neuen Logs einen neuen Hash und werden reconciled.
+docker compose exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
+  ".backup '/data/vor-resync-$TS.sqlite'"  > "$LOG-48-resync-backup.txt" 2>&1
+
+# 11. Sync über die Oberfläche auslösen und danach prüfen
+docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT 'hero_total_xp', total_xp FROM hero_profile;
+   SELECT 'strength', xp FROM hero_stats WHERE stat_key='strength';
+   SELECT 'events_pro_session', source_id, count(*), sum(xp) FROM xp_events
+     WHERE source='wger' GROUP BY source_id HAVING count(*) > 3;
+   SELECT 'stat_events_pro_session', source_id, count(*) FROM stat_xp_events
+     WHERE source='wger' GROUP BY source_id HAVING count(*) > 1;
+   SELECT 'sync_events', count(*) FROM sync_events WHERE source='wger';
+   SELECT 'summaries', raw_summary FROM sync_events WHERE source='wger'
+     ORDER BY synced_at DESC LIMIT 5;" \
+                                           > "$LOG-49-resync-check.txt"  2>&1
+```
+
+Erwartet in Schritt 11: die globale XP-Summe ist **nicht** gesprungen (höchstens
+um die neu hinzugekommenen Conditioning- und RIR-Boni), keine Session mit mehr
+als drei XP-Events, **keine** Session mit mehr als einem Stärke-Stat-Event, und
+die Zusammenfassungen nennen jetzt eine Übungszahl statt
+`exercise details disabled`. Stimmt etwas nicht: Abschnitt 19b mit dem Backup
+aus Schritt 10.
+
+Es gibt weiterhin **keinen** automatischen Re-Sync beim Containerstart.
+
+## 18b. Starter-Kampagne aktivieren (optional, getrennt)
 
 Nicht Teil des Deployments. Reihenfolge:
 

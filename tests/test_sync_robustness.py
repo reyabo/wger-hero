@@ -67,10 +67,12 @@ class TestSanitizeError:
 
 class TestNormalizeSession:
     def test_full_session_normalizes(self):
-        session = {"id": 1, "date": "2024-03-15", "workout": 2, "notes": "test"}
-        logs = [{"id": 10, "exercise": 5, "reps": 8, "weight": 60.0, "rir": 2}]
+        session = {"id": "test-session-1", "date": "2024-03-15", "routine": 2,
+                   "notes": "test"}
+        logs = [{"id": "test-log-10", "session": "test-session-1", "exercise": 5,
+                 "repetitions": "8", "weight": "60.0", "rir": 2}]
         result = _normalize_session(session, logs, {5: "Pull-up"})
-        assert result.source_id == "session-1"
+        assert result.source_id == "session-test-session-1"
         assert result.date == date(2024, 3, 15)
         assert len(result.exercises) == 1
         assert result.exercises[0].name == "Pull-up"

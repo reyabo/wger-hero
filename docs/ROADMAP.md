@@ -212,6 +212,21 @@ Migration: nein.
 
 ---
 
+## Nachtrag — wger-Sync-Fix
+
+- [x] `/api/v2/workoutlog/` statt `/api/v2/log/` (404 auf der Live-Instanz)
+- [x] Session↔Log über `WorkoutLog.session` ↔ `WorkoutSession.id`, durchgehend
+      als String; keine Integer-Konvertierung von UUIDs
+- [x] `repetitions` (String) statt `reps`; `weight` als String; `rir` nullable
+- [x] „X exercises" zählt unterschiedliche Übungen, nicht Sätze
+- [x] `workout_complete` spiegelt jetzt zusätzlich den kanonischen Stat
+      `strength`; Conditioning und RIR bleiben rein global
+- [x] Re-Sync nimmt alte Awards aus den Auditzeilen zurück und löscht sie
+- [x] Deterministischer Hash über stabil sortierte Logs
+- [x] `python -m app.repair_wger_stat_xp --dry-run|--apply`, idempotent
+
+Migration: nein — `HeroStat`, `StatXpEvent`, `SyncEvent` und `XpEvent` reichen.
+
 ## Bekannte Einschränkungen
 
 Stand nach Schritt 10 — bewusst so, nicht vergessen:
@@ -234,6 +249,15 @@ Stand nach Schritt 10 — bewusst so, nicht vergessen:
   in der Darstellung. Gespeichert bleibt `NULL`.
 - **Die Wochenansicht zeigt keine wger-Trainings und keine Japanisch-Sessions
   je Tag**; beides bleibt auf den bestehenden Seiten.
+- **Conditioning- und RIR-Boni bleiben rein globale XP.** Es gibt im Projekt
+  keine kanonische Stat-Zuordnung dafür; eine zu erfinden würde das Balancing
+  ändern.
+- **Die Stärke-Reparatur ergänzt nur fehlende Stat-XP.** Widersprüchliche
+  Bestandsdaten werden als Konflikt gemeldet und unverändert gelassen, nicht
+  aufgefüllt.
+- **Sätze werden nicht getrennt ausgewiesen.** Die Sync-Zusammenfassung nennt
+  die Zahl unterschiedlicher Übungen; die einzelnen Sätze liegen normalisiert
+  vor, haben aber keine eigene Oberfläche.
 
 ## Ausdrücklich nicht Teil dieses Umbaus
 

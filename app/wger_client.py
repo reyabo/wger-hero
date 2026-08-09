@@ -18,6 +18,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# The current wger exposes performed sets here. /api/v2/log/ is gone (404).
+LOG_ENDPOINT = "/api/v2/workoutlog/"
+
 
 class WgerClientError(Exception):
     pass
@@ -77,22 +80,37 @@ class WgerClient:
             params["date__gte"] = since.isoformat()
         return await self._get_all("/api/v2/workoutsession/", params)
 
-    async def get_exercise_logs(self, workout_id: int | None = None) -> list[dict]:
+    async def get_exercise_logs(self, session_id: str | None = None) -> list[dict]:
         """
-        Fetch exercise logs (sets/reps/weight/rir per session).
-        Endpoint: /api/v2/log/
-        Fields expected: id, exercise, reps, weight, rir, date, workout
+        Fetch WorkoutLog rows — one per performed *set*, not per exercise.
 
-        Returns [] on 404 — endpoint does not exist on all wger versions.
+        Endpoint: ``/api/v2/workoutlog/``. A live probe of the deployed wger
+        confirms the fields ``id`` (str), ``session`` (str), ``routine`` (int),
+        ``exercise`` (int), ``repetitions`` (str), ``weight`` (str) and ``rir``
+        (nullable). The older ``/api/v2/log/`` answers 404 on this version and
+        is no longer used; ``workout`` and ``reps`` are gone from the payload.
+
+        The name is kept for backward compatibility with the sync orchestrator.
+
+        Filtering by ``session_id`` passes the session UUID through untouched —
+        it is a string and must never be coerced to an integer.
         """
         params: dict = {}
-        if workout_id is not None:
-            params["workout"] = workout_id
+        if session_id is not None:
+            params["session"] = str(session_id)
         try:
-            return await self._get_all("/api/v2/log/", params)
+            return await self._get_all(LOG_ENDPOINT, params)
         except WgerClientError as e:
             if "404" in str(e):
-                logger.info("Exercise log endpoint not available on this wger version — skipping")
+                # Not an expected success case on a supported wger version, so
+                # this is a warning, not an info line. The sync may still carry
+                # on without exercise detail — see sync_workouts().
+                logger.warning(
+                    "%s returned 404 — this wger version does not expose "
+                    "workout logs where expected; continuing without exercise "
+                    "detail",
+                    LOG_ENDPOINT,
+                )
                 return []
             raise
 
