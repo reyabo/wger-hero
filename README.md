@@ -165,7 +165,7 @@ All tests use in-memory SQLite and mocked wger clients — no real wger instance
 | `HERO_NAME` | `Hero` | Display name for your character |
 | `DATABASE_URL` | `sqlite:////data/wger_hero.db` | SQLite database path |
 | `APP_ENV` | `production` | Environment label |
-| `WGER_FETCH_EXERCISE_LOGS` | `true` | Set `false` to skip `/api/v2/log/` + exercise catalog (older wger) |
+| `WGER_FETCH_EXERCISE_LOGS` | `true` | Set `false` to skip `/api/v2/workoutlog/` + the exercise catalogue. Workout XP and strength are unaffected |
 | `SYNC_FROM_DATE` | — | Only sync workouts on/after this date (`YYYY-MM-DD`), enforced locally |
 
 Token resolution order (highest priority first):
@@ -449,6 +449,104 @@ it still grants **global XP**, but **no attribute XP** — its amount comes from
 coach-maintained progress bar rather than a wger-hero rule, so only fully
 specified sessions move the radar.
 
+## wger workout sync
+
+wger is read-only and the source of truth for workouts. The sync is explicit —
+it never runs on container start.
+
+### What the current wger actually returns
+
+Verified against the deployed instance, not assumed:
+
+| Endpoint | Status | Notes |
+|---|---|---|
+| `/api/v2/workoutsession/` | 200 | `id` is a **string** UUID; there is no `workout` field |
+| `/api/v2/workoutlog/` | 200 | one row per performed **set**; links back through `session` |
+| `/api/v2/log/` | **404** | gone on this version — no longer used |
+
+So a session and its sets are linked as:
+
+```
+WorkoutSession.id  ←  WorkoutLog.session
+```
+
+Both are strings and are kept as strings throughout. Coercing a UUID to an
+integer would silently drop every log. The stable hero source id stays
+`session-<wger-session-id>`, so ids recorded by earlier syncs keep working.
+
+Field names moved too: `repetitions` replaces the old `reps` (and arrives as a
+string, like `weight`), while `rir` may be `null`. `reps` is still accepted as a
+fallback for older exports, but `repetitions` is the canonical name. An
+unreadable number never aborts a sync — that one set simply has no rep count.
+
+### "X exercises" counts exercises, not sets
+
+wger writes one `WorkoutLog` per set, so three sets of squats and two of bench
+press are five rows and **two exercises**. The sync summary reports the number
+of distinct exercises, identified by the stable wger exercise id. Every
+individual set is still kept — the weight and RIR of each one are what the
+bonuses are computed from.
+
+With `WGER_FETCH_EXERCISE_LOGS=false` no logs are requested at all, and the
+summary says **`exercise details disabled`**. That is deliberate: `0 exercises`
+would read as "this workout was empty", when the truth is that nothing was
+asked for.
+
+### Global XP and strength stat XP
+
+Two parallel ledgers, both auditable, both maintained by the same sync:
+
+| Award | Global XP | Stat XP |
+|---|---|---|
+| `workout_complete` | +100, attribute `Strength` | **+100 to the canonical `strength` stat** |
+| `conditioning_bonus` | +25 | — |
+| `rir_logged` | +10 | — |
+
+Only the completion award is mirrored onto a stat, one to one. Conditioning and
+RIR stay global-only: this project has no canonical stat mapping for them, and
+inventing one would quietly change the balance.
+
+### Re-syncing a changed workout
+
+A session whose content changed gets a new hash and is reconciled rather than
+added again. The previous awards are taken back from the **audit rows
+themselves** — every `XpEvent` and `StatXpEvent` for that `source_id` — and
+those rows are deleted before the new ones are written. `SyncEvent.xp_awarded`
+is a stored convenience total, not the authority: when the two disagree, the
+audit rows win and the discrepancy is reported instead of being subtracted
+twice on a guess.
+
+The whole sync commits once, so awards, stat awards, hero totals, level and
+sync events either all land or none do.
+
+Three invariants hold, each covered by a test:
+
+1. An unchanged sync never awards global XP twice.
+2. An unchanged sync never awards strength stat XP twice.
+3. A changed workout is reconciled without leaving stale audit rows behind and
+   without rewarding the hero twice.
+
+### Repairing workouts synced before this was fixed
+
+Workouts synced by an older version have their global XP but no strength stat
+XP. That is repaired once, explicitly:
+
+```bash
+python -m app.repair_wger_stat_xp --dry-run   # counts, writes nothing
+python -m app.repair_wger_stat_xp --apply     # adds only the missing stat XP
+```
+
+The candidates are read from the existing audit rows — every `XpEvent` with
+`source="wger"`, `event_type="workout_complete"` and `attribute="Strength"` —
+and each is credited with **its own** `xp` value. No count and no amount is
+hard-coded.
+
+It never touches global XP, `XpEvent` rows or `SyncEvent` rows. It is
+idempotent: a session that already has its stat award is skipped, and a second
+run reports nothing to do. Where the existing stat rows are ambiguous — two of
+them, or one with a different amount — the session is reported as a conflict
+and left completely alone rather than topped up on a guess.
+
 ## XP Rules (automatic, from wger)
 
 | Event | XP | Attribute |
@@ -586,8 +684,8 @@ The wger API client is designed to be easy to adapt. Verify against your live in
 
 | Item | Candidate | Notes |
 |---|---|---|
-| Completed sessions | `/api/v2/workoutsession/` | Check fields: `id`, `date`, `workout`, `notes` |
-| Exercise logs | `/api/v2/log/` | Check fields: `exercise`, `reps`, `weight`, `rir` |
+| Completed sessions | `/api/v2/workoutsession/` | Confirmed live: `id` (**str**, a UUID), `date`, `routine`, `notes`. There is no `workout` field |
+| Exercise logs | `/api/v2/workoutlog/` | Confirmed live: `id` (str), `session` (str), `exercise` (int), `repetitions` (str), `weight` (str), `rir`. The older `/api/v2/log/` answers **404** |
 | Routines | `/api/v2/routine/` | May not exist on older wger — client handles 404 gracefully |
 | Exercise names | `/api/v2/exercise/` | Names may be in a `translations` list, not a top-level `name` field |
 | Token format | `Authorization: Token <value>` | Verify this is correct (not `Bearer`) |

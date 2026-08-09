@@ -504,3 +504,33 @@ def test_the_smoke_test_prints_no_secrets():
     for forbidden in ("printenv WGER_API_TOKEN", "cat .env", "/run/secrets",
                       "AUTH_PASSWORD_HASH", "SESSION_SECRET"):
         assert forbidden not in script
+
+
+def test_the_docs_name_the_current_log_endpoint():
+    """/api/v2/log/ answers 404 on the deployed wger — the docs must not send
+    anyone there."""
+    for name in ("README.md", ".env.example"):
+        text = (REPO_ROOT / name).read_text()
+        assert "/api/v2/workoutlog/" in text
+        # The old path may only appear where it is called out as gone.
+        for line in text.splitlines():
+            if "/api/v2/log/" in line:
+                assert "404" in line, f"{name}: stale reference to /api/v2/log/"
+
+
+def test_the_docs_explain_the_session_link():
+    readme = (REPO_ROOT / "README.md").read_text()
+    assert "WorkoutLog.session" in readme
+    assert "repetitions" in readme
+
+
+def test_the_docs_state_that_disabled_logs_are_not_an_empty_workout():
+    readme = (REPO_ROOT / "README.md").read_text()
+    assert "exercise details disabled" in readme
+
+
+def test_the_docs_describe_the_idempotent_repair():
+    readme = (REPO_ROOT / "README.md").read_text()
+    assert "app.repair_wger_stat_xp" in readme
+    assert "idempotent" in readme
+    assert "never touches global XP" in readme

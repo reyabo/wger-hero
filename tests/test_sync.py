@@ -22,10 +22,11 @@ def _make_mock_client(sessions=None, logs=None, exercises=None):
     return client
 
 
+# The live shape: a string session id and no `workout` key at all.
 SESSION_1 = {
-    "id": 42,
+    "id": "test-session-0042",
     "date": "2024-03-01",
-    "workout": 10,
+    "routine": 10,
     "notes": "Tag 1 – Beine",
     "impression": "3",
 }
@@ -88,9 +89,9 @@ async def test_sync_multiple_sessions(db):
     db.commit()
 
     sessions = [
-        {"id": 1, "date": "2024-03-01", "workout": 1, "notes": "Session A"},
-        {"id": 2, "date": "2024-03-03", "workout": 2, "notes": "Session B"},
-        {"id": 3, "date": "2024-03-05", "workout": 3, "notes": "Session C"},
+        {"id": "test-session-1", "date": "2024-03-01", "routine": 1, "notes": "Session A"},
+        {"id": "test-session-2", "date": "2024-03-03", "routine": 2, "notes": "Session B"},
+        {"id": "test-session-3", "date": "2024-03-05", "routine": 3, "notes": "Session C"},
     ]
     client = _make_mock_client(sessions=sessions)
     result = await sync_workouts(db, client, hero_name="Test Hero")
