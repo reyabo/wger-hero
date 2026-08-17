@@ -97,7 +97,10 @@ class TestHabitCountQuests:
         quest = create_quest(
             db, title="Read 3x", quest_type="habit_count", period="weekly", target_value=3
         )
-        habit = create_habit(db, title="Read", base_xp_reward=5)
+        # Three completions a week is the habit's own allowance — without it
+        # the second completion is refused as "period_complete".
+        habit = create_habit(db, title="Read", base_xp_reward=5,
+                             recurrence="weekly", target_count=3)
         now = datetime.utcnow()
         complete_habit(db, habit, hero, when=now)
         complete_habit(db, habit, hero, when=now + timedelta(seconds=5))
@@ -119,7 +122,8 @@ class TestHabitCountQuests:
             xp_reward=100,
             stat_rewards={"knowledge": 30},
         )
-        habit = create_habit(db, title="Read", base_xp_reward=5)
+        habit = create_habit(db, title="Read", base_xp_reward=5,
+                             recurrence="weekly", target_count=2)
         now = datetime.utcnow()
         complete_habit(db, habit, hero, when=now)
         complete_habit(db, habit, hero, when=now + timedelta(seconds=5))

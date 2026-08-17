@@ -42,7 +42,7 @@
             {{ item.status_label }}
           </span>
         </div>
-        {% if day.day <= today %}
+        {% if day.day <= today and not item.done %}
         <form method="post" action="/habits/{{ item.habit.id }}/complete" class="day-item-action">
           {{ csrf_input(request) }}
           <input type="hidden" name="next" value="/week?date={{ week.monday.isoformat() }}">
