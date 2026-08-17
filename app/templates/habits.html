@@ -31,10 +31,16 @@
         </div>
       </div>
       <div class="habit-actions">
+        {% if habit_remaining[habit.id] > 0 %}
         <form method="POST" action="/habits/{{ habit.id }}/complete">
         {{ csrf_input(request) }}
-          <button type="submit" class="btn btn-primary btn-sm">Complete</button>
+          <button type="submit" class="btn btn-primary btn-sm">
+            Erledigt{% if habit_remaining[habit.id] > 1 %} ({{ habit_remaining[habit.id] }} offen){% endif %}
+          </button>
         </form>
+        {% else %}
+        <span class="status-badge status-done">für diesen Zeitraum erledigt</span>
+        {% endif %}
         <a href="/habits/{{ habit.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
         <form method="POST" action="/habits/{{ habit.id }}/delete" onsubmit="return confirm('Delete or archive this habit?')">
         {{ csrf_input(request) }}

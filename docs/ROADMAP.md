@@ -227,6 +227,19 @@ Migration: nein.
 
 Migration: nein — `HeroStat`, `StatXpEvent`, `SyncEvent` und `XpEvent` reichen.
 
+## Nachtrag — Abschlussgrenze für Gewohnheiten
+
+- [x] `target_count` wirkt als echte Obergrenze je Periode, nicht nur als Anzeige
+- [x] Periode aus der vorhandenen `recurrence`: Tag / Mo–So / Monat;
+      `flexible` heißt „ohne festen Wochentag", nicht „unbegrenzt"
+- [x] Abgelehnter Abschluss (`period_complete`): kein XP-Event, kein Stat-XP,
+      keine Completion-Zeile, kein Belohnungseffekt
+- [x] `/today` und Habit-Liste bieten die Aktion nicht mehr an, wenn nichts
+      mehr offen ist, und zeigen stattdessen den Zustand
+- [x] Bestandshistorie bleibt unverändert; nichts wird gelöscht oder zurückgeholt
+
+Migration: nein — `recurrence` und `target_count` existieren bereits.
+
 ## Bekannte Einschränkungen
 
 Stand nach Schritt 10 — bewusst so, nicht vergessen:

@@ -200,7 +200,32 @@ A habit is a repeatable action you complete for XP. Create one at `/habits/new`:
 | Stat rewards | XP added to specific attributes per completion |
 | Feste Wochentage | **Optional** weekday plan — see below |
 
-Completing a habit creates an auditable completion record, awards global XP **and** stat XP, writes the XP events, and updates your hero. A second click within a couple of seconds is ignored so you never double-award by accident. Inactive habits cannot be completed.
+Completing a habit creates an auditable completion record, awards global XP **and** stat XP, writes the XP events, and updates your hero. Inactive habits cannot be completed.
+
+#### How often a habit can be completed
+
+**Target count is a cap, not just a display.** A habit allows `target_count`
+completions per period, and the period is its own recurrence:
+
+| Recurrence | Period |
+|---|---|
+| `daily` | the calendar day |
+| `weekly` | Monday–Sunday |
+| `monthly` | the calendar month |
+| `flexible` | the calendar day — flexible means "not tied to a weekday", not "unlimited" |
+
+Once the allowance is used up, the completion route refuses with
+`period_complete`: no XP event, no stat XP, no completion row, and no reward
+animation. `/today` and the habit list stop offering the button and show the
+state instead, so the action is never dangled where it could only be rejected.
+
+This closes an XP loophole — before, only an accidental double-click within two
+seconds was blocked, and the same habit could otherwise be completed over and
+over for XP. The two guards are separate and both still apply.
+
+Existing history is never touched. A habit that already holds more completions
+than its target — recorded before this rule, or after the target was lowered —
+simply reports no remaining allowance; nothing is deleted or clawed back.
 
 #### Optional weekday planning
 
@@ -662,6 +687,37 @@ database.
 > **For a fully faithful rollback behind `0006_optional_learning_metrics`, use
 > the SQLite backup taken before the deployment. An Alembic downgrade alone does
 > not fully restore the original NULL semantics.**
+
+## Updating a running instance
+
+The short version, for a normal code update with no migration:
+
+```bash
+cd /pfad/zu/wger-hero
+git pull origin main
+docker compose up -d --build
+curl -sS http://127.0.0.1:8091/healthz
+```
+
+`up -d --build` rebuilds the image and replaces the container; the database
+lives in a mounted volume and is untouched.
+
+Two cases need more than that:
+
+- **A new Alembic revision.** Back up first, then migrate explicitly — the app
+  never migrates itself:
+
+  ```bash
+  docker compose exec wger-hero sqlite3 "$DB" ".backup '/data/backup-$(date +%F).sqlite'"
+  docker compose run --rm wger-hero python -m alembic upgrade head
+  docker compose up -d --build
+  ```
+
+- **A changed `.env`.** `env_file` is read when the container is *created*, not
+  when it restarts, so use `docker compose up -d --force-recreate`.
+
+For a production update — with rollback image, backup verification and a
+migration rehearsal on a copy — follow [docs/DEPLOY.md](docs/DEPLOY.md) instead.
 
 ## Deployment
 

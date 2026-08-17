@@ -351,3 +351,81 @@ def secure_reward_client(tmp_path, monkeypatch):
 
     app.dependency_overrides.clear()
     cfg._settings = None
+
+
+# ---------------------------------------------------------------------------
+# The period allowance, through the routes
+# ---------------------------------------------------------------------------
+
+def test_a_second_completion_the_same_day_is_refused_by_the_route(client):
+    c, TestSession = client
+    _habit(c, "Heute", xp="20")
+    _complete(c)
+    c.get("/today")                     # consume the first reward
+
+    _complete(c)
+
+    db = TestSession()
+    assert db.query(HabitCompletion).count() == 1
+    assert db.query(XpEvent).filter(XpEvent.source == "habit").count() == 1
+    assert db.query(HeroProfile).one().total_xp == 20
+    db.close()
+
+
+def test_repeating_the_action_cannot_farm_xp(client):
+    c, TestSession = client
+    _habit(c, "Heute", xp="20")
+    for _ in range(8):
+        _complete(c)
+        c.get("/today")
+
+    db = TestSession()
+    assert db.query(HabitCompletion).count() == 1
+    assert db.query(HeroProfile).one().total_xp == 20
+    db.close()
+
+
+def test_a_refused_completion_shows_no_reward(client):
+    c, _ = client
+    _habit(c, "Heute")
+    _complete(c)
+    c.get("/today")
+
+    _complete(c)
+    assert SUCCESS_MARKER not in c.get("/today").text
+
+
+def test_today_stops_offering_the_action_once_it_is_done(client):
+    c, _ = client
+    _habit(c, "Heute")
+    before = c.get("/today").text
+    assert "Erledigt eintragen" in before
+
+    _complete(c)
+    after = c.get("/today").text
+    assert "Erledigt eintragen" not in after
+    assert "Für diesen Zeitraum erledigt" in after
+
+
+def test_the_habit_list_stops_offering_the_action_too(client):
+    c, _ = client
+    _habit(c, "Heute")
+    _complete(c, target="/habits")
+    html = c.get("/habits").text
+    assert "für diesen Zeitraum erledigt" in html
+
+
+def test_a_habit_with_a_larger_target_keeps_its_action(client):
+    c, TestSession = client
+    _habit(c, "Dreimal")
+    db = TestSession()
+    db.query(Habit).one().target_count = 3
+    db.commit()
+    db.close()
+
+    html = c.get("/today").text
+    assert "Erledigt eintragen" in html
+    assert "3 offen" in html
+
+    _complete(c)
+    assert "2 offen" in c.get("/today").text

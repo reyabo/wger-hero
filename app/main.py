@@ -67,6 +67,7 @@ from app.habits import (
     create_habit,
     delete_or_archive_habit,
     parse_weekdays,
+    remaining_completions,
     scheduled_weekdays,
     set_weekdays,
     update_habit,
@@ -885,6 +886,9 @@ async def habits_page(request: Request, db: Session = Depends(get_db)):
     hero = _ensure_hero(db, get_settings().HERO_NAME)
     habits = db.query(Habit).order_by(Habit.active.desc(), Habit.title).all()
     habit_rewards = {h.id: parse_stat_rewards(h.stat_rewards) for h in habits}
+    # How much of each habit's period allowance is still open, so the list can
+    # show the state instead of offering an action that would be refused.
+    habit_remaining = {h.id: remaining_completions(db, h) for h in habits}
     completion_counts = {
         h.id: db.query(HabitCompletion).filter(HabitCompletion.habit_id == h.id).count()
         for h in habits
@@ -896,6 +900,7 @@ async def habits_page(request: Request, db: Session = Depends(get_db)):
             **_hero_context(hero),
             "habits": habits,
             "habit_rewards": habit_rewards,
+            "habit_remaining": habit_remaining,
             "completion_counts": completion_counts,
             "stat_names": STATS,
         },

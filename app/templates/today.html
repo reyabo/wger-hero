@@ -26,11 +26,23 @@
           {{ item.status_label }}
         </span>
       </div>
+      {% if item.done %}
+      <span class="day-item-note muted small">
+        {% if item.habit.target_count and item.habit.target_count > 1 %}
+        {{ item.habit.target_count }} / {{ item.habit.target_count }} für diesen Zeitraum
+        {% else %}
+        Für diesen Zeitraum erledigt
+        {% endif %}
+      </span>
+      {% else %}
       <form method="post" action="/habits/{{ item.habit.id }}/complete" class="day-item-action">
         {{ csrf_input(request) }}
         <input type="hidden" name="next" value="/today">
-        <button type="submit" class="btn btn-small">Erledigt eintragen</button>
+        <button type="submit" class="btn btn-small">
+          Erledigt eintragen{% if item.remaining > 1 %} ({{ item.remaining }} offen){% endif %}
+        </button>
       </form>
+      {% endif %}
     </li>
     {% endfor %}
   </ul>
@@ -54,11 +66,23 @@
           {{ item.status_label }}
         </span>
       </div>
+      {% if item.done %}
+      <span class="day-item-note muted small">
+        {% if item.habit.target_count and item.habit.target_count > 1 %}
+        {{ item.habit.target_count }} / {{ item.habit.target_count }} für diesen Zeitraum
+        {% else %}
+        Für diesen Zeitraum erledigt
+        {% endif %}
+      </span>
+      {% else %}
       <form method="post" action="/habits/{{ item.habit.id }}/complete" class="day-item-action">
         {{ csrf_input(request) }}
         <input type="hidden" name="next" value="/today">
-        <button type="submit" class="btn btn-small">Erledigt eintragen</button>
+        <button type="submit" class="btn btn-small">
+          Erledigt eintragen{% if item.remaining > 1 %} ({{ item.remaining }} offen){% endif %}
+        </button>
       </form>
+      {% endif %}
     </li>
     {% endfor %}
   </ul>

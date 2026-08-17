@@ -11,7 +11,7 @@ what the user did and applies the rewards they defined.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -23,6 +23,7 @@ from app.rewards import (
     EFFORT_CHOICES,
     calculate_rewards,
 )
+from app.momentum import week_start
 from app.stats import award_stat_xp, parse_stat_rewards, serialize_stat_rewards
 from app.xp import recalc_level
 
@@ -109,10 +110,81 @@ def set_weekdays(db: Session, habit: Habit, days: list[int]) -> list[int]:
     return sorted(wanted)
 
 
+def completion_period_bounds(recurrence: str, day: date) -> tuple[datetime, datetime]:
+    """The window one completion of a habit belongs to.
+
+    Straight from the habit's own recurrence — no new concept:
+
+    * ``daily`` and ``flexible``: the calendar day. Flexible means "not tied to
+      a weekday", not "unlimited"; without a cap it would be the one recurrence
+      that can be farmed.
+    * ``weekly``: Monday–Sunday, from the same week helper momentum uses.
+    * ``monthly``: the calendar month.
+
+    Anything unrecognised falls back to the day, which is the strictest window
+    and therefore the safe one.
+    """
+    key = (recurrence or "").lower()
+
+    if key == "weekly":
+        start_day = week_start(day)
+        end_day = start_day + timedelta(days=6)
+    elif key == "monthly":
+        start_day = day.replace(day=1)
+        end_day = date(
+            start_day.year + (1 if start_day.month == 12 else 0),
+            1 if start_day.month == 12 else start_day.month + 1,
+            1,
+        ) - timedelta(days=1)
+    else:
+        start_day = end_day = day
+
+    return (
+        datetime.combine(start_day, datetime.min.time()),
+        datetime.combine(end_day, datetime.max.time()),
+    )
+
+
+def completions_in_period(
+    db: Session, habit: Habit, day: Optional[date] = None
+) -> int:
+    """How often this habit was already completed in the period `day` is in."""
+    # Imported lazily: quests.py owns the one definition of "today in the
+    # application timezone", and importing it at module level would tie the
+    # habit module to the quest module for a single call.
+    from app.quests import app_today
+
+    day = day or app_today()
+    start, end = completion_period_bounds(habit.recurrence, day)
+    return (
+        db.query(HabitCompletion)
+        .filter(
+            HabitCompletion.habit_id == habit.id,
+            HabitCompletion.completed_at >= start,
+            HabitCompletion.completed_at <= end,
+        )
+        .count()
+    )
+
+
+def remaining_completions(
+    db: Session, habit: Habit, day: Optional[date] = None
+) -> int:
+    """How many completions the habit still allows in this period.
+
+    Never negative: a database that already holds more completions than the
+    target — recorded before this rule existed, or after the target was lowered
+    — reports 0 rather than a negative allowance. Nothing is ever deleted.
+    """
+    target = max(1, int(habit.target_count or 1))
+    return max(0, target - completions_in_period(db, habit, day))
+
+
 @dataclass
 class CompletionResult:
     ok: bool
-    reason: Optional[str] = None  # "inactive" | "duplicate" | None on success
+    # "inactive" | "duplicate" | "period_complete" | None on success
+    reason: Optional[str] = None
     xp_awarded: int = 0
     stat_xp_awarded: int = 0
     stat_rewards: dict[str, int] = field(default_factory=dict)
@@ -278,6 +350,13 @@ def complete_habit(
       - inactive habits cannot be completed
       - a second completion within DOUBLE_CLICK_WINDOW_SECONDS is ignored
         (accidental double-click protection)
+      - the habit's period allowance is respected: at most `target_count`
+        completions per day, week or month, depending on its recurrence
+
+    The last guard is what stops the same habit from being completed over and
+    over for XP. It enforces a rule the data model already stated — the target
+    count has always meant "this many completions make a full period", and the
+    day view has always shown the habit as done once they were reached.
 
     Does the full award atomically and commits once.
     """
@@ -298,6 +377,15 @@ def complete_habit(
         if delta < DOUBLE_CLICK_WINDOW_SECONDS:
             logger.info("Ignored duplicate completion for habit %s", habit.id)
             return CompletionResult(ok=False, reason="duplicate")
+
+    # Period allowance. Checked before anything is written, so a refused
+    # completion leaves no XP event, no stat event and no completion row.
+    if remaining_completions(db, habit, now.date()) <= 0:
+        logger.info(
+            "Habit %s already complete for its current period — no reward",
+            habit.id,
+        )
+        return CompletionResult(ok=False, reason="period_complete")
 
     if hero is None:
         hero = _get_or_create_hero(db)
