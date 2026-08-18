@@ -35,6 +35,15 @@ DOUBLE_CLICK_WINDOW_SECONDS = 2
 
 RECURRENCE_CHOICES = ("daily", "weekly", "monthly", "flexible")
 
+# The stored value stays English and language-independent; only the display
+# text is German. Never write a label back into the database.
+RECURRENCE_LABELS = {
+    "daily": "täglich",
+    "weekly": "wöchentlich",
+    "monthly": "monatlich",
+    "flexible": "jederzeit",
+}
+
 # ISO weekdays, the only accepted schedule values. Numbers rather than German
 # labels, so the stored data stays language-independent and validatable.
 ISO_WEEKDAYS = (1, 2, 3, 4, 5, 6, 7)

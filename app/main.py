@@ -60,6 +60,7 @@ from app.planning import parse_reference_date, today_plan, week_plan
 from app.starter import SAFETY_NOTE, StarterError, apply_starter, plan_starter
 from app.habits import (
     RECURRENCE_CHOICES,
+    RECURRENCE_LABELS,
     WEEKDAY_LABELS,
     InvalidWeekdayError,
     archive_habit,
@@ -92,6 +93,7 @@ from app.models import (
 )
 from app.quests import (
     PERIOD_CHOICES,
+    PERIOD_LABELS,
     QUEST_TYPE_CHOICES,
     QUEST_TYPE_LABELS,
     complete_quest_manual,
@@ -720,6 +722,8 @@ async def quests_page(request: Request, db: Session = Depends(get_db)):
             "quests": all_quests,
             "quest_rewards": quest_rewards,
             "stat_names": STATS,
+            "quest_type_labels": QUEST_TYPE_LABELS,
+            "period_labels": PERIOD_LABELS,
         },
     )
 
@@ -735,6 +739,7 @@ def _quest_form_context(quest: Quest | None, db: Session | None = None) -> dict:
         # until now app/starter.py was the only thing that could set goal_id.
         "goals": list_goals(db) if db is not None else [],
         "periods": PERIOD_CHOICES,
+        "period_labels": PERIOD_LABELS,
         "stat_keys": STAT_KEYS,
         "stat_names": STATS,
         "categories": CATEGORIES,
@@ -756,7 +761,7 @@ async def quest_new(request: Request, db: Session = Depends(get_db)):
             **_hero_context(hero),
             **_quest_form_context(None, db),
             "form_action": "/quests/new",
-            "heading": "New Quest",
+            "heading": "Neue Quest",
         },
     )
 
@@ -862,7 +867,7 @@ async def quest_edit(quest_id: int, request: Request, db: Session = Depends(get_
             **_hero_context(hero),
             **_quest_form_context(quest, db),
             "form_action": f"/quests/{quest_id}/edit",
-            "heading": "Edit Quest",
+            "heading": "Quest bearbeiten",
         },
     )
 
@@ -938,6 +943,7 @@ async def habits_page(request: Request, db: Session = Depends(get_db)):
             "habit_remaining": habit_remaining,
             "completion_counts": completion_counts,
             "stat_names": STATS,
+            "recurrence_labels": RECURRENCE_LABELS,
         },
     )
 
@@ -948,6 +954,7 @@ def _habit_form_context(habit: Habit | None, db: Session | None = None) -> dict:
         "habit": habit,
         "rewards": parse_stat_rewards(habit.stat_rewards) if habit else {},
         "recurrences": RECURRENCE_CHOICES,
+        "recurrence_labels": RECURRENCE_LABELS,
         "weekday_labels": WEEKDAY_LABELS,
         "selected_weekdays": scheduled_weekdays(db, habit) if habit and db else [],
         "stat_keys": STAT_KEYS,
@@ -971,7 +978,7 @@ async def habit_new(request: Request, db: Session = Depends(get_db)):
             **_hero_context(hero),
             **_habit_form_context(None),
             "form_action": "/habits/new",
-            "heading": "New Habit",
+            "heading": "Neue Gewohnheit",
         },
     )
 
@@ -1019,7 +1026,7 @@ async def habit_edit(habit_id: int, request: Request, db: Session = Depends(get_
             **_hero_context(hero),
             **_habit_form_context(habit, db),
             "form_action": f"/habits/{habit_id}/edit",
-            "heading": "Edit Habit",
+            "heading": "Gewohnheit bearbeiten",
         },
     )
 

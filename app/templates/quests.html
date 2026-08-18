@@ -5,7 +5,7 @@
 <div class="page-header">
   <h1>Quests</h1>
   <span class="badge">Level {{ level }}</span>
-  <a href="/quests/new" class="btn btn-primary page-action">+ New Quest</a>
+  <a href="/quests/new" class="btn btn-primary page-action">+ Neue Quest</a>
 </div>
 
 {% set active = quests | selectattr("active") | list %}
@@ -13,7 +13,7 @@
 
 {% if active %}
 <section class="card">
-  <div class="card-title">Active</div>
+  <div class="card-title">Aktiv</div>
   {% for quest in active %}
   <div class="quest-block">
     <div class="quest-header">
@@ -25,8 +25,8 @@
       {% if quest.is_milestone %}
       <span class="tag tag-milestone">Meilenstein</span>
       {% endif %}
-      <span class="tag">{{ quest.quest_type }}</span>
-      <span class="tag">{{ quest.period }}</span>
+      <span class="tag">{{ quest_type_labels.get(quest.quest_type, quest.quest_type) }}</span>
+      <span class="tag">{{ period_labels.get(quest.period, quest.period) }}</span>
       {% if quest.repeatable %}<span class="tag">wiederholbar</span>{% endif %}
       {% if quest.quest_type == "manual" %}
       {# Not automatic: this one waits for an explicit confirmation, and the
@@ -49,13 +49,13 @@
       {% if quest.quest_type == "manual" %}
       <form method="POST" action="/quests/{{ quest.id }}/complete">
       {{ csrf_input(request) }}
-        <button type="submit" class="btn btn-primary btn-sm">Complete</button>
+        <button type="submit" class="btn btn-primary btn-sm">Abschließen</button>
       </form>
       {% endif %}
-      <a href="/quests/{{ quest.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
-      <form method="POST" action="/quests/{{ quest.id }}/delete" onsubmit="return confirm('Delete or archive this quest?')">
+      <a href="/quests/{{ quest.id }}/edit" class="btn btn-ghost btn-sm">Bearbeiten</a>
+      <form method="POST" action="/quests/{{ quest.id }}/delete" onsubmit="return confirm('Diese Quest löschen oder archivieren?')">
       {{ csrf_input(request) }}
-        <button type="submit" class="btn btn-ghost btn-sm">Delete</button>
+        <button type="submit" class="btn btn-ghost btn-sm">Löschen</button>
       </form>
     </div>
   </div>
@@ -65,18 +65,18 @@
 
 {% if completed %}
 <section class="card">
-  <div class="card-title">Completed</div>
+  <div class="card-title">Abgeschlossen</div>
   {% for quest in completed %}
   <div class="quest-block completed">
     <div class="quest-header">
       <span class="quest-name">{{ quest.title }}</span>
-      <span class="badge badge-success">Completed {{ quest.completed_at.strftime('%Y-%m-%d') }}</span>
+      <span class="badge badge-success">Abgeschlossen am {{ quest.completed_at.strftime('%d.%m.%Y') }}</span>
     </div>
     <p class="quest-desc muted">{{ quest.description }}</p>
     <div class="quest-actions">
-      <form method="POST" action="/quests/{{ quest.id }}/delete" onsubmit="return confirm('Archive this quest?')">
+      <form method="POST" action="/quests/{{ quest.id }}/delete" onsubmit="return confirm('Diese Quest archivieren?')">
       {{ csrf_input(request) }}
-        <button type="submit" class="btn btn-ghost btn-sm">Delete</button>
+        <button type="submit" class="btn btn-ghost btn-sm">Löschen</button>
       </form>
     </div>
   </div>
@@ -85,7 +85,7 @@
 {% endif %}
 
 {% if not quests %}
-<p class="muted">No quests yet. <a href="/quests/new">Create one</a>.</p>
+<p class="muted">Noch keine Quest. <a href="/quests/new">Lege die erste an</a>.</p>
 {% endif %}
 
 {% endblock %}
