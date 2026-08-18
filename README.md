@@ -108,13 +108,51 @@ chmod 600 secrets/wger_api_token.txt
 
 The Docker Compose file mounts this as a read-only secret at `/run/secrets/wger_api_token`.
 
-### 3. Create the data directory
+### 3. Set up access protection
+
+`AUTH_ENABLED` defaults to **true**, and the app reads both files below on
+*every* request. If either is missing the app answers `503 {"detail": "Auth not
+configured"}` on every path — including `/login` and `/healthz`, so the
+container's healthcheck goes red too. This is deliberate: without a signing key
+no session can be trusted, so it fails closed rather than open.
+
+```bash
+umask 077
+
+# The session signing key
+openssl rand -hex 32 > secrets/hero_session_secret
+
+# The Argon2 hash of your one password (typed interactively, so it never
+# reaches the shell history)
+python - <<'EOF' > secrets/hero_password_hash
+from argon2 import PasswordHasher
+from getpass import getpass
+print(PasswordHasher().hash(getpass("Passwort: ")), end="")
+EOF
+
+chmod 400 secrets/hero_session_secret secrets/hero_password_hash
+```
+
+Compose mounts both read-only at `/run/secrets/`. Rotating the session secret
+logs you out; rotating the password hash does not, until the session expires.
+
+To check what went wrong without exposing anything, read the log — the response
+stays deliberately terse, the log line is precise:
+
+```bash
+docker compose logs wger-hero | grep "Auth is enabled but unusable"
+```
+
+For local development only, `AUTH_ENABLED=false` skips this entirely (and
+disables CSRF with it). Never in production.
+
+### 4. Create the data directory
 
 ```bash
 sudo mkdir -p /srv/data/wger-hero
 ```
 
-### 4. Start the app
+### 5. Start the app
 
 ```bash
 docker compose up -d --build
@@ -122,7 +160,7 @@ docker compose up -d --build
 
 The app is available at `http://localhost:8091`.
 
-### 5. Sync your workouts
+### 6. Sync your workouts
 
 Open the dashboard and click **Sync Now**, or POST to `/sync`:
 

@@ -194,6 +194,23 @@ docker compose run --rm wger-hero python -m alembic current \
 Die Anwendung migriert **nie** von selbst — weder beim Import noch beim Start.
 Das ist eine feste Architekturregel und durch einen Test abgesichert.
 
+## 10a. Zugriffsschutz-Secrets prüfen
+
+`AUTH_ENABLED=true` liest bei **jeder** Anfrage beide Dateien. Fehlt eine,
+antwortet die App auf jedem Pfad mit `503 {"detail": "Auth not configured"}` —
+auch auf `/healthz`, der Container wird also als unhealthy markiert. Vor dem
+Start prüfen, nicht danach:
+
+```bash
+for f in secrets/hero_password_hash secrets/hero_session_secret; do
+  if [ -s "$f" ]; then echo "OK    $f"; else echo "FEHLT $f"; fi
+done                                       > "$LOG-10a-secrets.txt"     2>&1
+cat "$LOG-10a-secrets.txt"
+```
+
+Fehlt eine Datei, siehe README, Abschnitt „Set up access protection". Der Inhalt
+wird dabei nie ausgegeben — nur, ob die Datei existiert und nicht leer ist.
+
 ## 11. Neuen Container starten
 
 ```bash
@@ -209,6 +226,25 @@ sleep 5
 curl -sS http://127.0.0.1:8091/healthz     > "$LOG-12-health.txt"      2>&1
 curl -sS -o /dev/null -w 'login: %{http_code}\n' \
   http://127.0.0.1:8091/login             >> "$LOG-12-health.txt"      2>&1
+```
+
+## 12a. Zugriffsschutz wirkt
+
+`/login` muss 200 liefern und eine geschützte Seite 303 auf `/login` — ein 503
+an dieser Stelle bedeutet immer ein fehlendes oder leeres Secret aus Schritt 10a.
+
+```bash
+{
+  curl -sS -o /dev/null -w 'login:  %{http_code}\n' http://127.0.0.1:8091/login
+  curl -sS -o /dev/null -w 'today:  %{http_code}\n' http://127.0.0.1:8091/today
+} > "$LOG-12a-auth.txt" 2>&1
+cat "$LOG-12a-auth.txt"
+```
+
+Erwartet: `login: 200` und `today: 303`. Bei 503:
+
+```bash
+docker compose logs wger-hero | grep "Auth is enabled but unusable"
 ```
 
 ## 13. Datenbankintegrität
