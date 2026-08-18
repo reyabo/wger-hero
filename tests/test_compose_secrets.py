@@ -86,3 +86,20 @@ def test_no_secret_value_is_committed():
             f"{host_path} exists in the working tree — a real secret must never "
             f"be committed"
         )
+
+
+def test_local_compose_overlays_are_git_ignored():
+    """A production install keeps its secret mounts in an extra compose file.
+    That file names host paths of one specific machine and must never be
+    committed — and it must not be committed by accident either, which is what
+    .gitignore is for."""
+    gitignore = (REPO_ROOT / ".gitignore").read_text()
+    for name in ("docker-compose.override.yml", "docker-compose.auth.yml"):
+        assert name in gitignore, f"{name} is not git-ignored"
+
+
+def test_no_local_compose_overlay_is_committed():
+    tracked = {p.name for p in REPO_ROOT.glob("docker-compose*.yml")}
+    assert tracked == {"docker-compose.yml"}, (
+        f"unexpected compose files in the repository: {sorted(tracked)}"
+    )
