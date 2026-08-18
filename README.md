@@ -261,7 +261,7 @@ Periods are `daily` · `weekly` · `monthly` · `once`. Quests can carry their o
 
 ## Stats
 
-Global XP (your level) and stat XP (your attributes) are tracked separately. There are 10 stats; stat totals are stored per attribute and surfaced on the dashboard (the radar chart is intentionally not built yet — the data is prepared for it):
+Global XP (your level) and stat XP (your attributes) are tracked separately. There are 10 stats, shown as a radar on `/stats`:
 
 | Key | Display (DE) | Key | Display (DE) |
 |---|---|---|---|
@@ -270,6 +270,20 @@ Global XP (your level) and stat XP (your attributes) are tracked separately. The
 | `dexterity` | Geschicklichkeit | `knowledge` | Wissen |
 | `mobility` | Beweglichkeit | `creativity` | Kreativität |
 | `body_control` | Körperkontrolle | `recovery` | Regeneration |
+
+### Attribute detail (`/stats/<key>`)
+
+Each attribute name on `/stats` links to its own page: level and progress, where
+the XP came from grouped by source (habit, quest, wger, Japanese), the strongest
+individual contributions, and the most recent awards.
+
+Two things it is careful about. Shares are computed over the **whole** ledger for
+that attribute, while the event list is only the last 30 entries and says so —
+the authoritative total is `HeroStat.xp`, never the visible slice. And the same
+title from two different sources stays two rows, because a habit and a quest may
+share a name without being the same thing.
+
+An unknown key is a 404, not an empty page.
 
 ## Japanese SAVE Import
 

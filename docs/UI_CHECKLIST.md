@@ -91,6 +91,14 @@ Entwicklerwerkzeugen `prefers-reduced-motion: reduce` erzwingen).
       Ziels im Zeitraum
 - [ ] Der Fortschrittsbalken passt zum Zähler
 
+## Attribute
+
+- [ ] Der Attributname auf `/stats` ist ein Link auf die Detailseite
+- [ ] `/stats/strength` zeigt Stufe, Fortschritt und Gesamt-XP
+- [ ] „Woher die XP kommen" summiert sich auf 100 %
+- [ ] Die Ereignisliste ist auf 30 Einträge begrenzt und sagt das
+- [ ] Ein unbekannter Schlüssel liefert 404, keine leere Seite
+
 ## Japanisch
 
 - [ ] Vorschau mit dem Minimalformat (nur Datum, Charakter, fünf Werte) wird

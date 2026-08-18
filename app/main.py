@@ -120,8 +120,10 @@ from app.stats import (
     STAT_KEYS,
     STATS,
     STAT_ABBR,
+    SOURCE_LABELS,
     build_radar,
     get_all_stat_progress,
+    get_stat_detail,
     get_recent_stat_gains,
     get_stat_summary,
     get_stat_totals,
@@ -1358,6 +1360,27 @@ async def goal_set_status(slug: str, request: Request, db: Session = Depends(get
     if not set_status(db, goal, target):
         raise HTTPException(status_code=400, detail="Unzulässiger Statuswechsel")
     return RedirectResponse(url=f"/goals/{goal.slug}", status_code=303)
+
+
+STAT_DETAIL_EVENT_LIMIT = 30
+
+
+@app.get("/stats/{stat_key}", response_class=HTMLResponse)
+async def stat_detail_page(stat_key: str, request: Request, db: Session = Depends(get_db)):
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    detail = get_stat_detail(db, stat_key, limit=STAT_DETAIL_EVENT_LIMIT)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Attribut nicht gefunden")
+    return templates.TemplateResponse(
+        request=request,
+        name="stat_detail.html",
+        context={
+            **_hero_context(hero),
+            "detail": detail,
+            "source_labels": SOURCE_LABELS,
+            "limit": STAT_DETAIL_EVENT_LIMIT,
+        },
+    )
 
 
 @app.get("/stats", response_class=HTMLResponse)

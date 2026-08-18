@@ -86,7 +86,7 @@
     <div class="stat-card">
       <div class="stat-card-head">
         <span class="stat-abbr">{{ stat.abbr }}</span>
-        <span class="stat-name">{{ stat.name }}</span>
+        <a class="stat-name" href="/stats/{{ stat.key }}">{{ stat.name }}</a>
         <span class="stat-level">Lv {{ stat.level }}</span>
       </div>
       <div class="bar-wrap">
