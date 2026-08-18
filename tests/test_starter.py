@@ -422,6 +422,46 @@ def test_the_weekly_rhythm_quest_covers_five_routines(db):
     assert quest.match_text is None        # no free-text heuristic
 
 
+def test_the_weekly_rhythm_quest_counts_itself(db):
+    """It is bound to its goal, so it can count distinct habits of that goal."""
+    apply_starter(db)
+    quest = _quest(db, "Der Fünfer-Rhythmus")
+    goal = _goal(db, "koerperkontrolle")
+    assert quest.quest_type == "goal_habit_variety"
+    assert quest.goal_id == goal.id
+
+
+def test_an_existing_manual_rhythm_quest_is_upgraded(db):
+    """An install from before the source existed keeps its history and its id."""
+    apply_starter(db)
+    quest = _quest(db, "Der Fünfer-Rhythmus")
+    quest_id, goal_id = quest.id, quest.goal_id
+    quest.quest_type = "manual"
+    db.commit()
+
+    apply_starter(db)
+
+    again = _quest(db, "Der Fünfer-Rhythmus")
+    assert again.id == quest_id
+    assert again.goal_id == goal_id
+    assert again.quest_type == "goal_habit_variety"
+
+
+def test_an_edited_rhythm_quest_is_left_alone(db):
+    """Only the exact seeded shape is lifted — anything else is the user's."""
+    apply_starter(db)
+    quest = _quest(db, "Der Fünfer-Rhythmus")
+    quest.quest_type = "manual"
+    quest.target_value = 3
+    db.commit()
+
+    apply_starter(db)
+
+    again = _quest(db, "Der Fünfer-Rhythmus")
+    assert again.quest_type == "manual"
+    assert again.target_value == 3
+
+
 def test_the_body_control_goal_has_four_neutral_milestones(db):
     apply_starter(db)
     goal = _goal(db, "koerperkontrolle")

@@ -87,8 +87,8 @@ Entwicklerwerkzeugen `prefers-reduced-motion: reduce` erzwingen).
 
 - [ ] Eine manuelle Quest sagt „manuell zu bestätigen"
 - [ ] Eine automatische Quest sagt „zählt automatisch"
-- [ ] „Der Fünfer-Rhythmus" steht auf **manuell** — das ist die tatsächliche
-      Implementierung
+- [ ] „Der Fünfer-Rhythmus" zählt automatisch — verschiedene Gewohnheiten des
+      Ziels im Zeitraum
 - [ ] Der Fortschrittsbalken passt zum Zähler
 
 ## Japanisch

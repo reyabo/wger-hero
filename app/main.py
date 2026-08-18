@@ -93,6 +93,7 @@ from app.models import (
 from app.quests import (
     PERIOD_CHOICES,
     QUEST_TYPE_CHOICES,
+    QUEST_TYPE_LABELS,
     complete_quest_manual,
     create_quest,
     delete_or_archive_quest,
@@ -723,12 +724,16 @@ async def quests_page(request: Request, db: Session = Depends(get_db)):
     )
 
 
-def _quest_form_context(quest: Quest | None) -> dict:
+def _quest_form_context(quest: Quest | None, db: Session | None = None) -> dict:
     from app.rewards import CATEGORIES, DURATION_LABELS, EFFORT_LABELS, CATEGORY_CHOICES, DURATION_CHOICES, EFFORT_CHOICES
     return {
         "quest": quest,
         "rewards": parse_stat_rewards(quest.stat_rewards) if quest else {},
         "quest_types": QUEST_TYPE_CHOICES,
+        "quest_type_labels": QUEST_TYPE_LABELS,
+        # The goal selector: goal_habit_variety is unusable without one, and
+        # until now app/starter.py was the only thing that could set goal_id.
+        "goals": list_goals(db) if db is not None else [],
         "periods": PERIOD_CHOICES,
         "stat_keys": STAT_KEYS,
         "stat_names": STATS,
@@ -749,11 +754,33 @@ async def quest_new(request: Request, db: Session = Depends(get_db)):
         name="quest_form.html",
         context={
             **_hero_context(hero),
-            **_quest_form_context(None),
+            **_quest_form_context(None, db),
             "form_action": "/quests/new",
             "heading": "New Quest",
         },
     )
+
+
+def _goal_id_from_form(form, db: Session) -> Optional[int]:
+    """The selected goal, or None. An id that is not a real goal becomes None."""
+    raw = (form.get("goal_id") or "").strip()
+    if not raw:
+        return None
+    try:
+        goal_id = int(raw)
+    except ValueError:
+        return None
+    return goal_id if db.get(Goal, goal_id) is not None else None
+
+
+def _quest_needs_a_goal(quest_type: str, goal_id: Optional[int]) -> Optional[str]:
+    """The one source that is meaningless without a goal."""
+    if quest_type == "goal_habit_variety" and goal_id is None:
+        return (
+            "Die Quelle „Verschiedene Gewohnheiten eines Ziels“ braucht ein Ziel. "
+            "Bitte oben ein Ziel auswählen."
+        )
+    return None
 
 
 def _quest_range_from_form(form) -> tuple[datetime | None, datetime | None, str | None]:
@@ -777,7 +804,7 @@ def _quest_form_error(request: Request, db: Session, form, error: str, *,
         name="quest_form.html",
         context={
             **_hero_context(hero),
-            **_quest_form_context(quest),
+            **_quest_form_context(quest, db),
             "form_action": action,
             "heading": heading,
             "error": error,
@@ -795,15 +822,18 @@ async def quest_create(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse(url="/quests/new", status_code=303)
 
     period_start, period_end, error = _quest_range_from_form(form)
+    goal_id = _goal_id_from_form(form, db)
+    error = error or _quest_needs_a_goal(form.get("quest_type") or "manual", goal_id)
     if error:
         return _quest_form_error(
             request, db, form, error,
-            quest=None, action="/quests/new", heading="New Quest",
+            quest=None, action="/quests/new", heading="Neue Quest",
         )
 
     create_quest(
         db,
         title=title,
+        goal_id=goal_id,
         description=form.get("description"),
         quest_type=form.get("quest_type") or "manual",
         period=form.get("period") or "weekly",
@@ -830,7 +860,7 @@ async def quest_edit(quest_id: int, request: Request, db: Session = Depends(get_
         name="quest_form.html",
         context={
             **_hero_context(hero),
-            **_quest_form_context(quest),
+            **_quest_form_context(quest, db),
             "form_action": f"/quests/{quest_id}/edit",
             "heading": "Edit Quest",
         },
@@ -845,16 +875,21 @@ async def quest_update(quest_id: int, request: Request, db: Session = Depends(ge
     form = await request.form()
 
     period_start, period_end, error = _quest_range_from_form(form)
+    goal_id = _goal_id_from_form(form, db)
+    error = error or _quest_needs_a_goal(
+        form.get("quest_type") or quest.quest_type, goal_id
+    )
     if error:
         return _quest_form_error(
             request, db, form, error,
-            quest=quest, action=f"/quests/{quest.id}/edit", heading="Edit Quest",
+            quest=quest, action=f"/quests/{quest.id}/edit", heading="Quest bearbeiten",
         )
 
     update_quest(
         db,
         quest,
         title=(form.get("title") or quest.title),
+        goal_id=goal_id,
         description=form.get("description"),
         quest_type=form.get("quest_type") or quest.quest_type,
         period=form.get("period") or quest.period,

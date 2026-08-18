@@ -445,9 +445,13 @@ def test_the_readme_states_the_lossy_downgrade():
     assert "SQLite backup" in readme
 
 
-def test_the_readme_does_not_promise_an_automatic_fuenfer_rhythmus():
+def test_the_readme_documents_the_fuenfer_rhythmus_source():
+    """The quest counts distinct habits of its goal — five sessions of one
+    routine must not satisfy it, and the README has to say so."""
     readme = (REPO_ROOT / "README.md").read_text()
-    assert "Der Fünfer-Rhythmus is manual" in readme
+    assert "Der Fünfer-Rhythmus counts distinct habits" in readme
+    assert "goal_habit_variety" in readme
+    assert "Der Fünfer-Rhythmus is manual" not in readme
 
 
 def test_the_deploy_doc_uses_the_real_database_filename():

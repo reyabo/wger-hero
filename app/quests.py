@@ -27,9 +27,31 @@ HOME_HERO_MATCH_TEXT = "Tag 1,Tag 2,Tag 3,Beine,Push,Pull"
 
 QUEST_TYPE_CHOICES = (
     "manual", "habit_count", "workout_count", "workout_variety",
-    "japanese_session_count",
+    "japanese_session_count", "goal_habit_variety",
 )
 PERIOD_CHOICES = ("daily", "weekly", "monthly", "once")
+
+# Sentinel for update_quest: "the caller said nothing about this field", which
+# is a different statement from "the caller wants it cleared".
+_UNCHANGED = object()
+
+# What each source actually counts, in plain German. The stored value stays the
+# English enum — only the display is translated.
+QUEST_TYPE_LABELS = {
+    "manual": "Manuell — du bestätigst selbst",
+    "habit_count": "Abschlüsse einer Gewohnheit",
+    "goal_habit_variety": "Verschiedene Gewohnheiten eines Ziels",
+    "workout_count": "Anzahl wger-Trainings",
+    "workout_variety": "Verschiedene Trainingsarten (Suchbegriffe)",
+    "japanese_session_count": "Bestätigte Japanisch-Sessions",
+}
+
+PERIOD_LABELS = {
+    "daily": "täglich",
+    "weekly": "wöchentlich",
+    "monthly": "monatlich",
+    "once": "einmalig",
+}
 
 DEFAULT_QUESTS = [
     {
@@ -336,6 +358,38 @@ def _count_habit_completions_in_period(db: Session, quest: Quest) -> int:
 
 
 
+def _count_goal_habit_variety_in_period(db: Session, quest: Quest) -> int:
+    """How many *different* habits of the quest's goal were completed.
+
+    The question "were all five routines done this week" is about which of the
+    five happened, not about how many sessions there were. Counting completions
+    would let five sessions of one routine satisfy a quest meant to span five —
+    so distinct habits it is, mirroring workout_variety's "how many of these
+    happened" shape rather than habit_count's "how many times".
+
+    A quest of this type without a goal counts 0, never "every habit". The same
+    choice _count_workout_variety_in_period() makes for an empty match_text: a
+    half-configured quest visibly does nothing instead of quietly counting
+    everything and completing itself.
+    """
+    if quest.goal_id is None:
+        return 0
+
+    start, end = _period_window(quest)
+    q = (
+        db.query(HabitCompletion.habit_id)
+        .join(Habit, Habit.id == HabitCompletion.habit_id)
+        .filter(Habit.goal_id == quest.goal_id)
+    )
+    if start is not None:
+        q = q.filter(HabitCompletion.completed_at >= start)
+    if end is not None:
+        q = q.filter(HabitCompletion.completed_at <= end)
+    # distinct() on the habit_id column only — distinct() over whole rows would
+    # count every completion again and silently become habit_count.
+    return q.distinct().count()
+
+
 # ---------------------------------------------------------------------------
 # Japanese sessions as a quest source
 # ---------------------------------------------------------------------------
@@ -542,6 +596,8 @@ def count_quest_progress(db: Session, quest: Quest) -> Optional[int]:
         return _count_workouts_in_period(db, quest)
     if qtype == "habit_count":
         return _count_habit_completions_in_period(db, quest)
+    if qtype == "goal_habit_variety":
+        return _count_goal_habit_variety_in_period(db, quest)
     if qtype == "japanese_session_count":
         return _count_japanese_sessions_in_period(db, quest)
     return None
@@ -642,6 +698,7 @@ def create_quest(
     period: str = "weekly",
     target_value: int = 1,
     match_text: Optional[str] = None,
+    goal_id: Optional[int] = None,
     xp_reward: Optional[int] = None,
     stat_rewards: Optional[dict[str, int]] = None,
     repeatable: bool = False,
@@ -678,6 +735,7 @@ def create_quest(
         effort=effort if effort in EFFORT_CHOICES else None,
         period_start=period_start,
         period_end=period_end,
+        goal_id=goal_id,
     )
     db.add(quest)
     db.commit()
@@ -704,8 +762,15 @@ def update_quest(
     effort: Optional[str] = None,
     period_start: Optional[datetime] = None,
     period_end: Optional[datetime] = None,
+    goal_id: object = _UNCHANGED,
 ) -> Quest:
-    """Update an existing quest in place (slug is preserved)."""
+    """Update an existing quest in place (slug is preserved).
+
+    `goal_id` uses a sentinel rather than None as its default: every other field
+    here is assigned unconditionally, so a plain `None` default would silently
+    unlink a quest from its goal the first time any caller that does not know
+    about goals saved it. Passing None explicitly still clears the link.
+    """
     xp, computed_stats = _resolve_quest_xp(
         category, duration_size, effort, xp_reward, stat_rewards
     )
@@ -725,6 +790,8 @@ def update_quest(
     quest.category = category if category in CATEGORY_CHOICES else None
     quest.duration_size = duration_size if duration_size in DURATION_CHOICES else None
     quest.effort = effort if effort in EFFORT_CHOICES else None
+    if goal_id is not _UNCHANGED:
+        quest.goal_id = goal_id
     # An explicit window wins in _period_window(), so a stale one left over from
     # a previous "once" range would silently pin a recurring quest to it. The
     # caller passes None for every period other than "once", which clears it.
