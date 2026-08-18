@@ -21,6 +21,46 @@ cd /pfad/zu/wger-hero
 Der Container heißt `wger-hero`, läuft intern auf Port 5000, veröffentlicht auf
 8091, hinter Caddy.
 
+### Den Compose-Stack zuerst festlegen
+
+**Compose lädt von sich aus nur `docker-compose.yml` und
+`docker-compose.override.yml`.** Jede weitere Datei muss bei *jedem* Aufruf
+erneut mit `-f` angegeben werden — auch bei `build`, `run` und `up`. Fehlt sie
+bei einem Aufruf, der den Container neu erzeugt, entsteht er ohne ihre Mounts.
+Genau so verliert eine funktionierende Installation ihre Auth-Secrets und
+antwortet danach auf jedem Pfad mit `503 {"detail": "Auth not configured"}`.
+
+Deshalb laufen **alle** Compose-Aufrufe dieser Anleitung über ein Array, das
+einmal gesetzt und nie wieder umgangen wird:
+
+```bash
+# Standardinstallation ohne zusätzliche Compose-Dateien:
+DC=(docker compose)
+```
+
+Sobald eigene Dateien dazugehören, werden sie hier vollständig aufgezählt —
+und dann auch `docker-compose.override.yml`, denn sobald ein `-f` gesetzt ist,
+lädt Compose die Override-Datei nicht mehr von selbst:
+
+```bash
+# Beispiel Fairbrook — dort liegt der Zugriffsschutz in einer lokalen,
+# nicht eingecheckten docker-compose.auth.yml:
+DC=(docker compose
+    -f docker-compose.yml
+    -f docker-compose.override.yml
+    -f docker-compose.auth.yml)
+```
+
+Vor dem ersten Schritt einmal prüfen, was tatsächlich vorhanden ist:
+
+```bash
+ls -l docker-compose*.yml compose*.yaml 2>/dev/null
+```
+
+Ab hier steht `"${DC[@]}"` überall dort, wo sonst der nackte
+`docker&nbsp;compose`-Aufruf stünde. Wird ein Schritt einzeln ausgeführt, muss
+`DC` in derselben Shell gesetzt sein.
+
 ### Den Datenbankpfad zuerst feststellen
 
 Der Pfad steht **an genau einer Stelle** und wird hier als Variable gesetzt, weil
@@ -39,8 +79,8 @@ DB_ON_HOST=/srv/data/wger-hero/wger_hero.sqlite
 > `docker-compose.yml` den Pfad selbst setzen. Erst nachsehen, dann arbeiten:
 >
 > ```bash
-> docker compose exec wger-hero printenv DATABASE_URL
-> docker compose exec wger-hero ls -l /data
+> "${DC[@]}" exec wger-hero printenv DATABASE_URL
+> "${DC[@]}" exec wger-hero ls -l /data
 > ```
 >
 > Die tatsächliche Ausgabe ist maßgeblich, nicht diese Datei.
@@ -50,14 +90,80 @@ DB_ON_HOST=/srv/data/wger-hero/wger_hero.sqlite
 ## 1. Aktuellen Containerzustand prüfen
 
 ```bash
-docker compose ps                          > "$LOG-01-ps.txt"          2>&1
-docker compose logs --tail=200 wger-hero  >> "$LOG-01-ps.txt"          2>&1
+"${DC[@]}" ps                              > "$LOG-01-ps.txt"          2>&1
+"${DC[@]}" logs --tail=200 wger-hero      >> "$LOG-01-ps.txt"          2>&1
 curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8091/healthz \
                                           >> "$LOG-01-ps.txt"          2>&1
 ```
 
 Erwartet: Container `running`, Healthcheck `200`. Läuft die Instanz schon vorher
 nicht, wird nicht deployt, sondern erst die Ursache gesucht.
+
+## 1a. Preflight — nur lesen, nichts ändern
+
+Vier Fragen, bevor irgendetwas angefasst wird. Alles read-only; kein Secret-Wert
+wird ausgegeben, nur ob eine Datei existiert und wie groß sie ist.
+
+```bash
+bash scripts/deploy_preflight.sh           > "$LOG-01a-preflight.txt"  2>&1
+cat "$LOG-01a-preflight.txt"
+```
+
+Das Skript prüft dasselbe wie die vier Blöcke unten; wer lieber von Hand
+vorgeht, führt sie einzeln aus.
+
+**Arbeitsverzeichnis sauber** — nichts still überschreiben:
+
+```bash
+git status --short
+git rev-parse HEAD
+git fetch --prune origin
+```
+
+**Welche Compose-Dateien liegen überhaupt da:**
+
+```bash
+ls -l docker-compose*.yml compose*.yaml 2>/dev/null
+```
+
+Jede Datei, die hier auftaucht und nicht `docker-compose.yml` oder
+`docker-compose.override.yml` heißt, gehört in `DC` — sonst geht sie beim
+nächsten `up` verloren.
+
+**Existieren die Auth-Secrets** (nur Metadaten, nie der Inhalt):
+
+```bash
+for f in secrets/hero_password_hash secrets/hero_session_secret; do
+  if [ -s "$f" ]; then
+    stat -c 'vorhanden: path=%n mode=%a owner=%U group=%G size=%s' "$f"
+  elif [ -e "$f" ]; then
+    echo "LEER: $f"
+  else
+    echo "FEHLT: $f"
+  fi
+done
+```
+
+**Landen sie im Container an der richtigen Stelle** — die entscheidende Frage,
+weil genau hier eine vergessene `-f`-Datei sichtbar wird:
+
+```bash
+"${DC[@]}" config | grep -B3 -A3 '/run/secrets/hero_'
+```
+
+Erwartet werden beide Ziele:
+
+```text
+/run/secrets/hero_password_hash
+/run/secrets/hero_session_secret
+```
+
+> Nicht die vollständige `config`-Ausgabe ins Log schreiben — sie enthält die
+> aufgelöste Umgebung des Dienstes und kann damit Werte aus `.env` zeigen.
+
+Fehlt hier ein Ziel, ist **nicht** das Secret kaputt, sondern der Compose-Stack
+unvollständig. Dann `DC` korrigieren und erneut prüfen — **keine** neuen
+Secrets erzeugen. Siehe Abschnitt „Auth-Fehler einordnen" am Ende dieser Datei.
 
 ## 2. Git-Stand prüfen
 
@@ -73,7 +179,7 @@ Warnsignal — sie gehen beim Pull verloren oder erzeugen einen Konflikt.
 ## 3. SQLite-Integrität prüfen
 
 ```bash
-docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
   "PRAGMA integrity_check;
    PRAGMA foreign_key_check;
    SELECT count(*) FROM xp_events;
@@ -92,11 +198,11 @@ sind später der Vergleichsmaßstab.
 in einer Transaktion einen unbrauchbaren Stand einfängt.
 
 ```bash
-docker compose exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
   ".backup '/data/backup-$TS.sqlite'"      > "$LOG-04-backup.txt"      2>&1
 ls -l /srv/data/wger-hero/backup-$TS.sqlite \
                                           >> "$LOG-04-backup.txt"      2>&1
-docker compose exec wger-hero sqlite3 -readonly "/data/backup-$TS.sqlite" \
+"${DC[@]}" exec wger-hero sqlite3 -readonly "/data/backup-$TS.sqlite" \
   "PRAGMA integrity_check;"               >> "$LOG-04-backup.txt"      2>&1
 ```
 
@@ -119,7 +225,7 @@ Damit existiert ein benanntes Ziel für Abschnitt 19.
 
 ```bash
 git pull origin main                       > "$LOG-06-pull.txt"        2>&1
-docker compose build                      >> "$LOG-06-pull.txt"        2>&1
+"${DC[@]}" build                          >> "$LOG-06-pull.txt"        2>&1
 ```
 
 Der Build kopiert `app/`, `alembic.ini` **und** `migrations/` ins Image — ohne
@@ -134,17 +240,17 @@ Erst auf einer Kopie, nie zuerst auf den Echtdaten.
 cp /srv/data/wger-hero/backup-$TS.sqlite \
    /srv/data/wger-hero/migrationstest-$TS.sqlite \
                                            > "$LOG-07-migtest.txt"     2>&1
-docker compose run --rm \
+"${DC[@]}" run --rm \
   -e DATABASE_URL="sqlite:////data/migrationstest-$TS.sqlite" \
   wger-hero python -m alembic current     >> "$LOG-07-migtest.txt"     2>&1
-docker compose run --rm \
+"${DC[@]}" run --rm \
   -e DATABASE_URL="sqlite:////data/migrationstest-$TS.sqlite" \
   wger-hero python -m alembic upgrade head \
                                           >> "$LOG-07-migtest.txt"     2>&1
-docker compose run --rm \
+"${DC[@]}" run --rm \
   -e DATABASE_URL="sqlite:////data/migrationstest-$TS.sqlite" \
   wger-hero python -m alembic current     >> "$LOG-07-migtest.txt"     2>&1
-docker compose exec wger-hero sqlite3 -readonly \
+"${DC[@]}" exec wger-hero sqlite3 -readonly \
   "/data/migrationstest-$TS.sqlite" "PRAGMA integrity_check;" \
                                           >> "$LOG-07-migtest.txt"     2>&1
 ```
@@ -161,8 +267,8 @@ durch einen Test abgesichert.
 ## 8. Container stoppen
 
 ```bash
-docker compose stop wger-hero              > "$LOG-08-stop.txt"        2>&1
-docker compose ps                         >> "$LOG-08-stop.txt"        2>&1
+"${DC[@]}" stop wger-hero                  > "$LOG-08-stop.txt"        2>&1
+"${DC[@]}" ps                             >> "$LOG-08-stop.txt"        2>&1
 ```
 
 ## 9. Finales Offline-Backup erstellen
@@ -183,23 +289,37 @@ und nicht einzeln gelöscht.
 ## 10. Produktive Migration ausführen
 
 ```bash
-docker compose run --rm wger-hero python -m alembic current \
+"${DC[@]}" run --rm wger-hero python -m alembic current \
                                            > "$LOG-10-migrate.txt"     2>&1
-docker compose run --rm wger-hero python -m alembic upgrade head \
+"${DC[@]}" run --rm wger-hero python -m alembic upgrade head \
                                           >> "$LOG-10-migrate.txt"     2>&1
-docker compose run --rm wger-hero python -m alembic current \
+"${DC[@]}" run --rm wger-hero python -m alembic current \
                                           >> "$LOG-10-migrate.txt"     2>&1
 ```
 
 Die Anwendung migriert **nie** von selbst — weder beim Import noch beim Start.
 Das ist eine feste Architekturregel und durch einen Test abgesichert.
 
+## 10a. Zugriffsschutz-Secrets erneut bestätigen
+
+Der Preflight aus Abschnitt 1a liegt jetzt einige Schritte zurück, und der
+nächste Befehl erzeugt den Container neu. Die eine Prüfung, die zählt, deshalb
+unmittelbar davor noch einmal:
+
+```bash
+"${DC[@]}" config | grep -c '/run/secrets/hero_' > "$LOG-10a-secrets.txt" 2>&1
+cat "$LOG-10a-secrets.txt"
+```
+
+Erwartet: eine Zahl **größer als 0** — bei zwei Mounts üblicherweise `2`.
+Steht dort `0`, wird nicht gestartet, sondern `DC` korrigiert.
+
 ## 11. Neuen Container starten
 
 ```bash
-docker compose up -d                       > "$LOG-11-up.txt"          2>&1
-docker compose ps                         >> "$LOG-11-up.txt"          2>&1
-docker compose logs --tail=100 wger-hero  >> "$LOG-11-up.txt"          2>&1
+"${DC[@]}" up -d                           > "$LOG-11-up.txt"          2>&1
+"${DC[@]}" ps                             >> "$LOG-11-up.txt"          2>&1
+"${DC[@]}" logs --tail=100 wger-hero      >> "$LOG-11-up.txt"          2>&1
 ```
 
 ## 12. Healthcheck
@@ -211,17 +331,68 @@ curl -sS -o /dev/null -w 'login: %{http_code}\n' \
   http://127.0.0.1:8091/login             >> "$LOG-12-health.txt"      2>&1
 ```
 
+## 12a. Zugriffsschutz wirkt
+
+Drei Ebenen, von außen nach innen. Erst wenn alle drei stimmen, ist der
+Zugriffsschutz nach dem Recreate nachweislich intakt.
+
+**Container läuft und ist gesund:**
+
+```bash
+docker inspect -f \
+  'status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+  wger-hero                                > "$LOG-12a-auth.txt"       2>&1
+```
+
+Erwartet: `status=running health=healthy`. Ein `health=unhealthy` ist hier fast
+immer der Auth-Fehler selbst — `/healthz` wird mitgesperrt, weil die
+Secret-Prüfung vor der Freigabe öffentlicher Pfade greift.
+
+**Die Mounts sind wirklich im Container** (nur Ziel und Modus, nie der Inhalt):
+
+```bash
+docker inspect wger-hero --format \
+  '{{range .Mounts}}{{if eq .Destination "/run/secrets/hero_password_hash"}}password_hash=mounted mode={{.Mode}}
+{{end}}{{if eq .Destination "/run/secrets/hero_session_secret"}}session_secret=mounted mode={{.Mode}}
+{{end}}{{end}}'                           >> "$LOG-12a-auth.txt"       2>&1
+```
+
+Erwartet: beide Zeilen, jeweils mit `mode=ro`.
+
+**Die Anwendung antwortet wie vorgesehen:**
+
+```bash
+{
+  curl -sS -o /dev/null -w 'healthz=%{http_code}\n' http://127.0.0.1:8091/healthz
+  curl -sS -o /dev/null -w 'login=%{http_code}\n'   http://127.0.0.1:8091/login
+  curl -sS -o /dev/null -w 'today=%{http_code}\n'   http://127.0.0.1:8091/today
+}                                         >> "$LOG-12a-auth.txt"       2>&1
+cat "$LOG-12a-auth.txt"
+```
+
+Erwartet:
+
+```text
+healthz=200
+login=200
+today=303      ← Weiterleitung auf /login, weil nicht angemeldet
+```
+
+`today=200` wäre ein Befund, kein Erfolg: dann wäre der Zugriffsschutz aus.
+Dreimal `503` bedeutet ein nicht lesbares Secret — weiter beim Abschnitt
+„Auth-Fehler einordnen".
+
 ## 13. Datenbankintegrität
 
 ```bash
-docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
   "PRAGMA integrity_check;"                > "$LOG-13-integrity.txt"   2>&1
 ```
 
 ## 14. Fremdschlüssel- und Bestandsprüfung
 
 ```bash
-docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
   "PRAGMA foreign_key_check;
    SELECT count(*) FROM xp_events;
    SELECT count(*) FROM habit_completions;
@@ -254,7 +425,7 @@ Service Worker. Der Port ist zum Debuggen da, nicht als Installationsweg.
 Rein rechnend, ohne Schreibzugriff:
 
 ```bash
-docker compose exec wger-hero python - <<'PY' > "$LOG-16-save.txt" 2>&1
+"${DC[@]}" exec wger-hero python - <<'PY' > "$LOG-16-save.txt" 2>&1
 from app.japanese_saves import parse_save
 BLOCK = """=== 状態 SAVE ===
 Datum: 2026-08-01 | Streak: 4
@@ -275,7 +446,7 @@ PY
 ## 17. Starter-Dry-run
 
 ```bash
-docker compose exec wger-hero python -m app.seed_programs starter --dry-run \
+"${DC[@]}" exec wger-hero python -m app.seed_programs starter --dry-run \
                                            > "$LOG-17-starter-dry.txt" 2>&1
 ```
 
@@ -304,7 +475,7 @@ Stat-Seite; globale XP, `XpEvent`- und `SyncEvent`-Zeilen bleiben unangetastet.
 
 ```bash
 # 1. Zustand vorher festhalten
-docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
   "SELECT 'hero_total_xp', total_xp FROM hero_profile;
    SELECT 'wger_events', count(*), sum(xp) FROM xp_events
      WHERE source='wger' AND event_type='workout_complete';
@@ -314,7 +485,7 @@ docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
                                            > "$LOG-40-repair-before.txt"  2>&1
 
 # 2. Dry-run — schreibt nichts
-docker compose exec wger-hero python -m app.repair_wger_stat_xp --dry-run \
+"${DC[@]}" exec wger-hero python -m app.repair_wger_stat_xp --dry-run \
                                            > "$LOG-41-repair-dry.txt"     2>&1
 
 # 3. Prüfen: „Kandidaten" muss zur Zahl der wger-Workouts aus Schritt 1 passen,
@@ -323,20 +494,20 @@ docker compose exec wger-hero python -m app.repair_wger_stat_xp --dry-run \
 less "$LOG-41-repair-dry.txt"
 
 # 4. Sichern (die Reparatur schreibt gleich)
-docker compose exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
   ".backup '/data/vor-reparatur-$TS.sqlite'" \
                                            > "$LOG-42-repair-backup.txt"  2>&1
 
 # 5. Anwenden
-docker compose exec wger-hero python -m app.repair_wger_stat_xp --apply \
+"${DC[@]}" exec wger-hero python -m app.repair_wger_stat_xp --apply \
                                            > "$LOG-43-repair-apply.txt"   2>&1
 
 # 6. Abnahme: erneuter Dry-run muss 0 zusätzliche XP melden
-docker compose exec wger-hero python -m app.repair_wger_stat_xp --dry-run \
+"${DC[@]}" exec wger-hero python -m app.repair_wger_stat_xp --dry-run \
                                            > "$LOG-44-repair-recheck.txt" 2>&1
 
 # 7. Zustand nachher — globale XP unverändert, strength gestiegen
-docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
   "SELECT 'hero_total_xp', total_xp FROM hero_profile;
    SELECT 'strength', xp FROM hero_stats WHERE stat_key='strength';
    SELECT 'wger_stat_events', count(*), sum(xp) FROM stat_xp_events
@@ -355,16 +526,16 @@ sed -i 's/^WGER_FETCH_EXERCISE_LOGS=false/WGER_FETCH_EXERCISE_LOGS=true/' .env
 grep '^WGER_FETCH_EXERCISE_LOGS' .env     >> "$LOG-46-env.txt"           2>&1
 
 # 9. Container kontrolliert neu erstellen (env_file wird nur beim Erstellen gelesen)
-docker compose up -d --force-recreate      > "$LOG-47-recreate.txt"      2>&1
+"${DC[@]}" up -d --force-recreate          > "$LOG-47-recreate.txt"      2>&1
 curl -sS http://127.0.0.1:8091/healthz    >> "$LOG-47-recreate.txt"      2>&1
 
 # 10. VOR dem ersten echten Re-Sync noch einmal sichern: bestehende Sessions
 #     bekommen durch die neuen Logs einen neuen Hash und werden reconciled.
-docker compose exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
   ".backup '/data/vor-resync-$TS.sqlite'"  > "$LOG-48-resync-backup.txt" 2>&1
 
 # 11. Sync über die Oberfläche auslösen und danach prüfen
-docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
   "SELECT 'hero_total_xp', total_xp FROM hero_profile;
    SELECT 'strength', xp FROM hero_stats WHERE stat_key='strength';
    SELECT 'events_pro_session', source_id, count(*), sum(xp) FROM xp_events
@@ -392,20 +563,20 @@ Nicht Teil des Deployments. Reihenfolge:
 
 ```bash
 # 1. Dry-run
-docker compose exec wger-hero python -m app.seed_programs starter --dry-run \
+"${DC[@]}" exec wger-hero python -m app.seed_programs starter --dry-run \
                                            > "$LOG-20-starter-dry.txt"  2>&1
 # 2. Vorschau prüfen — besonders Zeilen mit "Konflikt"
 less "$LOG-20-starter-dry.txt"
 # 3. Sichern
-docker compose exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
   ".backup '/data/vor-starter-$TS.sqlite'" > "$LOG-21-starter-backup.txt" 2>&1
 # 4. Aktivieren
-docker compose exec wger-hero python -m app.seed_programs starter \
+"${DC[@]}" exec wger-hero python -m app.seed_programs starter \
                                            > "$LOG-22-starter-apply.txt" 2>&1
 # 5. Ergebnis prüfen
 less "$LOG-22-starter-apply.txt"
 # 6. Abnahme: erneuter Dry-run muss "Keine Änderungen nötig" melden
-docker compose exec wger-hero python -m app.seed_programs starter --dry-run \
+"${DC[@]}" exec wger-hero python -m app.seed_programs starter --dry-run \
                                            > "$LOG-23-starter-recheck.txt" 2>&1
 ```
 
@@ -426,7 +597,7 @@ nachträglichen Datensatz — es wird keine Historie erfunden. Sie werden trotzd
 nicht erneut belohnt, weil `completed_at` und `active` weiter greifen.
 
 ```bash
-docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
   "SELECT count(*) FROM quest_completions;
    SELECT name FROM sqlite_master WHERE type='index'
      AND name='ix_quest_completions_dedup_key';"
@@ -442,7 +613,7 @@ keinen Datensatz. Ein bereits pausiertes Ziel bleibt pausiert; erst beim
 nächsten Pausieren entsteht ein Intervall.
 
 ```bash
-docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
   "SELECT count(*) FROM goal_pause_intervals;
    SELECT sql FROM sqlite_master WHERE type='index' AND name='ux_goal_pause_open';"
 ```
@@ -456,7 +627,7 @@ Fehlt der Zusatz, wäre pro Ziel nur **eine** Pause überhaupt möglich.
 Planung — sie bleiben flexibel und erscheinen wie bisher an jedem Tag.
 
 ```bash
-docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
   "SELECT count(*) FROM habit_schedule_days;
    SELECT count(*) FROM habit_completions;
    SELECT sql FROM sqlite_master WHERE type='table' AND name='habit_schedule_days';"
@@ -473,7 +644,7 @@ rückwirkend zu `NULL`. Erst neue Imports ohne die jeweilige Zeile speichern
 `NULL` — „nicht angegeben".
 
 ```bash
-docker compose exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
   "SELECT count(*) FROM japanese_save_imports;
    SELECT count(*) FROM japanese_save_imports WHERE bunpro_points IS NULL;
    SELECT sql FROM sqlite_master WHERE type='table' AND name='japanese_save_imports';"
@@ -508,10 +679,10 @@ Wenn die Migration **nicht** gelaufen ist oder die alte Anwendung mit dem neuen
 Schema noch arbeiten kann — additive Revisionen erlauben das in der Regel:
 
 ```bash
-docker compose stop wger-hero              > "$LOG-30-rollback.txt"    2>&1
+"${DC[@]}" stop wger-hero                  > "$LOG-30-rollback.txt"    2>&1
 docker tag wger-hero:rollback-$TS wger-hero-wger-hero:latest \
                                           >> "$LOG-30-rollback.txt"    2>&1
-docker compose up -d --no-build           >> "$LOG-30-rollback.txt"    2>&1
+"${DC[@]}" up -d --no-build               >> "$LOG-30-rollback.txt"    2>&1
 curl -sS http://127.0.0.1:8091/healthz    >> "$LOG-30-rollback.txt"    2>&1
 ```
 
@@ -525,7 +696,7 @@ werden muss.
 
 ```bash
 # 1. Container stoppen
-docker compose stop wger-hero              > "$LOG-31-restore.txt"     2>&1
+"${DC[@]}" stop wger-hero                  > "$LOG-31-restore.txt"     2>&1
 
 # 2. Den fehlgeschlagenen Stand separat sichern — nicht überschreiben.
 mv /srv/data/wger-hero/wger_hero.sqlite \
@@ -549,7 +720,7 @@ cp /srv/data/wger-hero/offline-$TS.sqlite \
 # 5. Altes Image starten
 docker tag wger-hero:rollback-$TS wger-hero-wger-hero:latest \
                                           >> "$LOG-31-restore.txt"     2>&1
-docker compose up -d --no-build           >> "$LOG-31-restore.txt"     2>&1
+"${DC[@]}" up -d --no-build               >> "$LOG-31-restore.txt"     2>&1
 curl -sS http://127.0.0.1:8091/healthz    >> "$LOG-31-restore.txt"     2>&1
 ```
 
@@ -610,6 +781,56 @@ Sicherung: Abschnitt 19b, mit `auto-backup-<Zeitstempel>.sqlite` an der Stelle
 von `offline-$TS.sqlite`. Ein eigenes Restore-Skript gibt es bewusst nicht —
 ein Wiederherstellen überschreibt die Produktivdaten, und dieser Schritt soll
 gelesen und verstanden, nicht bequem aufgerufen werden.
+
+## Auth-Fehler einordnen
+
+```text
+503 {"detail": "Auth not configured"}
+```
+
+heißt bei `AUTH_ENABLED=true` genau eines: **die Anwendung kann mindestens eines
+der beiden Auth-Secrets nicht lesen.** Sie fällt absichtlich geschlossen aus —
+ohne Signierschlüssel ist keine Sitzung vertrauenswürdig — und sperrt deshalb
+auch `/login` und `/healthz`.
+
+Die Antwort bleibt bewusst nichtssagend, weil sie vor der Authentifizierung
+ausgeliefert wird und keine Pfade verraten darf. Die Logzeile ist präzise:
+
+```bash
+docker logs --tail 100 wger-hero 2>&1 \
+  | grep -E 'Auth is enabled but unusable|Auth not configured'
+```
+
+### Die Reihenfolge ist nicht verhandelbar
+
+Ein neu erzeugtes `hero_password_hash` ersetzt das bisherige Login-Passwort, ein
+neues `hero_session_secret` wirft alle Sitzungen weg. Beides ist unnötig, wenn
+nur ein Compose-Mount fehlt — und das ist der häufigste Fall. Deshalb von oben
+nach unten, und erst der letzte Punkt erzeugt etwas:
+
+1. **Existiert die Datei auf dem Host?** `[ -e secrets/hero_session_secret ]`
+2. **Ist sie nicht leer?** `[ -s secrets/hero_session_secret ]`
+3. **Ist der richtige Compose-Stack aktiv?** Enthält `DC` alle `-f`-Dateien?
+4. **Ist sie nach `/run/secrets/…` gemountet?**
+   `"${DC[@]}" config | grep '/run/secrets/hero_'`
+5. **Kann der Container sie lesen?**
+   `docker exec wger-hero test -r /run/secrets/hero_session_secret && echo lesbar`
+6. **Erst jetzt** über Neuerzeugung nachdenken — siehe README, Abschnitt
+   „Restoring missing auth secrets".
+
+Punkt 3 und 4 lösen den Fall, der diese Anleitung überhaupt veranlasst hat: Ein
+`docker compose up -d --build` ohne die lokale `-f`-Datei erzeugt den Container
+ohne Mounts, während die Secrets auf dem Host unverändert und intakt daneben
+liegen.
+
+### Was in der Fehlersuche nichts zu suchen hat
+
+Der Inhalt der Secrets wird **nie** ausgegeben — weder auf dem Host mit `cat`
+noch im Container über `docker exec`. Es gibt keinen Diagnoseschritt, der den
+Wert braucht: `test -r`, `test -s` und `stat` beantworten jede Frage, die hier
+auftritt, ohne ihn zu zeigen. Ebenso wenig gehören vollständige Umgebungs-Dumps
+(`printenv`, `env`, `docker inspect` ohne Format-Filter) in ein Deploy-Log: sie
+zeigen den API-Token und alles andere aus `.env` im Klartext.
 
 ## Smoke-Test-Skripte
 

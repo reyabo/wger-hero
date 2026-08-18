@@ -108,13 +108,51 @@ chmod 600 secrets/wger_api_token.txt
 
 The Docker Compose file mounts this as a read-only secret at `/run/secrets/wger_api_token`.
 
-### 3. Create the data directory
+### 3. Set up access protection
+
+`AUTH_ENABLED` defaults to **true**, and the app reads both files below on
+*every* request. If either is missing the app answers `503 {"detail": "Auth not
+configured"}` on every path — including `/login` and `/healthz`, so the
+container's healthcheck goes red too. This is deliberate: without a signing key
+no session can be trusted, so it fails closed rather than open.
+
+```bash
+umask 077
+
+# The session signing key
+openssl rand -hex 32 > secrets/hero_session_secret
+
+# The Argon2 hash of your one password (typed interactively, so it never
+# reaches the shell history)
+python - <<'EOF' > secrets/hero_password_hash
+from argon2 import PasswordHasher
+from getpass import getpass
+print(PasswordHasher().hash(getpass("Passwort: ")), end="")
+EOF
+
+chmod 400 secrets/hero_session_secret secrets/hero_password_hash
+```
+
+Compose mounts both read-only at `/run/secrets/`. Rotating the session secret
+logs you out; rotating the password hash does not, until the session expires.
+
+To check what went wrong without exposing anything, read the log — the response
+stays deliberately terse, the log line is precise:
+
+```bash
+docker compose logs wger-hero | grep "Auth is enabled but unusable"
+```
+
+For local development only, `AUTH_ENABLED=false` skips this entirely (and
+disables CSRF with it). Never in production.
+
+### 4. Create the data directory
 
 ```bash
 sudo mkdir -p /srv/data/wger-hero
 ```
 
-### 4. Start the app
+### 5. Start the app
 
 ```bash
 docker compose up -d --build
@@ -122,7 +160,7 @@ docker compose up -d --build
 
 The app is available at `http://localhost:8091`.
 
-### 5. Sync your workouts
+### 6. Sync your workouts
 
 Open the dashboard and click **Sync Now**, or POST to `/sync`:
 
@@ -704,19 +742,77 @@ database.
 
 ## Updating a running instance
 
-The short version, for a normal code update with no migration:
+### First: does your installation use extra compose files?
+
+Compose loads **only** `docker-compose.yml` and `docker-compose.override.yml` by
+itself. Any additionally named file — a local `docker-compose.auth.yml`, a
+`docker-compose.prod.yml` — must be passed with `-f` on *every* call, including
+`build`, `run` and `up`. Leave it out of a call that recreates the container and
+the container comes back **without that file's mounts**.
+
+That is not hypothetical: it is how a working installation loses its auth secret
+mounts and starts answering `503 {"detail": "Auth not configured"}` on every
+path. The secrets are still on disk and still correct; they simply are not
+mounted any more.
 
 ```bash
-cd /pfad/zu/wger-hero
+ls -l docker-compose*.yml compose*.yaml 2>/dev/null
+```
+
+If that lists nothing but `docker-compose.yml`, the short version below applies
+as written. Otherwise pin the whole set once and use it for every call:
+
+```bash
+# Example for an installation with a local auth compose file. Note that
+# docker-compose.override.yml must now be listed explicitly too — as soon as
+# one -f is given, Compose stops loading it automatically.
+DC=(docker compose
+    -f docker-compose.yml
+    -f docker-compose.override.yml
+    -f docker-compose.auth.yml)
+```
+
+### The short version
+
+For a normal code update with no migration:
+
+```bash
+cd /path/to/wger-hero
+git status --short          # nothing unexpected about to be overwritten
 git pull origin main
 docker compose up -d --build
 curl -sS http://127.0.0.1:8091/healthz
 ```
 
+With extra compose files, the same update is:
+
+```bash
+git pull origin main
+"${DC[@]}" build
+"${DC[@]}" up -d --force-recreate wger-hero
+"${DC[@]}" config | grep -c '/run/secrets/hero_'   # expect a number > 0
+curl -sS -o /dev/null -w 'login=%{http_code}\n' http://127.0.0.1:8091/login
+```
+
+The image is built locally, so there is no `pull` step for it.
+
 `up -d --build` rebuilds the image and replaces the container; the database
 lives in a mounted volume and is untouched.
 
-Two cases need more than that:
+### Verify the update, especially auth
+
+```bash
+curl -sS -o /dev/null -w 'healthz=%{http_code}\n' http://127.0.0.1:8091/healthz
+curl -sS -o /dev/null -w 'login=%{http_code}\n'   http://127.0.0.1:8091/login
+curl -sS -o /dev/null -w 'today=%{http_code}\n'   http://127.0.0.1:8091/today
+```
+
+Expected: `healthz=200`, `login=200`, `today=303` (redirect to the login form).
+Three times `503` means an auth secret cannot be read — see
+**Restoring missing auth secrets** below, and read it in order: the usual cause
+is a missing `-f`, not a missing file.
+
+Two cases need more than the short version:
 
 - **A new Alembic revision.** Back up first, then migrate explicitly — the app
   never migrates itself:
@@ -730,8 +826,93 @@ Two cases need more than that:
 - **A changed `.env`.** `env_file` is read when the container is *created*, not
   when it restarts, so use `docker compose up -d --force-recreate`.
 
-For a production update — with rollback image, backup verification and a
-migration rehearsal on a copy — follow [docs/DEPLOY.md](docs/DEPLOY.md) instead.
+`scripts/backup.sh` runs unattended from cron and is not a substitute for the
+explicit pre-deployment backup — take one before an update that migrates.
+
+For a production update — with rollback image, backup verification, a migration
+rehearsal on a copy and a read-only preflight — follow
+[docs/DEPLOY.md](docs/DEPLOY.md) instead.
+
+## Restoring missing auth secrets
+
+**Read this only after ruling out the far more common cause.** If the instance
+authenticated correctly before and now returns 503, the secret files are almost
+certainly still there and intact — what changed is that the container was
+recreated without the compose file that mounts them. Creating new secrets in
+that situation replaces your password for no reason and logs out every session.
+
+Check in this order, and stop at the first thing that is wrong:
+
+```bash
+[ -s secrets/hero_session_secret ] && echo "session secret: present, non-empty"
+[ -s secrets/hero_password_hash  ] && echo "password hash:  present, non-empty"
+"${DC[@]}" config | grep '/run/secrets/hero_'     # both targets listed?
+docker exec wger-hero test -r /run/secrets/hero_session_secret && echo readable
+docker logs --tail 100 wger-hero 2>&1 | grep "Auth is enabled but unusable"
+```
+
+Never print the contents — not with `cat`, not through `docker exec`. `test -s`,
+`test -r` and `stat` answer every question that comes up here.
+
+Only if a file is genuinely absent or empty, create that one file. The guard
+refuses to overwrite an existing secret, which is the point:
+
+```bash
+cd /path/to/wger-hero
+set -Eeuo pipefail
+umask 077
+install -d -m 700 secrets
+
+test ! -e secrets/hero_session_secret || {
+  echo "ABORT: hero_session_secret already exists — do not replace it"; exit 1; }
+openssl rand -hex 32 > secrets/hero_session_secret
+chmod 400 secrets/hero_session_secret
+```
+
+For the password hash, use the image rather than the host — Argon2 is a
+dependency of the app, not something the Debian host is expected to have:
+
+```bash
+test ! -e secrets/hero_password_hash || {
+  echo "ABORT: hero_password_hash already exists — do not replace it"; exit 1; }
+
+"${DC[@]}" run --rm --no-deps --entrypoint python wger-hero -c \
+  'from argon2 import PasswordHasher; from getpass import getpass; \
+   print(PasswordHasher().hash(getpass("New hero password: ")), end="")' \
+  > secrets/hero_password_hash
+
+chmod 400 secrets/hero_password_hash
+```
+
+The script goes in as an argument, the password does not: `getpass` reads it
+from the terminal at runtime. Leave stdin alone — a heredoc there would take the
+terminal away from `getpass`, which then reads nothing and hashes an empty
+string.
+
+If no terminal is available (a remote runner, a `-T` invocation), pipe the
+password instead and clear the variable afterwards:
+
+```bash
+read -rs -p "New hero password: " PW && echo
+printf '%s' "$PW" | "${DC[@]}" run --rm --no-deps -T --entrypoint python wger-hero -c \
+  'import sys; from argon2 import PasswordHasher; \
+   print(PasswordHasher().hash(sys.stdin.read()), end="")' \
+  > secrets/hero_password_hash
+unset PW
+chmod 400 secrets/hero_password_hash
+```
+
+The password is typed interactively, so it never becomes a command argument,
+never reaches the shell history, never lands in `.env` and never appears in a
+log. Check the file is a hash and not an error message before restarting:
+
+```bash
+head -c 7 secrets/hero_password_hash   # expect: $argon2
+```
+
+Replacing `hero_session_secret` invalidates existing sessions; replacing
+`hero_password_hash` changes the login password. Neither is needed to fix a
+missing mount.
 
 ## Deployment
 

@@ -8,6 +8,11 @@ services:
     volumes:
       - /srv/data/wger-hero:/data
       - ./secrets/wger_api_token.txt:/run/secrets/wger_api_token:ro
+      # Access protection. AUTH_ENABLED defaults to true, and the app reads
+      # both files on every request — without them it answers 503 on every
+      # path, including /healthz. See README "Set up access protection".
+      - ./secrets/hero_password_hash:/run/secrets/hero_password_hash:ro
+      - ./secrets/hero_session_secret:/run/secrets/hero_session_secret:ro
     env_file:
       - .env
     environment:
