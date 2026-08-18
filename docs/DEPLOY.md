@@ -559,6 +559,58 @@ Frage, was schiefgegangen ist.
 
 ---
 
+## Automatische Sicherung
+
+Die Sicherungen in Abschnitt 4 und 9 gehören zum Deployment. Im Normalbetrieb
+gab es lange gar keine — `scripts/backup.sh` schließt diese Lücke und **ersetzt
+die Deployment-Sicherungen nicht**, sondern ergänzt sie.
+
+```bash
+bash scripts/backup.sh              # Standard: 14 Tage aufbewahren
+KEEP_DAYS=30 bash scripts/backup.sh # längere Aufbewahrung
+```
+
+Das Skript nimmt eine WAL-konsistente Online-Sicherung über die Backup-API von
+SQLite, prüft das Ergebnis mit `PRAGMA integrity_check` und entfernt danach
+eigene Sicherungen jenseits des Aufbewahrungsfensters. Schlägt irgendein Schritt
+fehl, bricht es ab, **bevor** rotiert wird — es soll nie eine gute alte Sicherung
+löschen, um Platz für eine kaputte neue zu machen.
+
+Es schreibt nach `/srv/data/wger-hero/backups/` und benennt seine Dateien
+`auto-backup-<Zeitstempel>.sqlite`. Beides zusammen ist der Schutz beim
+Aufräumen: die Rotation läuft ausschließlich in diesem eigenen Verzeichnis und
+trifft ausschließlich dieses eigene Namensmuster. Die Live-Datenbank, ihre
+`-wal`- und `-shm`-Begleiter und sämtliche Momentaufnahmen aus dieser Anleitung
+(`backup-*`, `offline-*`, `migrationstest-*`, `vor-*` und besonders die niemals
+zu löschenden `fehlgeschlagen-*`) liegen in einem anderen Verzeichnis **und**
+tragen ein anderes Präfix — sie sind für die Rotation unerreichbar.
+
+Als Cron-Eintrag (root, `crontab -e`):
+
+```
+PATH=/usr/local/bin:/usr/bin:/bin
+MAILTO=root
+30 3 * * * /bin/bash /pfad/zu/wger-hero/scripts/backup.sh >> /srv/data/wger-hero/backup.log 2>&1
+```
+
+`PATH` ist nötig, weil Cron `docker` sonst nicht findet. Bei Erfolg schreibt das
+Skript **eine** Zeile, im Fehlerfall eine `FEHLER:`-Meldung auf stderr und einen
+Exit-Code ungleich null — das ist es, was Cron per Mail meldet.
+
+Nachsehen, was vorhanden ist:
+
+```bash
+ls -lh /srv/data/wger-hero/backups/
+```
+
+### Zurückspielen
+
+Eine automatische Sicherung wird genauso eingespielt wie eine Deployment-
+Sicherung: Abschnitt 19b, mit `auto-backup-<Zeitstempel>.sqlite` an der Stelle
+von `offline-$TS.sqlite`. Ein eigenes Restore-Skript gibt es bewusst nicht —
+ein Wiederherstellen überschreibt die Produktivdaten, und dieser Schritt soll
+gelesen und verstanden, nicht bequem aufgerufen werden.
+
 ## Smoke-Test-Skripte
 
 Rein lesend, nicht Teil des Deployments, jederzeit ausführbar:

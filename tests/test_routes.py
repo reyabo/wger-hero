@@ -70,7 +70,7 @@ def test_quests_returns_200(client):
 def test_achievements_returns_200(client):
     resp = client.get("/achievements")
     assert resp.status_code == 200
-    assert "Achievement" in resp.text
+    assert "Erfolge" in resp.text
 
 
 def test_settings_returns_200(client):
@@ -87,19 +87,19 @@ def test_settings_does_not_expose_token(client):
 def test_habits_page_renders(client):
     resp = client.get("/habits")
     assert resp.status_code == 200
-    assert "Habits" in resp.text
+    assert "Gewohnheiten" in resp.text
 
 
 def test_habit_new_form_renders(client):
     resp = client.get("/habits/new")
     assert resp.status_code == 200
-    assert "New Habit" in resp.text
+    assert "Neue Gewohnheit" in resp.text
 
 
 def test_quest_new_form_renders(client):
     resp = client.get("/quests/new")
     assert resp.status_code == 200
-    assert "New Quest" in resp.text
+    assert "Neue Quest" in resp.text
 
 
 def test_create_habit_via_form(client):
@@ -139,7 +139,7 @@ def test_complete_habit_via_form(client):
     resp = client.post(f"/habits/{habit_id}/complete")
     assert resp.status_code == 200  # followed redirect to /habits
     # Completion count is now reflected on the page.
-    assert "completed" in resp.text.lower()
+    assert "erledigt" in resp.text.lower()
 
 
 def test_create_manual_quest_via_form(client):
@@ -165,7 +165,7 @@ def test_habit_edit_form_renders(client):
     assert ids
     resp = client.get(f"/habits/{ids[0]}/edit")
     assert resp.status_code == 200
-    assert "Edit Habit" in resp.text
+    assert "Gewohnheit bearbeiten" in resp.text
 
 
 def test_missing_habit_returns_404(client):

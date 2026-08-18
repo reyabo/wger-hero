@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Achievements — wger-hero{% endblock %}
+{% block title %}Erfolge — wger-hero{% endblock %}
 {% block content %}
 
 <div class="page-header">
-  <h1>Achievements</h1>
+  <h1>Erfolge</h1>
   <span class="badge">Level {{ level }}</span>
 </div>
 
@@ -16,14 +16,14 @@
         <div class="ach-title">{{ ach.title }}</div>
         <div class="ach-desc">{{ ach.description }}</div>
         {% if ach.unlocked_at %}
-        <div class="ach-date muted small">Unlocked {{ ach.unlocked_at.strftime('%Y-%m-%d') }}</div>
+        <div class="ach-date muted small">Freigeschaltet am {{ ach.unlocked_at.strftime('%d.%m.%Y') }}</div>
         {% else %}
-        <div class="ach-date muted small">Locked</div>
+        <div class="ach-date muted small">Noch verschlossen</div>
         {% endif %}
       </div>
     </div>
     {% else %}
-    <p class="muted">No achievements found.</p>
+    <p class="muted">Noch keine Erfolge hinterlegt.</p>
     {% endfor %}
   </div>
 </section>

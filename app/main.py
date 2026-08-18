@@ -60,6 +60,7 @@ from app.planning import parse_reference_date, today_plan, week_plan
 from app.starter import SAFETY_NOTE, StarterError, apply_starter, plan_starter
 from app.habits import (
     RECURRENCE_CHOICES,
+    RECURRENCE_LABELS,
     WEEKDAY_LABELS,
     InvalidWeekdayError,
     archive_habit,
@@ -92,7 +93,9 @@ from app.models import (
 )
 from app.quests import (
     PERIOD_CHOICES,
+    PERIOD_LABELS,
     QUEST_TYPE_CHOICES,
+    QUEST_TYPE_LABELS,
     complete_quest_manual,
     create_quest,
     delete_or_archive_quest,
@@ -117,8 +120,10 @@ from app.stats import (
     STAT_KEYS,
     STATS,
     STAT_ABBR,
+    SOURCE_LABELS,
     build_radar,
     get_all_stat_progress,
+    get_stat_detail,
     get_recent_stat_gains,
     get_stat_summary,
     get_stat_totals,
@@ -719,17 +724,24 @@ async def quests_page(request: Request, db: Session = Depends(get_db)):
             "quests": all_quests,
             "quest_rewards": quest_rewards,
             "stat_names": STATS,
+            "quest_type_labels": QUEST_TYPE_LABELS,
+            "period_labels": PERIOD_LABELS,
         },
     )
 
 
-def _quest_form_context(quest: Quest | None) -> dict:
+def _quest_form_context(quest: Quest | None, db: Session | None = None) -> dict:
     from app.rewards import CATEGORIES, DURATION_LABELS, EFFORT_LABELS, CATEGORY_CHOICES, DURATION_CHOICES, EFFORT_CHOICES
     return {
         "quest": quest,
         "rewards": parse_stat_rewards(quest.stat_rewards) if quest else {},
         "quest_types": QUEST_TYPE_CHOICES,
+        "quest_type_labels": QUEST_TYPE_LABELS,
+        # The goal selector: goal_habit_variety is unusable without one, and
+        # until now app/starter.py was the only thing that could set goal_id.
+        "goals": list_goals(db) if db is not None else [],
         "periods": PERIOD_CHOICES,
+        "period_labels": PERIOD_LABELS,
         "stat_keys": STAT_KEYS,
         "stat_names": STATS,
         "categories": CATEGORIES,
@@ -749,11 +761,33 @@ async def quest_new(request: Request, db: Session = Depends(get_db)):
         name="quest_form.html",
         context={
             **_hero_context(hero),
-            **_quest_form_context(None),
+            **_quest_form_context(None, db),
             "form_action": "/quests/new",
-            "heading": "New Quest",
+            "heading": "Neue Quest",
         },
     )
+
+
+def _goal_id_from_form(form, db: Session) -> Optional[int]:
+    """The selected goal, or None. An id that is not a real goal becomes None."""
+    raw = (form.get("goal_id") or "").strip()
+    if not raw:
+        return None
+    try:
+        goal_id = int(raw)
+    except ValueError:
+        return None
+    return goal_id if db.get(Goal, goal_id) is not None else None
+
+
+def _quest_needs_a_goal(quest_type: str, goal_id: Optional[int]) -> Optional[str]:
+    """The one source that is meaningless without a goal."""
+    if quest_type == "goal_habit_variety" and goal_id is None:
+        return (
+            "Die Quelle „Verschiedene Gewohnheiten eines Ziels“ braucht ein Ziel. "
+            "Bitte oben ein Ziel auswählen."
+        )
+    return None
 
 
 def _quest_range_from_form(form) -> tuple[datetime | None, datetime | None, str | None]:
@@ -777,7 +811,7 @@ def _quest_form_error(request: Request, db: Session, form, error: str, *,
         name="quest_form.html",
         context={
             **_hero_context(hero),
-            **_quest_form_context(quest),
+            **_quest_form_context(quest, db),
             "form_action": action,
             "heading": heading,
             "error": error,
@@ -795,15 +829,18 @@ async def quest_create(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse(url="/quests/new", status_code=303)
 
     period_start, period_end, error = _quest_range_from_form(form)
+    goal_id = _goal_id_from_form(form, db)
+    error = error or _quest_needs_a_goal(form.get("quest_type") or "manual", goal_id)
     if error:
         return _quest_form_error(
             request, db, form, error,
-            quest=None, action="/quests/new", heading="New Quest",
+            quest=None, action="/quests/new", heading="Neue Quest",
         )
 
     create_quest(
         db,
         title=title,
+        goal_id=goal_id,
         description=form.get("description"),
         quest_type=form.get("quest_type") or "manual",
         period=form.get("period") or "weekly",
@@ -830,9 +867,9 @@ async def quest_edit(quest_id: int, request: Request, db: Session = Depends(get_
         name="quest_form.html",
         context={
             **_hero_context(hero),
-            **_quest_form_context(quest),
+            **_quest_form_context(quest, db),
             "form_action": f"/quests/{quest_id}/edit",
-            "heading": "Edit Quest",
+            "heading": "Quest bearbeiten",
         },
     )
 
@@ -845,16 +882,21 @@ async def quest_update(quest_id: int, request: Request, db: Session = Depends(ge
     form = await request.form()
 
     period_start, period_end, error = _quest_range_from_form(form)
+    goal_id = _goal_id_from_form(form, db)
+    error = error or _quest_needs_a_goal(
+        form.get("quest_type") or quest.quest_type, goal_id
+    )
     if error:
         return _quest_form_error(
             request, db, form, error,
-            quest=quest, action=f"/quests/{quest.id}/edit", heading="Edit Quest",
+            quest=quest, action=f"/quests/{quest.id}/edit", heading="Quest bearbeiten",
         )
 
     update_quest(
         db,
         quest,
         title=(form.get("title") or quest.title),
+        goal_id=goal_id,
         description=form.get("description"),
         quest_type=form.get("quest_type") or quest.quest_type,
         period=form.get("period") or quest.period,
@@ -903,6 +945,7 @@ async def habits_page(request: Request, db: Session = Depends(get_db)):
             "habit_remaining": habit_remaining,
             "completion_counts": completion_counts,
             "stat_names": STATS,
+            "recurrence_labels": RECURRENCE_LABELS,
         },
     )
 
@@ -913,6 +956,7 @@ def _habit_form_context(habit: Habit | None, db: Session | None = None) -> dict:
         "habit": habit,
         "rewards": parse_stat_rewards(habit.stat_rewards) if habit else {},
         "recurrences": RECURRENCE_CHOICES,
+        "recurrence_labels": RECURRENCE_LABELS,
         "weekday_labels": WEEKDAY_LABELS,
         "selected_weekdays": scheduled_weekdays(db, habit) if habit and db else [],
         "stat_keys": STAT_KEYS,
@@ -936,7 +980,7 @@ async def habit_new(request: Request, db: Session = Depends(get_db)):
             **_hero_context(hero),
             **_habit_form_context(None),
             "form_action": "/habits/new",
-            "heading": "New Habit",
+            "heading": "Neue Gewohnheit",
         },
     )
 
@@ -984,7 +1028,7 @@ async def habit_edit(habit_id: int, request: Request, db: Session = Depends(get_
             **_hero_context(hero),
             **_habit_form_context(habit, db),
             "form_action": f"/habits/{habit_id}/edit",
-            "heading": "Edit Habit",
+            "heading": "Gewohnheit bearbeiten",
         },
     )
 
@@ -1316,6 +1360,27 @@ async def goal_set_status(slug: str, request: Request, db: Session = Depends(get
     if not set_status(db, goal, target):
         raise HTTPException(status_code=400, detail="Unzulässiger Statuswechsel")
     return RedirectResponse(url=f"/goals/{goal.slug}", status_code=303)
+
+
+STAT_DETAIL_EVENT_LIMIT = 30
+
+
+@app.get("/stats/{stat_key}", response_class=HTMLResponse)
+async def stat_detail_page(stat_key: str, request: Request, db: Session = Depends(get_db)):
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    detail = get_stat_detail(db, stat_key, limit=STAT_DETAIL_EVENT_LIMIT)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Attribut nicht gefunden")
+    return templates.TemplateResponse(
+        request=request,
+        name="stat_detail.html",
+        context={
+            **_hero_context(hero),
+            "detail": detail,
+            "source_labels": SOURCE_LABELS,
+            "limit": STAT_DETAIL_EVENT_LIMIT,
+        },
+    )
 
 
 @app.get("/stats", response_class=HTMLResponse)

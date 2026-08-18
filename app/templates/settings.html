@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Settings — wger-hero{% endblock %}
+{% block title %}Einstellungen — wger-hero{% endblock %}
 {% block content %}
 
 <div class="page-header">
-  <h1>Settings</h1>
+  <h1>Einstellungen</h1>
 </div>
 
 <section class="card">
@@ -17,11 +17,11 @@
 </section>
 
 <section class="card">
-  <div class="card-title">Configuration Status</div>
-  <p class="muted">Secret values are never displayed. Only non-sensitive configuration is shown.</p>
+  <div class="card-title">Konfiguration</div>
+  <p class="muted">Geheime Werte werden nie angezeigt. Sichtbar ist nur unkritische Konfiguration.</p>
   <table class="config-table">
     <thead>
-      <tr><th>Setting</th><th>Value</th><th>Status</th></tr>
+      <tr><th>Einstellung</th><th>Wert</th><th>Status</th></tr>
     </thead>
     <tbody>
       {% for key, value, ok in config_items %}
@@ -32,7 +32,7 @@
           {% if ok %}
           <span class="badge badge-success">OK</span>
           {% else %}
-          <span class="badge badge-error">Missing</span>
+          <span class="badge badge-error">Fehlt</span>
           {% endif %}
         </td>
       </tr>
@@ -42,29 +42,29 @@
 </section>
 
 <section class="card">
-  <div class="card-title">API Status</div>
+  <div class="card-title">API-Status</div>
   <table class="config-table">
     <thead>
-      <tr><th>Item</th><th>Value</th></tr>
+      <tr><th>Feld</th><th>Wert</th></tr>
     </thead>
     <tbody>
       <tr>
-        <td>Last sync</td>
+        <td>Letzte Synchronisation</td>
         <td>
           {% if last_sync %}
             {{ last_sync.synced_at.strftime('%Y-%m-%d %H:%M UTC') }}
             — {{ last_sync.raw_summary }}
             — <span class="xp-reward">+{{ last_sync.xp_awarded }} XP</span>
           {% else %}
-            <span class="muted">Never synced</span>
+            <span class="muted">Noch nie synchronisiert</span>
           {% endif %}
         </td>
       </tr>
       <tr>
-        <td>Last sync result</td>
+        <td>Ergebnis der letzten Synchronisation</td>
         <td>
           {% if last_sync_error %}
-            <span class="badge badge-error">Failed</span>
+            <span class="badge badge-error">Fehlgeschlagen</span>
             <span class="muted small">{{ last_sync_error }}</span>
           {% elif last_sync %}
             <span class="badge badge-success">OK</span>
@@ -78,17 +78,17 @@
 
   <div class="card-divider"></div>
 
-  <p class="muted small">To run a live API probe from the container:</p>
+  <p class="muted small">Live-Test der API aus dem Container heraus:</p>
   <pre class="code-block">python -m app.diagnostics wger</pre>
 </section>
 
 <section class="card">
-  <div class="card-title">Token Configuration</div>
-  <p>The API token can be provided in three ways (highest priority first):</p>
+  <div class="card-title">Token-Konfiguration</div>
+  <p>Der API-Token kann auf drei Wegen hinterlegt werden (höchste Priorität zuerst):</p>
   <ol>
-    <li>Mount a file at <code>/run/secrets/wger_api_token</code></li>
-    <li>Set <code>WGER_API_TOKEN_FILE</code> to a file path</li>
-    <li>Set <code>WGER_API_TOKEN</code> environment variable</li>
+    <li>Eine Datei unter <code>/run/secrets/wger_api_token</code> einhängen</li>
+    <li><code>WGER_API_TOKEN_FILE</code> auf einen Dateipfad setzen</li>
+    <li>Die Umgebungsvariable <code>WGER_API_TOKEN</code> setzen</li>
   </ol>
 </section>
 

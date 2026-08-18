@@ -248,9 +248,10 @@ Stand nach Schritt 10 — bewusst so, nicht vergessen:
   Testumgebung; die Cache-Grenze wird an der Quelle geprüft. Das trägt, weil die
   Assetliste klein, fest und explizit ist.
 - **PWA-Icons sind SVG** (`sizes: "any"`), keine PNG-Größenstaffel.
-- **„Der Fünfer-Rhythmus" ist manuell.** `habit_count` bindet eine Habit-ID oder
-  einen Teilstring, nicht fünf Gewohnheiten. Eine ziel-bezogene Questquelle wäre
-  der saubere Folgeschritt.
+- **„Der Fünfer-Rhythmus" zählt automatisch** über die ziel-bezogene Questquelle
+  `goal_habit_variety` — verschiedene Gewohnheiten eines Ziels im Zeitraum.
+  `workout_variety` bleibt daneben bestehen: freitextliche wger-Titel sind eine
+  andere Frage als eigene, per Fremdschlüssel zugeordnete Gewohnheiten.
 - **Keine historischen Questzähler** für beliebige vergangene Wochen. Die
   zentralen Zähler beantworten den laufenden Zeitraum; eine vergangene Woche
   meldet das offen, statt eine Zahl zu erfinden.

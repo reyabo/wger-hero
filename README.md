@@ -261,7 +261,7 @@ Periods are `daily` · `weekly` · `monthly` · `once`. Quests can carry their o
 
 ## Stats
 
-Global XP (your level) and stat XP (your attributes) are tracked separately. There are 10 stats; stat totals are stored per attribute and surfaced on the dashboard (the radar chart is intentionally not built yet — the data is prepared for it):
+Global XP (your level) and stat XP (your attributes) are tracked separately. There are 10 stats, shown as a radar on `/stats`:
 
 | Key | Display (DE) | Key | Display (DE) |
 |---|---|---|---|
@@ -270,6 +270,20 @@ Global XP (your level) and stat XP (your attributes) are tracked separately. The
 | `dexterity` | Geschicklichkeit | `knowledge` | Wissen |
 | `mobility` | Beweglichkeit | `creativity` | Kreativität |
 | `body_control` | Körperkontrolle | `recovery` | Regeneration |
+
+### Attribute detail (`/stats/<key>`)
+
+Each attribute name on `/stats` links to its own page: level and progress, where
+the XP came from grouped by source (habit, quest, wger, Japanese), the strongest
+individual contributions, and the most recent awards.
+
+Two things it is careful about. Shares are computed over the **whole** ledger for
+that attribute, while the event list is only the last 30 entries and says so —
+the authoritative total is `HeroStat.xp`, never the visible slice. And the same
+title from two different sources stays two rows, because a habit and a quest may
+share a name without being the same thing.
+
+An unknown key is a 404, not an empty page.
 
 ## Japanese SAVE Import
 
@@ -734,6 +748,12 @@ bash scripts/smoke_today_week.sh
 bash scripts/smoke_pwa_starter.sh
 ```
 
+The one script that writes is `scripts/backup.sh`: a WAL-consistent online
+backup, verified with `PRAGMA integrity_check`, with age-based rotation confined
+to its own directory and its own filename pattern so it can never remove a
+deployment snapshot. Meant for cron — see
+[docs/DEPLOY.md](docs/DEPLOY.md), section "Automatische Sicherung".
+
 ## What Still Needs Live Verification
 
 The wger API client is designed to be easy to adapt. Verify against your live instance:
@@ -929,14 +949,21 @@ can never disagree with what an activation does.
 |---|---|---|---|
 | **Kraftpfad** (`kraftpfad`) | *Dreifachschlag* — 3 wger workouts per week (`workout_count`, counts itself) | — | first counted workout · 4 fulfilled weeks · 12 fulfilled weeks |
 | **Weg des Japanischen** (`weg-des-japanischen`) | *Fünf Schriftrollen* — 5 SRS reviews per week (`habit_count`, bound by habit id, counts itself) · *Zwei Gespräche mit dem Sensei* — 2 confirmed sessions per week (`japanese_session_count`, counts itself) | *SRS-Review*, planned Mon–Fri | first review · 20 reviews · 8 confirmed sessions · 4 weeks with both goals |
-| **Körperkontrolle** (`koerperkontrolle`, short label *Routine K*) | *Der Fünfer-Rhythmus* — all five planned routines in one week, **confirmed manually** | the five existing CONTROL routines, planned Mon, Tue, Wed, Thu, Sat | the four existing CONTROL stages |
+| **Körperkontrolle** (`koerperkontrolle`, short label *Routine K*) | *Der Fünfer-Rhythmus* — all five planned routines in one week (`goal_habit_variety`, counts itself) | the five existing CONTROL routines, planned Mon, Tue, Wed, Thu, Sat | the four existing CONTROL stages |
 
-**Der Fünfer-Rhythmus is manual, not automatic.** It spans five distinct habits,
-while `habit_count` binds exactly one habit id or one match-text substring.
-Rather than invent a sixth quest source or a free-text heuristic, the quest waits
-for an explicit confirmation — the week view already shows which of the five
-routines are still open, and the quest card says "manuell zu bestätigen". A
-goal-scoped `habit_count` source would be the clean follow-up.
+**Der Fünfer-Rhythmus counts distinct habits, not completions.** The quest source
+`goal_habit_variety` counts how many *different* habits of its goal were completed
+inside the period. Five sessions of one routine therefore do not satisfy it — the
+question is which of the five happened, not how often. `habit_count` cannot answer
+that, because it binds exactly one habit id or one match-text substring.
+
+`workout_variety` is a different question and stays: it counts distinct free-text
+wger workout titles, not owned habits scoped by a goal foreign key.
+
+**Existing installs are upgraded in place.** A re-activation of the campaign turns
+an existing manual *Fünfer-Rhythmus* into the automatic source, but only when its
+period and target value still match the seeded definition. Anything you edited
+yourself is left alone, and no XP history is touched.
 
 Friday and Sunday stay deliberately free in Routine K.
 

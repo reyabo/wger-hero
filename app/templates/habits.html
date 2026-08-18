@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Habits — wger-hero{% endblock %}
+{% block title %}Gewohnheiten — wger-hero{% endblock %}
 {% block content %}
 
 <div class="page-header">
-  <h1>Habits</h1>
+  <h1>Gewohnheiten</h1>
   <span class="badge">Level {{ level }}</span>
-  <a href="/habits/new" class="btn btn-primary page-action">+ New Habit</a>
+  <a href="/habits/new" class="btn btn-primary page-action">+ Neue Gewohnheit</a>
 </div>
 
 {% include "_reward.html" %}
@@ -14,7 +14,7 @@
 {% set inactive_habits = habits | rejectattr("active") | list %}
 
 <section class="card">
-  <div class="card-title">Active</div>
+  <div class="card-title">Aktiv</div>
   {% if active_habits %}
     {% for habit in active_habits %}
     <div class="habit-row{% if reward and reward.habit_id == habit.id %} is-fresh{% endif %}">
@@ -22,12 +22,12 @@
         <span class="habit-name">{{ habit.title }}</span>
         {% if habit.description %}<span class="habit-desc">{{ habit.description }}</span>{% endif %}
         <div class="habit-meta">
-          <span class="tag">{{ habit.recurrence }}</span>
+          <span class="tag">{{ recurrence_labels.get(habit.recurrence, habit.recurrence) }}</span>
           <span class="xp-reward small">+{{ habit.base_xp_reward }} XP</span>
           {% for key, amount in habit_rewards[habit.id].items() %}
           <span class="tag stat-tag">{{ stat_names[key] }} +{{ amount }}</span>
           {% endfor %}
-          <span class="muted small">· {{ completion_counts[habit.id] }} completed</span>
+          <span class="muted small">· {{ completion_counts[habit.id] }} × erledigt</span>
         </div>
       </div>
       <div class="habit-actions">
@@ -41,35 +41,35 @@
         {% else %}
         <span class="status-badge status-done">für diesen Zeitraum erledigt</span>
         {% endif %}
-        <a href="/habits/{{ habit.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
-        <form method="POST" action="/habits/{{ habit.id }}/delete" onsubmit="return confirm('Delete or archive this habit?')">
+        <a href="/habits/{{ habit.id }}/edit" class="btn btn-ghost btn-sm">Bearbeiten</a>
+        <form method="POST" action="/habits/{{ habit.id }}/delete" onsubmit="return confirm('Diese Gewohnheit löschen oder archivieren?')">
         {{ csrf_input(request) }}
-          <button type="submit" class="btn btn-ghost btn-sm">Delete</button>
+          <button type="submit" class="btn btn-ghost btn-sm">Löschen</button>
         </form>
       </div>
     </div>
     {% endfor %}
   {% else %}
-    <p class="muted">No active habits yet. <a href="/habits/new">Create your first habit</a>.</p>
+    <p class="muted">Noch keine aktive Gewohnheit. <a href="/habits/new">Lege die erste an</a>.</p>
   {% endif %}
 </section>
 
 {% if inactive_habits %}
 <details>
-  <summary style="cursor:pointer;padding:0.5rem 0;font-weight:600;">Archived / Inactive ({{ inactive_habits | length }})</summary>
+  <summary style="cursor:pointer;padding:0.5rem 0;font-weight:600;">Archiviert / inaktiv ({{ inactive_habits | length }})</summary>
   <section class="card">
-    <div class="card-title">Inactive</div>
+    <div class="card-title">Inaktiv</div>
     {% for habit in inactive_habits %}
     <div class="habit-row{% if reward and reward.habit_id == habit.id %} is-fresh{% endif %}">
       <div class="habit-info">
         <span class="habit-name muted">{{ habit.title }}</span>
         <div class="habit-meta">
-          <span class="tag">{{ habit.recurrence }}</span>
-          <span class="muted small">· inactive · {{ completion_counts[habit.id] }} completed</span>
+          <span class="tag">{{ recurrence_labels.get(habit.recurrence, habit.recurrence) }}</span>
+          <span class="muted small">· inaktiv · {{ completion_counts[habit.id] }} × erledigt</span>
         </div>
       </div>
       <div class="habit-actions">
-        <a href="/habits/{{ habit.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
+        <a href="/habits/{{ habit.id }}/edit" class="btn btn-ghost btn-sm">Bearbeiten</a>
       </div>
     </div>
     {% endfor %}
