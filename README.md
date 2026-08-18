@@ -734,6 +734,12 @@ bash scripts/smoke_today_week.sh
 bash scripts/smoke_pwa_starter.sh
 ```
 
+The one script that writes is `scripts/backup.sh`: a WAL-consistent online
+backup, verified with `PRAGMA integrity_check`, with age-based rotation confined
+to its own directory and its own filename pattern so it can never remove a
+deployment snapshot. Meant for cron — see
+[docs/DEPLOY.md](docs/DEPLOY.md), section "Automatische Sicherung".
+
 ## What Still Needs Live Verification
 
 The wger API client is designed to be easy to adapt. Verify against your live instance:
