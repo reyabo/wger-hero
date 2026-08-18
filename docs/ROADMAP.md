@@ -242,6 +242,23 @@ Migration: nein — `recurrence` und `target_count` existieren bereits.
 
 ## Bekannte Einschränkungen
 
+Stand nach der FitTrackee-Integration — bewusst so, nicht vergessen:
+
+- **Gelöschte FitTrackee-Workouts werden nicht zurückgenommen.** Ein Workout,
+  das in einem einzelnen Abruf fehlt, kann gelöscht sein — oder außerhalb des
+  Sync-Fensters liegen, an einem API-Fehler scheitern oder vorübergehend nicht
+  sichtbar sein. Eine XP-Rücknahme auf diese Evidenz wäre bei einem Fehlalarm
+  destruktiv. Eine ausdrückliche Reconciliation ist ein eigener Schritt.
+- **Keine Cross-Source-Deduplizierung.** Ob dieselbe reale Aktivität zusätzlich
+  in wger steht, kann Hero nicht zuverlässig erkennen; eine Heuristik über
+  Titel, Uhrzeit, Dauer oder Distanz wäre schlechter als keine. Konvention:
+  wger für Kraft, FitTrackee für Ausdauer.
+- **Keine Herzfrequenz-Bewertung.** `ave_hr` und `max_hr` werden gespeichert und
+  angezeigt, aber nie für XP verwendet. Ohne individuelle Ausgangswerte wären
+  Zonen, VO2max oder Trainingsbelastung geraten.
+- **Kein automatischer FitTrackee-Sync.** Kein Cron, kein Scheduler, kein
+  Worker. Die Synchronisation wird ausgelöst, nicht geplant.
+
 Stand nach Schritt 10 — bewusst so, nicht vergessen:
 
 - **Service Worker nur statisch geprüft.** Es gibt keinen Browser in der

@@ -13,6 +13,12 @@ services:
       # path, including /healthz. See README "Set up access protection".
       - ./secrets/hero_password_hash:/run/secrets/hero_password_hash:ro
       - ./secrets/hero_session_secret:/run/secrets/hero_session_secret:ro
+      # FitTrackee OAuth. The client secret is read-only; the token store is
+      # the one writable mount, in a directory of its own so a token refresh
+      # can never overwrite the secret. Both are optional — without
+      # FITTRACKEE_BASE_URL the integration is simply off.
+      - ./secrets/fittrackee/client_secret:/run/secrets/fittrackee_client_secret:ro
+      - ./secrets/fittrackee-oauth:/run/wger-hero-fittrackee:rw
     env_file:
       - .env
     environment:

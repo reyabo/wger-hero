@@ -782,6 +782,237 @@ von `offline-$TS.sqlite`. Ein eigenes Restore-Skript gibt es bewusst nicht —
 ein Wiederherstellen überschreibt die Produktivdaten, und dieser Schritt soll
 gelesen und verstanden, nicht bequem aufgerufen werden.
 
+## FitTrackee in Betrieb nehmen
+
+Einmalig, nach einem Update, das die Integration mitbringt. Jeder Schritt
+schreibt sein Ergebnis in eine Datei; **kein Schritt gibt einen Secret- oder
+Tokenwert aus.**
+
+### FT-1. Ist-Zustand und Migration
+
+Die Integration bringt Revision `0007_fittrackee_endurance` mit — drei neue
+Tabellen und eine nullbare Spalte an `quests`. Sie läuft im normalen
+Migrationsschritt dieser Anleitung mit; ein eigener Ablauf ist nicht nötig.
+
+```bash
+"${DC[@]}" exec wger-hero python -m alembic current \
+                                           > "$LOG-FT1-state.txt"      2>&1
+"${DC[@]}" exec wger-hero python -m app.check_consistency \
+                                          >> "$LOG-FT1-state.txt"      2>&1
+cat "$LOG-FT1-state.txt"
+```
+
+Erwartet nach dem Update: `0007_fittrackee_endurance (head)`.
+
+### FT-2. Secret-Verzeichnisse vorbereiten
+
+Zwei getrennte Orte, und das ist der Punkt: das Client Secret wird nur gelesen,
+die Tokens werden bei jeder Erneuerung **neu geschrieben**. Lägen sie im selben
+Verzeichnis, könnte eine Token-Erneuerung das Secret überschreiben.
+
+```bash
+umask 077
+install -d -m 700 secrets/fittrackee
+install -d -m 700 secrets/fittrackee-oauth
+ls -ld secrets/fittrackee secrets/fittrackee-oauth \
+                                           > "$LOG-FT2-dirs.txt"       2>&1
+```
+
+### FT-3. OAuth-App in FitTrackee anlegen
+
+In FitTrackee unter dem eigenen Profil → Apps einen Client für wger-hero
+anlegen. Als Redirect-URI exakt die Hero-Callback-Adresse eintragen:
+
+```text
+https://<hero-host>/settings/fittrackee/callback
+```
+
+Scope: **nur** `workouts:read`. Hero schreibt nichts nach FitTrackee zurück.
+
+### FT-4. Client Secret ablegen
+
+Interaktiv, damit der Wert weder als Argument noch in der Shell-History landet:
+
+```bash
+umask 077
+test ! -e secrets/fittrackee/client_secret || {
+  echo "ABBRUCH: existiert bereits — nicht ersetzen"; exit 1; }
+
+cat > secrets/fittrackee/client_secret     # einfügen, dann Strg-D
+chmod 400 secrets/fittrackee/client_secret
+
+stat -c 'path=%n mode=%a size=%s' secrets/fittrackee/client_secret \
+                                           > "$LOG-FT4-secret.txt"     2>&1
+```
+
+Nur Metadaten prüfen. Der Inhalt wird nie ausgegeben — weder mit `cat` noch über
+`docker exec`.
+
+### FT-5. `.env` ergänzen
+
+```bash
+FITTRACKEE_BASE_URL=https://<fittrackee-host>
+FITTRACKEE_CLIENT_ID=<client-id>
+FITTRACKEE_REDIRECT_URI=https://<hero-host>/settings/fittrackee/callback
+FITTRACKEE_CLIENT_SECRET_FILE=/run/secrets/fittrackee_client_secret
+FITTRACKEE_TOKEN_DIR=/run/wger-hero-fittrackee
+```
+
+`.env` enthält **kein** Secret — nur den Pfad dorthin.
+
+### FT-6. Mounts im vollständigen Stack prüfen
+
+Vor dem Neustart, mit allen `-f`-Dateien:
+
+```bash
+"${DC[@]}" config | grep -E 'fittrackee_client_secret|wger-hero-fittrackee' \
+                                           > "$LOG-FT6-mounts.txt"     2>&1
+cat "$LOG-FT6-mounts.txt"
+```
+
+Erwartet: das Secret `read_only: true`, das Tokenverzeichnis **beschreibbar**.
+Fehlt eines, wird nicht gestartet, sondern `DC` korrigiert.
+
+### FT-7. Container neu erzeugen
+
+`.env` wird beim Erzeugen gelesen, nicht beim Neustart:
+
+```bash
+"${DC[@]}" up -d --force-recreate wger-hero \
+                                           > "$LOG-FT7-up.txt"         2>&1
+curl -sS -o /dev/null -w 'healthz=%{http_code}\n' http://127.0.0.1:8091/healthz \
+                                          >> "$LOG-FT7-up.txt"         2>&1
+```
+
+### FT-8. Status, Verbindung, Sportarten
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync status \
+                                           > "$LOG-FT8-status.txt"     2>&1
+```
+
+Dann im Browser `/settings/fittrackee` öffnen und **„Mit FitTrackee
+verbinden"**. Nach der Rückkehr **„Sportarten aktualisieren"**, danach die
+gewünschten Ausdauersportarten ankreuzen und speichern.
+
+Eine neu erkannte Sportart zählt **nie** von selbst — das ist beabsichtigt.
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync probe \
+                                           > "$LOG-FT8-probe.txt"      2>&1
+```
+
+### FT-9. Baseline — erst Probelauf, dann echt
+
+Der wichtigste Schritt. Die Baseline importiert die Historie und schüttet dabei
+**null XP** aus.
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync baseline --dry-run \
+                                           > "$LOG-FT9-baseline-dry.txt" 2>&1
+cat "$LOG-FT9-baseline-dry.txt"
+
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync baseline \
+                                           > "$LOG-FT9-baseline.txt"   2>&1
+cat "$LOG-FT9-baseline.txt"
+```
+
+Erwartet: `globale XP: 0` und `Ausdauer-XP: 0`.
+
+### FT-10. Bestätigen, dass die Historie nichts gezahlt hat
+
+```bash
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT COUNT(*) AS workouts,
+          SUM(reward_eligible) AS reward_faehig
+     FROM fittrackee_workouts;
+   SELECT COUNT(*) AS xp_zeilen
+     FROM xp_events WHERE source='fittrackee';" \
+                                           > "$LOG-FT10-baseline.txt"  2>&1
+cat "$LOG-FT10-baseline.txt"
+```
+
+Erwartet: `reward_faehig = 0` und `xp_zeilen = 0`. Stimmt das nicht, **nicht
+weitermachen** — dann hat die Baseline nicht gegriffen.
+
+### FT-11. Ausdauerziel anlegen
+
+Auf `/settings/fittrackee` „Ausdauerziel anlegen". Idempotent: ein zweiter
+Aufruf legt nichts doppelt an und setzt nichts zurück.
+
+```bash
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT title, quest_type, period, target_value, allowed_weekdays
+     FROM quests
+     WHERE goal_id = (SELECT id FROM goals WHERE slug='kardiovaskulaere-ausdauer')
+     ORDER BY is_milestone, period, title;" \
+                                           > "$LOG-FT11-goal.txt"      2>&1
+cat "$LOG-FT11-goal.txt"
+```
+
+Erwartet: acht Zeilen, darunter genau zwei mit `period = weekly` —
+*Dienstagsrunde* (`allowed_weekdays = 2`) und *Wochenendrunde* (`6,7`).
+
+### FT-12. Erster normaler Sync
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync sync --dry-run \
+                                           > "$LOG-FT12-sync-dry.txt"  2>&1
+cat "$LOG-FT12-sync-dry.txt"
+
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync sync \
+                                           > "$LOG-FT12-sync.txt"      2>&1
+cat "$LOG-FT12-sync.txt"
+```
+
+### FT-13. Denselben Sync wiederholen
+
+Die Idempotenzprobe. Ein zweiter identischer Lauf muss **null** neue XP geben:
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync sync \
+                                           > "$LOG-FT13-again.txt"     2>&1
+cat "$LOG-FT13-again.txt"
+```
+
+Erwartet: `globale XP: 0`, `Ausdauer-XP: 0`, alles unter „unverändert".
+
+### FT-14. Ledger, Attribut und Quests prüfen
+
+```bash
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT COUNT(*) AS zeilen, SUM(xp) AS summe
+     FROM xp_events WHERE source='fittrackee';
+   SELECT COUNT(*) AS zeilen, SUM(xp) AS summe
+     FROM stat_xp_events WHERE source='fittrackee';
+   SELECT stat_key, xp FROM hero_stats WHERE stat_key='endurance';" \
+                                           > "$LOG-FT14-ledger.txt"    2>&1
+cat "$LOG-FT14-ledger.txt"
+```
+
+Beide Summen müssen übereinstimmen und ein Vielfaches von 40 sein.
+
+### FT-15. Konsistenzcheck zum Abschluss
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.check_consistency \
+                                           > "$LOG-FT15-consistency.txt" 2>&1
+cat "$LOG-FT15-consistency.txt"
+```
+
+Erwartet: keine `FEHLER`-Zeile. Hinweise zu Altdaten sind normal.
+
+### Was hier nichts zu suchen hat
+
+```text
+cat secrets/fittrackee/client_secret          # nein
+docker exec ... cat /run/wger-hero-fittrackee/tokens.json   # nein
+printenv / env ohne Variablennamen            # nein
+```
+
+`stat`, `test -s` und `test -r` beantworten jede Frage, die in diesem Ablauf
+auftritt, ohne einen Wert zu zeigen.
+
 ## Auth-Fehler einordnen
 
 ```text

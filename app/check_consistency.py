@@ -335,6 +335,109 @@ def check_pause_history(db: Session, report: Report) -> None:
         )
 
 
+def check_fittrackee_ledger(db: Session, report: Report) -> None:
+    """Each FitTrackee activity carries at most one reward, in both ledgers.
+
+    The sync revokes from the audit rows before it re-awards, so a second row
+    for the same source id means a reward was written twice — the exact bug the
+    reconciliation exists to prevent. True by construction, therefore an error.
+    """
+    from app.fittrackee_sync import SOURCE, source_id_for
+    from app.models import FitTrackeeWorkout
+
+    report.checks_run += 1
+
+    for model, label in ((XpEvent, "XP"), (StatXpEvent, "Attribut-XP")):
+        counts: dict[str, int] = {}
+        rows = (
+            db.query(model)
+            .filter(model.source == SOURCE, model.source_id.isnot(None))
+            .all()
+        )
+        for row in rows:
+            counts[row.source_id] = counts.get(row.source_id, 0) + 1
+        for source_id, count in sorted(counts.items()):
+            if count > 1:
+                report.error(
+                    "FitTrackee",
+                    f"{label}: {count} Belohnungszeilen für dieselbe Quelle "
+                    f"„{source_id}“ — erwartet ist höchstens eine",
+                )
+
+    # A workout the ledger pays for must be one the rules say qualifies.
+    awarded = {
+        row.source_id
+        for row in db.query(XpEvent).filter(XpEvent.source == SOURCE).all()
+        if row.source_id
+    }
+    for workout in db.query(FitTrackeeWorkout).all():
+        source_id = source_id_for(workout.external_id)
+        has_reward = source_id in awarded
+        should = bool(workout.qualifies_for_endurance and workout.reward_eligible)
+        if has_reward and not should:
+            report.error(
+                "FitTrackee",
+                f"Workout {workout.external_id} ist belohnt, erfüllt aber die "
+                f"Bedingungen nicht (qualifiziert={workout.qualifies_for_endurance}, "
+                f"reward-fähig={workout.reward_eligible})",
+            )
+        elif should and not has_reward:
+            # Legitimate for a database whose sync ran before this check
+            # existed, or where a reward was revoked by hand.
+            report.note(
+                "FitTrackee",
+                f"Workout {workout.external_id} qualifiziert und ist reward-fähig, "
+                f"hat aber keine Belohnungszeile",
+            )
+
+
+def check_fittrackee_orphans(db: Session, report: Report) -> None:
+    """No FitTrackee ledger row without the workout it belongs to."""
+    from app.fittrackee_sync import SOURCE, source_id_for
+    from app.models import FitTrackeeWorkout
+
+    report.checks_run += 1
+
+    known = {source_id_for(external_id) for (external_id,) in db.query(FitTrackeeWorkout.external_id).all()}
+
+    for model, label in ((XpEvent, "XpEvent"), (StatXpEvent, "StatXpEvent")):
+        orphans = [
+            row.source_id
+            for row in db.query(model).filter(model.source == SOURCE).all()
+            if row.source_id and row.source_id not in known
+        ]
+        for source_id in sorted(set(orphans)):
+            report.error(
+                "FitTrackee",
+                f"{label} für „{source_id}“, aber kein passendes FitTrackee-Workout",
+            )
+
+
+def check_fittrackee_negatives(db: Session, report: Report) -> None:
+    """No negative durations, and no negative aggregate anywhere."""
+    from app.models import FitTrackeeWorkout
+
+    report.checks_run += 1
+
+    for workout in db.query(FitTrackeeWorkout).all():
+        if (workout.duration_seconds or 0) < 0:
+            report.error(
+                "FitTrackee",
+                f"Workout {workout.external_id} hat eine negative Dauer",
+            )
+        if workout.moving_seconds is not None and workout.moving_seconds < 0:
+            report.error(
+                "FitTrackee",
+                f"Workout {workout.external_id} hat eine negative Bewegungszeit",
+            )
+
+    for stat in db.query(HeroStat).all():
+        if stat.xp < 0:
+            report.error(
+                "Attribut-XP", f"„{stat.stat_key}“ ist negativ: {stat.xp}"
+            )
+
+
 CHECKS = (
     check_global_xp,
     check_stat_xp,
@@ -345,6 +448,9 @@ CHECKS = (
     check_sync_totals,
     check_completion_allowance,
     check_pause_history,
+    check_fittrackee_ledger,
+    check_fittrackee_orphans,
+    check_fittrackee_negatives,
 )
 
 
