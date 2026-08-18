@@ -738,40 +738,15 @@ def update_quest(
 
 def delete_or_archive_quest(db: Session, quest: Quest) -> str:
     """
-    Hard-delete a quest if it has never been completed and has no XP events;
-    deactivate (archive) it otherwise. System quests are always archived.
-    Returns "deleted" or "archived".
-    """
-    is_system = quest.slug in SYSTEM_QUEST_SLUGS
-    has_completion = quest.completed_at is not None
-    has_xp_events = (
-        db.query(XpEvent)
-        .filter(
-            XpEvent.source == "quest",
-            XpEvent.source_id == str(quest.id),
-        )
-        .first()
-        is not None
-    )
-
-    if is_system or has_completion or has_xp_events:
-        quest.active = False
-        quest.updated_at = datetime.utcnow()
-        db.commit()
-        return "archived"
-    db.delete(quest)
-    db.commit()
-    return "deleted"
-
-
-SYSTEM_QUEST_SLUGS = {"week-warrior", "home-hero-full-week"}
-
-
-def delete_or_archive_quest(db: Session, quest: Quest) -> str:
-    """
     Hard-delete a quest if it has no history; deactivate (archive) it otherwise.
     System quests are always archived, never deleted.
     Returns "deleted" or "archived".
+
+    The history check matches XpEvent.source_id against the quest **slug**,
+    because that is what _complete_quest() writes. Matching the numeric id here
+    would never find anything and would therefore hard-delete a quest that had
+    in fact been rewarded — a second, dead copy of this function did exactly
+    that until it was removed.
     """
     # System quests are never hard-deleted
     if quest.slug in SYSTEM_QUEST_SLUGS:

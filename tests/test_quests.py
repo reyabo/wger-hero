@@ -5,7 +5,13 @@ from datetime import datetime, timedelta
 import pytest
 
 from app.models import HeroProfile, Quest, SyncEvent, XpEvent
-from app.quests import evaluate_quests, seed_quests, _current_week_bounds
+from app.quests import (
+    create_quest,
+    delete_or_archive_quest,
+    evaluate_quests,
+    seed_quests,
+    _current_week_bounds,
+)
 
 
 def _add_hero(db, xp=0):
@@ -86,3 +92,70 @@ class TestQuestProgress:
         xp_after_second = db.query(HeroProfile).first().total_xp
 
         assert xp_after_first == xp_after_second
+
+
+# ---------------------------------------------------------------------------
+# No shadowed definitions
+# ---------------------------------------------------------------------------
+
+class TestNoDuplicateDefinitions:
+    """A module must not define the same top-level name twice.
+
+    app/quests.py used to carry two delete_or_archive_quest functions. Only the
+    later one ran, and only the later one was correct: the dead first copy
+    matched XpEvent.source_id against str(quest.id) while _complete_quest writes
+    quest.slug, so it could never see the history it was meant to protect and
+    would have hard-deleted a rewarded quest. Any reordering would have silently
+    switched to it.
+    """
+
+    def _duplicates(self, path):
+        import ast
+        from collections import Counter
+
+        tree = ast.parse(path.read_text())
+        names = []
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.append(node.name)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        names.append(target.id)
+        return [name for name, count in Counter(names).items() if count > 1]
+
+    def test_quests_module_has_no_duplicate_definition(self):
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parent.parent / "app" / "quests.py"
+        assert self._duplicates(path) == []
+
+    def test_no_application_module_shadows_its_own_definitions(self):
+        from pathlib import Path
+
+        app_dir = Path(__file__).resolve().parent.parent / "app"
+        offenders = {
+            path.name: self._duplicates(path)
+            for path in sorted(app_dir.glob("*.py"))
+            if self._duplicates(path)
+        }
+        assert offenders == {}
+
+    def test_quest_history_is_matched_by_slug(self, db):
+        """The surviving implementation must archive, not delete, a rewarded quest."""
+        quest = create_quest(db, title="Belohnte Quest", quest_type="manual")
+        db.add(XpEvent(
+            event_type="quest_complete", source="quest", source_id=quest.slug,
+            xp=100, attribute="Strength", title=quest.title, description="",
+        ))
+        db.commit()
+
+        assert delete_or_archive_quest(db, quest) == "archived"
+        assert db.query(Quest).filter(Quest.id == quest.id).first() is not None
+
+    def test_a_quest_without_history_is_still_deleted(self, db):
+        quest = create_quest(db, title="Ohne Historie", quest_type="manual")
+        quest_id = quest.id
+
+        assert delete_or_archive_quest(db, quest) == "deleted"
+        assert db.query(Quest).filter(Quest.id == quest_id).first() is None
