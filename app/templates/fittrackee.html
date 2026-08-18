@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block title %}FitTrackee — wger-hero{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>FitTrackee</h1>
+  <span class="badge">Level {{ level }}</span>
+</div>
+<p class="muted">
+  Ausdaueraktivitäten als externe Quelle. Nur lesend —
+  <a href="/settings">zurück zu den Einstellungen</a>
+</p>
+
+{% if message %}<section class="card"><p>{{ message }}</p></section>{% endif %}
+{% if error %}<section class="card"><p class="badge badge-error">{{ error }}</p></section>{% endif %}
+
+<section class="card">
+  <div class="card-title">Verbindung</div>
+  <table class="config-table">
+    <tbody>
+      <tr><td>FitTrackee-URL</td><td>{{ ft_base_url }}</td></tr>
+      <tr>
+        <td>OAuth-Client konfiguriert</td>
+        <td>{{ "ja" if ft_client_configured else "nein" }}</td>
+      </tr>
+      <tr>
+        <td>Verbindung</td>
+        <td>{{ "verbunden" if ft_connected else "nicht verbunden" }}</td>
+      </tr>
+      <tr><td>Tokenstatus</td><td>{{ ft_token_status }}</td></tr>
+      <tr>
+        <td>Baseline erstellt</td>
+        <td>
+          {% if ft_connection.baseline_at %}
+            {{ ft_connection.baseline_at.strftime('%d.%m.%Y %H:%M') }}
+            <span class="muted small">· {{ ft_connection.baseline_workouts }} historische Workouts, 0 XP</span>
+          {% else %}
+            <span class="muted">noch nicht erstellt</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>Letzter Sync</td>
+        <td>
+          {% if ft_connection.last_sync_at %}
+            {{ ft_connection.last_sync_at.strftime('%d.%m.%Y %H:%M') }}
+          {% else %}
+            <span class="muted">nie</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr><td>Workouts gespeichert</td><td>{{ ft_workouts }}</td></tr>
+      <tr><td>davon reward-fähig</td><td>{{ ft_eligible }}</td></tr>
+      <tr>
+        <td>Letzter Fehler</td>
+        <td>{{ ft_connection.last_error or "—" }}</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="muted small">
+    Client Secret, Access Token, Refresh Token und PKCE-Verifier werden hier
+    grundsätzlich nicht angezeigt.
+  </p>
+</section>
+
+<section class="card">
+  <div class="card-title">Reihenfolge der Ersteinrichtung</div>
+  <ol>
+    <li>FitTrackee-Basis-URL konfigurieren</li>
+    <li>OAuth-App in FitTrackee anlegen</li>
+    <li>Client-ID und Client-Secret in Hero hinterlegen</li>
+    <li>Mit FitTrackee verbinden</li>
+    <li>Sportarten abrufen</li>
+    <li>Ausdauersportarten markieren</li>
+    <li>Baseline erstellen — bis hierher gibt es keine XP</li>
+    <li>Ausdauerziel anlegen</li>
+    <li>ab jetzt normale Synchronisation</li>
+  </ol>
+</section>
+
+<section class="card">
+  <div class="card-title">Aktionen</div>
+  <div class="quest-actions">
+    <form method="POST" action="/settings/fittrackee/connect">
+      {{ csrf_input(request) }}
+      <button type="submit" class="btn btn-primary btn-sm">Mit FitTrackee verbinden</button>
+    </form>
+    <form method="POST" action="/settings/fittrackee/sports">
+      {{ csrf_input(request) }}
+      <button type="submit" class="btn btn-sm">Sportarten aktualisieren</button>
+    </form>
+  </div>
+
+  <div class="card-divider"></div>
+
+  <div class="quest-actions">
+    <form method="POST" action="/settings/fittrackee/baseline">
+      {{ csrf_input(request) }}
+      <input type="hidden" name="dry_run" value="1">
+      <button type="submit" class="btn btn-ghost btn-sm">Baseline — Probelauf</button>
+    </form>
+    <form method="POST" action="/settings/fittrackee/baseline">
+      {{ csrf_input(request) }}
+      <button type="submit" class="btn btn-sm" {% if ft_has_baseline %}disabled{% endif %}>
+        Baseline erstellen
+      </button>
+    </form>
+  </div>
+
+  <div class="quest-actions">
+    <form method="POST" action="/settings/fittrackee/sync">
+      {{ csrf_input(request) }}
+      <input type="hidden" name="dry_run" value="1">
+      <button type="submit" class="btn btn-ghost btn-sm">Sync — Probelauf</button>
+    </form>
+    <form method="POST" action="/settings/fittrackee/sync">
+      {{ csrf_input(request) }}
+      <button type="submit" class="btn btn-primary btn-sm" {% if not ft_has_baseline %}disabled{% endif %}>
+        Jetzt synchronisieren
+      </button>
+    </form>
+  </div>
+
+  <div class="card-divider"></div>
+
+  <form method="POST" action="/settings/fittrackee/goal">
+    {{ csrf_input(request) }}
+    <button type="submit" class="btn btn-sm">
+      {% if ft_goal_exists %}Ausdauerziel prüfen{% else %}Ausdauerziel anlegen{% endif %}
+    </button>
+  </form>
+  <p class="muted small">
+    Synchronisiert wird nur, wenn du es auslöst. Es gibt keinen Hintergrundjob.
+  </p>
+</section>
+
+<section class="card">
+  <div class="card-title">Sportarten</div>
+  {% if ft_sports %}
+  <p class="muted small">
+    Markiere, welche FitTrackee-Sportarten in Hero als Ausdauertraining zählen.
+    Eine neu erkannte Sportart zählt nie von selbst. Die Auswahl gilt für
+    künftige Workouts — bereits bewertete bleiben unverändert.
+  </p>
+  <form method="POST" action="/settings/fittrackee/sports/save">
+    {{ csrf_input(request) }}
+    <div class="weekday-options">
+      {% for sport in ft_sports %}
+      <label class="weekday-option" for="sport-{{ sport.sport_id }}">
+        <input type="checkbox" id="sport-{{ sport.sport_id }}"
+               name="endurance_sports" value="{{ sport.sport_id }}"
+               {% if sport.counts_for_endurance %}checked{% endif %}>
+        <span>
+          {{ sport.label }}
+          {% if not sport.is_active %}<span class="muted small">(in FitTrackee inaktiv)</span>{% endif %}
+        </span>
+      </label>
+      {% endfor %}
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary btn-sm">Auswahl speichern</button>
+    </div>
+  </form>
+  {% else %}
+  <p class="muted">
+    Noch keine Sportarten abgerufen. Nach dem Verbinden „Sportarten
+    aktualisieren“ auslösen.
+  </p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="card-title">Was gezählt wird</div>
+  <ul>
+    <li>Die Sportart muss oben ausdrücklich als Ausdauer markiert sein.</li>
+    <li>Die Einheit muss mindestens 10 Minuten dauern (Bewegungszeit, sonst Gesamtdauer).</li>
+    <li>Sie muss nach der Baseline entstanden sein.</li>
+  </ul>
+  <p class="muted small">
+    Jede qualifizierende Einheit gibt 40 globale XP und 40 Ausdauer-XP — unabhängig
+    von Distanz, Tempo und Herzfrequenz. Herzfrequenzwerte werden gespeichert,
+    wenn FitTrackee sie liefert, aber nie zur XP-Berechnung verwendet.
+    GPS-Daten, Karten und Notizen werden gar nicht erst übernommen.
+  </p>
+</section>
+{% endblock %}

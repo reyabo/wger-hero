@@ -103,3 +103,71 @@ def test_no_local_compose_overlay_is_committed():
     assert tracked == {"docker-compose.yml"}, (
         f"unexpected compose files in the repository: {sorted(tracked)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# FitTrackee: a read-only secret and a writable token store, never confused
+# ---------------------------------------------------------------------------
+
+def test_the_fittrackee_client_secret_is_mounted_read_only():
+    compose = COMPOSE.read_text()
+    assert "/run/secrets/fittrackee_client_secret:ro" in compose
+
+
+def test_the_fittrackee_token_store_is_writable():
+    """Tokens are rewritten on every refresh, so this one mount must not be
+    read-only — a :ro token store would break the refresh instead of the
+    credential, which is a far more confusing failure."""
+    compose = COMPOSE.read_text()
+    line = next(
+        l for l in compose.splitlines() if "wger-hero-fittrackee" in l and l.strip().startswith("-")
+    )
+    assert line.rstrip().endswith(":rw")
+
+
+def test_the_token_store_is_not_inside_the_secrets_directory():
+    """A token write must never be able to reach the client secret."""
+    compose = COMPOSE.read_text()
+    token_mounts = [
+        l for l in compose.splitlines()
+        if "wger-hero-fittrackee" in l and l.strip().startswith("-")
+    ]
+    assert token_mounts
+    for line in token_mounts:
+        target = line.split(":")[-2]
+        assert not target.startswith("/run/secrets")
+
+
+def test_the_env_example_documents_the_fittrackee_paths():
+    env = ENV_EXAMPLE.read_text()
+    assert "FITTRACKEE_CLIENT_SECRET_FILE=/run/secrets/fittrackee_client_secret" in env
+    assert "FITTRACKEE_TOKEN_DIR=/run/wger-hero-fittrackee" in env
+
+
+def test_the_declared_fittrackee_paths_match_the_mounts():
+    """The exact drift that took auth down, now checked for FitTrackee too."""
+    env = ENV_EXAMPLE.read_text()
+    compose = COMPOSE.read_text()
+
+    secret = re.search(r"FITTRACKEE_CLIENT_SECRET_FILE=(\S+)", env).group(1)
+    token_dir = re.search(r"FITTRACKEE_TOKEN_DIR=(\S+)", env).group(1)
+
+    assert f":{secret}:ro" in compose
+    assert f":{token_dir}:rw" in compose
+
+
+def test_the_env_example_never_holds_the_client_secret():
+    """Only a path may appear here — never a value."""
+    env = ENV_EXAMPLE.read_text()
+    assert not re.search(r"^FITTRACKEE_CLIENT_SECRET=", env, re.M)
+
+
+def test_the_readme_documents_the_same_paths():
+    readme = (REPO_ROOT / "README.md").read_text()
+    assert "/run/secrets/fittrackee_client_secret" in readme
+    assert "/run/wger-hero-fittrackee" in readme
+
+
+def test_no_fittrackee_secret_is_committed():
+    for path in ("secrets/fittrackee/client_secret", "secrets/fittrackee-oauth/tokens.json"):
+        assert not (REPO_ROOT / path).exists(), f"{path} must never be in the repository"

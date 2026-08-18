@@ -323,6 +323,232 @@ share a name without being the same thing.
 
 An unknown key is a 404, not an empty page.
 
+## FitTrackee endurance sync
+
+A read-only second activity source. wger stays the strength source; FitTrackee
+becomes the endurance source. The two never mix: separate source ids, separate
+quest types, separate stats, and no attempt to detect that the same real session
+was logged in both. **Log strength work in wger and endurance work in
+FitTrackee** — Hero cannot tell a double entry from two genuine sessions, and
+guessing from title, time or duration would be worse than not guessing.
+
+A FitTrackee activity never completes a habit. Awarding habit XP *and* activity
+XP for one real training session would pay twice for it.
+
+### What it reads, and what it refuses to store
+
+Three documented endpoints, verified against the FitTrackee 1.3.x API docs:
+
+| Endpoint | Why |
+|---|---|
+| `GET /api/sports` | the instance's sport catalogue |
+| `GET /api/workouts` | the activity collection, fully paginated |
+| `POST /api/oauth/token` | access token refresh |
+
+No cookies, no scraping, no frontend endpoint, nothing undocumented, and nothing
+that writes. The requested scope is **`workouts:read`** and nothing else.
+
+Of each activity Hero keeps only what the reward and quest rules need: id, sport,
+date, duration, moving time, distance, average and maximum speed, average and
+maximum heart rate, and the remote modification date. **GPS tracks, coordinates,
+bounds, maps, titles, notes, descriptions, media and weather are dropped at the
+client boundary** — they are never returned to the rest of the app, so no later
+layer can store or log them by accident.
+
+### OAuth2 setup
+
+Authorization Code with PKCE (`S256`) and a `state` parameter. In FitTrackee,
+under your profile's apps, create an OAuth client for wger-hero with the
+redirect URI pointing at Hero's callback:
+
+```
+https://your-hero-host/settings/fittrackee/callback
+```
+
+Then configure Hero:
+
+```bash
+FITTRACKEE_BASE_URL=https://fittrackee.example.com
+FITTRACKEE_CLIENT_ID=the-client-id-from-fittrackee
+FITTRACKEE_REDIRECT_URI=https://your-hero-host/settings/fittrackee/callback
+```
+
+The **client secret** goes in a read-only file, never in `.env`:
+
+```bash
+umask 077
+install -d -m 700 secrets/fittrackee
+# paste the secret, then Ctrl-D — it never becomes a command argument
+cat > secrets/fittrackee/client_secret
+chmod 400 secrets/fittrackee/client_secret
+```
+
+Access and refresh tokens need to be *rewritten* on every refresh, so they live
+in a separate writable directory — never the same place as the read-only
+secret, so a token write can never clobber it:
+
+```bash
+install -d -m 700 secrets/fittrackee-oauth
+```
+
+Compose mounts the secret read-only at `/run/secrets/fittrackee_client_secret`
+and the token store writable at `/run/wger-hero-fittrackee/`. Tokens are written
+atomically (temp file → `fsync` → `os.replace`) with mode `600`, because a
+half-written token file costs the refresh token and forces a reconnect.
+
+No token, refresh token, client secret or PKCE verifier is ever logged, rendered,
+put in an error message or stored in the database. `/settings/fittrackee` shows
+only *whether* a credential is configured.
+
+### Setup order — nothing pays before step 7
+
+1. Configure `FITTRACKEE_BASE_URL`
+2. Create the OAuth app in FitTrackee
+3. Configure the client id and mount the client secret
+4. **Connect to FitTrackee** on `/settings/fittrackee`
+5. **Refresh sports**
+6. **Tick the sports that count as endurance**
+7. **Create the baseline**
+8. **Create the endurance goal**
+9. From here, normal syncs
+
+### The baseline pays nothing
+
+The first import is history, not achievement. Every activity it finds is stored
+with `reward_eligible = false` and awards **0 XP** — connecting an account with
+two years of running in it must not hand out thousands of XP for training that
+happened before Hero existed.
+
+That flag is written once and never flips. Editing a historical workout,
+enabling its sport later, changing its duration or restarting the app all leave
+it ineligible. Its data is kept up to date; its reward stays zero.
+
+### What qualifies
+
+A workout counts as an endurance unit when **both** hold:
+
+- its sport is one you explicitly ticked, and
+- it lasted at least **10 minutes** (moving time when FitTrackee reports it,
+  otherwise total duration).
+
+Sport ids are per-instance and are never inferred — not from an id, not from a
+name. A newly seen sport arrives inert and stays inert until you enable it, so a
+FitTrackee release that adds a sport needs no code change here.
+
+Both rules are Hero gamification choices, not statements about training.
+
+### The reward
+
+Every qualifying unit is worth a flat **+40 global XP and +40 `endurance` XP**,
+whatever its distance, pace or heart rate.
+
+No per-kilometre or per-minute XP: that would let one long activity outscore a
+month of consistency and make sports incomparable. Heart rate is stored when
+present and **never scored** — no zone detection, no VO2max estimate, no
+max-HR formula, no calorie or training-load figure. Without individual baselines
+all of those would be invention. Extra volume is recognised through quests and
+milestones instead.
+
+### Quest sources
+
+| Source | Counts |
+|---|---|
+| `fittrackee_workout_count` | distinct qualifying activities in the period |
+| `fittrackee_duration_minutes` | qualifying minutes in the period |
+
+Both count only workouts that qualify *and* are reward-eligible, so history
+fills no progress bar either.
+
+Either source can be restricted to weekdays through `allowed_weekdays`, stored
+as sorted ISO weekday digits (`"2"`, `"6,7"`) — the same 1 = Monday … 7 = Sunday
+convention `habit_schedule_days` uses. It is validated on write and is never
+free-form data. The weekday comes from the **local** date via
+`quests.app_date_of()`: a run finishing 23:30 UTC on Monday is 01:30 on Tuesday
+in `Europe/Berlin`, and it is the Tuesday run.
+
+Minutes are summed in seconds and converted once at the end. Rounding each
+workout down first would turn three sessions of 29:50 into 87 minutes instead of
+89½ and make the quest quietly harder than it says.
+
+### The goal programme "Kardiovaskuläre Ausdauer"
+
+Optional, created only when you ask for it on `/settings/fittrackee`, and
+idempotent — running it again changes nothing, and a quest you edited yourself
+is never reset.
+
+It models one specific plan: **one endurance session on Tuesday, one at the
+weekend**.
+
+| | Quest | Source | Target | Reward |
+|---|---|---|---|---|
+| weekly | *Dienstagsrunde* | `fittrackee_workout_count`, Tuesday only | 1 | 75 + 75 |
+| weekly | *Wochenendrunde* | `fittrackee_workout_count`, Saturday or Sunday | 1 | 100 + 100 |
+| monthly | *Vier Stunden Basis* | `fittrackee_duration_minutes` | 240 | 150 + 150 |
+| milestone | *Der erste Schritt* | `fittrackee_workout_count` | 1 | 75 + 75 |
+| milestone | *Fünf Wochen Ausdauer* | `fittrackee_workout_count` | 10 | 125 + 125 |
+| milestone | *Zehn Stunden Ausdauer* | `fittrackee_duration_minutes` | 600 | 175 + 175 |
+| milestone | *Fünfzehn Wochen Ausdauer* | `fittrackee_workout_count` | 30 | 225 + 225 |
+| milestone | *Dreißig Stunden Ausdauer* | `fittrackee_duration_minutes` | 1800 | 300 + 300 |
+
+**The weekly pair is the whole trick.** The existing goal engine already counts
+a week as successful when every weekly quest of the goal was rewarded, so
+"Tuesday *and* the weekend" falls out of the data with no special casing
+anywhere in the goal, streak or momentum code. Tuesday and the weekend are
+disjoint, so one activity can never satisfy both.
+
+```
+Tuesday + Saturday   → successful week
+Tuesday + Sunday     → successful week
+Saturday + Sunday    → not successful (no Tuesday)
+Tuesday + Thursday   → not successful (no weekend day)
+two Tuesday sessions → only the Tuesday slot
+```
+
+The monthly quest and the milestones are deliberately *not* weekly, so they
+cannot affect that judgement. "Fünf Wochen" and "Fünfzehn Wochen" are motivating
+labels — the condition is 10 and 30 qualifying workouts, and no calendar week is
+derived from them.
+
+A Thursday ride still earns its flat 40 + 40 and still counts towards the
+monthly quest and the once-milestones. It simply fills neither weekly slot.
+That is intended: the plan is modelled by quests, and real extra movement is
+still recognised as activity.
+
+### Syncing
+
+Manual only — there is no cron, no scheduler, no background worker and no
+polling in this version, so XP never appears unexpectedly.
+
+```bash
+python -m app.fittrackee_sync status            # local state, contacts nothing
+python -m app.fittrackee_sync probe             # reachability + sports
+python -m app.fittrackee_sync baseline --dry-run
+python -m app.fittrackee_sync baseline
+python -m app.fittrackee_sync sync --dry-run
+python -m app.fittrackee_sync sync
+```
+
+A dry run reports what would happen — new, changed, unchanged, qualifying,
+not qualifying, and the XP that would be awarded — and writes nothing.
+
+The fetch must fully succeed before anything is written. A partial page walk
+must never become a partial sync: the missing activities would look like "these
+do not exist" and would be awarded again on the next run.
+
+Re-running an unchanged sync awards nothing. A changed activity has its previous
+award read back from the audit rows, removed, and rewritten exactly once, in one
+transaction — so a workout stretched from 20 to 45 minutes still nets one award,
+and one shortened below ten minutes has its award taken back while the record
+itself is kept.
+
+### Known limitation: deletions
+
+**Deleting an activity in FitTrackee is not undone in Hero in this version.**
+Absence from a single fetch is not proof of deletion — a sync window, an API
+error, a permission change or a temporary inconsistency all look identical to
+it, and revoking XP on that evidence would be destructive on a false positive.
+An explicit reconciliation can be built later as its own change.
+
 ## Japanese SAVE Import
 
 Paste the coach's SAVE block on `/japanese`, review the preview, confirm. The
@@ -702,7 +928,7 @@ For a local UI run, see [docs/UI_CHECKLIST.md](docs/UI_CHECKLIST.md).
 
 ## Migrations
 
-Alembic, revisions `0001_baseline` through `0006_optional_learning_metrics`.
+Alembic, revisions `0001_baseline` through `0007_fittrackee_endurance`.
 
 - **The app never migrates by itself** — not on import, not on startup. A test
   asserts that no application module touches Alembic at import time.
@@ -721,6 +947,7 @@ Alembic, revisions `0001_baseline` through `0006_optional_learning_metrics`.
 | `0004_goal_pause_intervals` | `goal_pause_intervals` with a partial unique index on the open one |
 | `0005_habit_schedule_days` | `habit_schedule_days`, ISO weekdays, unique per habit and day |
 | `0006_optional_learning_metrics` | makes `wanikani_level` and `bunpro_points` nullable |
+| `0007_fittrackee_endurance` | `fittrackee_sports`, `fittrackee_workouts`, `fittrackee_connection`, and `allowed_weekdays` on quests |
 
 ### About `0006`
 

@@ -57,6 +57,7 @@ from app.goals import (
 from app.goal_progress import goal_week_summary, pause_windows
 from app.momentum import explain_momentum
 from app.planning import parse_reference_date, today_plan, week_plan
+from app.endurance_program import GOAL_SLUG as ENDURANCE_GOAL_SLUG
 from app.starter import SAFETY_NOTE, StarterError, apply_starter, plan_starter
 from app.habits import (
     RECURRENCE_CHOICES,
@@ -551,6 +552,277 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
 # All three are public (see auth.PUBLIC_PATHS) and carry no user data. They are
 # served from the app root rather than /static so the service worker's scope can
 # be "/" — a worker may only control paths at or below its own.
+
+# ---------------------------------------------------------------------------
+# FitTrackee — a read-only endurance source
+# ---------------------------------------------------------------------------
+
+# Where the PKCE verifier and state live between the redirect out and the
+# callback back. A signed cookie would carry the verifier through the browser;
+# keeping it server-side means it never leaves this process.
+_FITTRACKEE_PENDING: dict[str, str] = {}
+
+
+def _fittrackee_context(db: Session) -> dict:
+    """Everything the settings page shows. Never a token, never a secret."""
+    from app.fittrackee_oauth import is_configured, token_store_for
+    from app.fittrackee_sync import get_connection
+    from app.models import FitTrackeeSport, FitTrackeeWorkout
+
+    settings = get_settings()
+    connection = get_connection(db)
+    db.commit()
+
+    store = token_store_for(settings)
+    if not store.exists():
+        token_status = "nicht verbunden"
+    elif connection.needs_reauth:
+        token_status = "neu verbinden nötig"
+    else:
+        token_status = "gültig"
+
+    sports = db.query(FitTrackeeSport).order_by(FitTrackeeSport.label).all()
+    total = db.query(FitTrackeeWorkout).count()
+    eligible = (
+        db.query(FitTrackeeWorkout)
+        .filter(FitTrackeeWorkout.reward_eligible == True)  # noqa: E712
+        .count()
+    )
+
+    return {
+        "ft_base_url": settings.FITTRACKEE_BASE_URL or "—",
+        "ft_client_configured": is_configured(settings),
+        "ft_connected": store.exists(),
+        "ft_token_status": token_status,
+        "ft_connection": connection,
+        "ft_sports": sports,
+        "ft_workouts": total,
+        "ft_eligible": eligible,
+        "ft_has_baseline": connection.baseline_at is not None,
+        "ft_goal_exists": db.query(Goal).filter(Goal.slug == ENDURANCE_GOAL_SLUG).first()
+        is not None,
+    }
+
+
+def _fittrackee_render(request: Request, db: Session, *, message=None, error=None):
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    return templates.TemplateResponse(
+        request=request,
+        name="fittrackee.html",
+        context={
+            **_hero_context(hero),
+            **_fittrackee_context(db),
+            "message": message,
+            "error": error,
+        },
+    )
+
+
+@app.get("/settings/fittrackee", response_class=HTMLResponse)
+async def fittrackee_page(request: Request, db: Session = Depends(get_db)):
+    return _fittrackee_render(request, db)
+
+
+@app.post("/settings/fittrackee/connect")
+async def fittrackee_connect(request: Request, db: Session = Depends(get_db)):
+    """Start the OAuth flow. Only workouts:read is ever requested."""
+    from app.fittrackee_oauth import build_authorization_request, is_configured
+
+    settings = get_settings()
+    if not is_configured(settings):
+        return _fittrackee_render(
+            request, db,
+            error="FitTrackee ist nicht konfiguriert. FITTRACKEE_BASE_URL und "
+                  "FITTRACKEE_CLIENT_ID setzen.",
+        )
+    redirect_uri = settings.FITTRACKEE_REDIRECT_URI or str(
+        request.url_for("fittrackee_callback")
+    )
+    auth = build_authorization_request(
+        settings.FITTRACKEE_BASE_URL, settings.FITTRACKEE_CLIENT_ID, redirect_uri
+    )
+    # Only one authorization can be in flight; a second replaces the first.
+    _FITTRACKEE_PENDING.clear()
+    _FITTRACKEE_PENDING["state"] = auth.state
+    _FITTRACKEE_PENDING["verifier"] = auth.verifier
+    _FITTRACKEE_PENDING["redirect_uri"] = redirect_uri
+    return RedirectResponse(url=auth.url, status_code=303)
+
+
+@app.get("/settings/fittrackee/callback", response_class=HTMLResponse)
+async def fittrackee_callback(request: Request, db: Session = Depends(get_db)):
+    """Where FitTrackee sends the user back. Validates state before anything."""
+    from app.fittrackee_client import exchange_code_for_tokens
+    from app.fittrackee_oauth import (
+        FitTrackeeAuthError,
+        load_client_secret,
+        state_matches,
+        token_store_for,
+    )
+    from app.fittrackee_sync import get_connection
+
+    settings = get_settings()
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    expected = _FITTRACKEE_PENDING.get("state")
+    verifier = _FITTRACKEE_PENDING.get("verifier")
+    redirect_uri = _FITTRACKEE_PENDING.get("redirect_uri") or (
+        settings.FITTRACKEE_REDIRECT_URI or str(request.url_for("fittrackee_callback"))
+    )
+
+    if not state_matches(expected, state):
+        logger.warning("Rejected a FitTrackee callback: state did not match")
+        _FITTRACKEE_PENDING.clear()
+        return _fittrackee_render(
+            request, db,
+            error="Die Rückmeldung von FitTrackee konnte nicht zugeordnet werden. "
+                  "Bitte den Vorgang neu starten.",
+        )
+    if not code or not verifier:
+        _FITTRACKEE_PENDING.clear()
+        return _fittrackee_render(
+            request, db, error="FitTrackee hat keinen Autorisierungscode geliefert."
+        )
+
+    try:
+        tokens = await exchange_code_for_tokens(
+            settings.FITTRACKEE_BASE_URL,
+            code=code,
+            code_verifier=verifier,
+            client_id=settings.FITTRACKEE_CLIENT_ID,
+            client_secret=load_client_secret(settings),
+            redirect_uri=redirect_uri,
+        )
+        token_store_for(settings).save(tokens)
+    except Exception as exc:  # noqa: BLE001 — sanitized below
+        logger.error("FitTrackee authorization failed: %s", type(exc).__name__)
+        message = str(exc) if isinstance(exc, FitTrackeeAuthError) else (
+            "Die Autorisierung bei FitTrackee ist fehlgeschlagen."
+        )
+        return _fittrackee_render(request, db, error=message)
+    finally:
+        _FITTRACKEE_PENDING.clear()
+
+    connection = get_connection(db)
+    connection.base_url = settings.FITTRACKEE_BASE_URL
+    connection.connected_at = datetime.utcnow()
+    connection.needs_reauth = False
+    connection.last_error = None
+    db.commit()
+    return _fittrackee_render(request, db, message="Mit FitTrackee verbunden.")
+
+
+@app.post("/settings/fittrackee/sports")
+async def fittrackee_refresh_sports(request: Request, db: Session = Depends(get_db)):
+    """Fetch the instance's sports. Enables nothing by itself."""
+    from app.fittrackee_oauth import FitTrackeeAuthError
+    from app.fittrackee_client import FitTrackeeClientError
+    from app.fittrackee_sync import build_client, store_sports
+
+    try:
+        client = build_client(get_settings())
+        sports = await client.get_sports()
+    except (FitTrackeeAuthError, FitTrackeeClientError) as exc:
+        return _fittrackee_render(request, db, error=str(exc))
+
+    count = store_sports(db, sports)
+    db.commit()
+    return _fittrackee_render(
+        request, db,
+        message=f"{count} Sportarten abgerufen. Neue zählen erst, wenn du sie "
+                f"unten als Ausdauer markierst.",
+    )
+
+
+@app.post("/settings/fittrackee/sports/save")
+async def fittrackee_save_sports(request: Request, db: Session = Depends(get_db)):
+    """Store which sports count as endurance. The one user decision here."""
+    from app.models import FitTrackeeSport
+
+    form = await request.form()
+    chosen = set()
+    for raw in form.getlist("endurance_sports"):
+        try:
+            chosen.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+
+    for sport in db.query(FitTrackeeSport).all():
+        sport.counts_for_endurance = sport.sport_id in chosen
+    db.commit()
+    return _fittrackee_render(
+        request, db,
+        message=f"{len(chosen)} Sportarten zählen als Ausdauertraining. "
+                f"Das gilt für künftige Workouts; bereits bewertete bleiben, "
+                f"wie sie sind.",
+    )
+
+
+async def _run_fittrackee(request: Request, db: Session, *, baseline: bool,
+                          dry_run: bool):
+    from app.fittrackee_oauth import FitTrackeeAuthError
+    from app.fittrackee_client import FitTrackeeClientError
+    from app.fittrackee_sync import build_client, has_baseline, run_sync
+
+    settings = get_settings()
+    if baseline and has_baseline(db) and not dry_run:
+        return _fittrackee_render(
+            request, db, error="Es existiert bereits eine Baseline."
+        )
+    if not baseline and not has_baseline(db):
+        return _fittrackee_render(
+            request, db,
+            error="Zuerst die Baseline erstellen — sonst würde die gesamte "
+                  "Historie rückwirkend XP geben.",
+        )
+
+    try:
+        client = build_client(settings)
+        outcome = await run_sync(
+            db, client,
+            baseline=baseline,
+            dry_run=dry_run,
+            from_date=settings.FITTRACKEE_SYNC_FROM_DATE,
+            hero_name=settings.HERO_NAME,
+        )
+    except (FitTrackeeAuthError, FitTrackeeClientError) as exc:
+        return _fittrackee_render(request, db, error=str(exc))
+
+    return _fittrackee_render(request, db, message=" · ".join(outcome.as_lines()))
+
+
+@app.post("/settings/fittrackee/baseline")
+async def fittrackee_baseline(request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    dry_run = bool(form.get("dry_run"))
+    return await _run_fittrackee(request, db, baseline=True, dry_run=dry_run)
+
+
+@app.post("/settings/fittrackee/sync")
+async def fittrackee_sync(request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    dry_run = bool(form.get("dry_run"))
+    return await _run_fittrackee(request, db, baseline=False, dry_run=dry_run)
+
+
+@app.post("/settings/fittrackee/goal")
+async def fittrackee_create_goal(request: Request, db: Session = Depends(get_db)):
+    """Create the endurance goal programme. Idempotent, user-triggered only."""
+    from app.endurance_program import EnduranceProgramError, apply_endurance_program
+
+    try:
+        plan = apply_endurance_program(db)
+    except EnduranceProgramError as exc:
+        return _fittrackee_render(request, db, error=str(exc))
+
+    created = sum(1 for item in plan.items if item.action == "create")
+    message = (
+        f"Ausdauerziel angelegt: {created} neue Einträge."
+        if created
+        else "Das Ausdauerziel war bereits vollständig vorhanden."
+    )
+    return _fittrackee_render(request, db, message=message)
+
 
 @app.get("/settings/starter", response_class=HTMLResponse)
 async def starter_preview(request: Request, db: Session = Depends(get_db)):

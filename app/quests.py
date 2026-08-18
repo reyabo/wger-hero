@@ -28,8 +28,73 @@ HOME_HERO_MATCH_TEXT = "Tag 1,Tag 2,Tag 3,Beine,Push,Pull"
 QUEST_TYPE_CHOICES = (
     "manual", "habit_count", "workout_count", "workout_variety",
     "japanese_session_count", "goal_habit_variety",
+    "fittrackee_workout_count", "fittrackee_duration_minutes",
 )
 PERIOD_CHOICES = ("daily", "weekly", "monthly", "once")
+
+# ISO weekdays, the same convention HabitScheduleDay stores (1 = Mon … 7 = Sun).
+# A second weekday convention would be a bug waiting to happen, so quest sources
+# that filter by weekday reuse exactly these numbers.
+ISO_WEEKDAY_RANGE = (1, 2, 3, 4, 5, 6, 7)
+
+
+def serialize_allowed_weekdays(days) -> Optional[str]:
+    """Canonical stored form for a weekday restriction, or None for "any day".
+
+    Deliberately not JSON and not a Python expression: a sorted, de-duplicated
+    list of ISO weekday digits is the whole vocabulary, it is validated here,
+    and it is the only thing the database ever holds.
+
+    Raises ValueError on anything outside 1..7, so a bad value fails where it is
+    written rather than silently counting the wrong days later.
+    """
+    if not days:
+        return None
+    cleaned = set()
+    for raw in days:
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"Not an ISO weekday: {raw!r}") from None
+        if value not in ISO_WEEKDAY_RANGE:
+            raise ValueError(f"ISO weekday out of range 1..7: {value}")
+        cleaned.add(value)
+    return ",".join(str(d) for d in sorted(cleaned))
+
+
+def parse_allowed_weekdays(raw: object) -> list[int]:
+    """Stored form back to ISO weekdays. Unreadable data means "no restriction".
+
+    Reading is forgiving where writing is strict: a hand-edited row must not
+    take a page down. Degrading to "no restriction" counts more workouts rather
+    than fewer, which is the safe direction for a value the user can see.
+    """
+    if not raw:
+        return []
+    days = set()
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            value = int(part)
+        except ValueError:
+            continue
+        if value in ISO_WEEKDAY_RANGE:
+            days.add(value)
+    return sorted(days)
+
+
+def weekday_is_allowed(moment: datetime, allowed: list[int]) -> bool:
+    """Whether a stored UTC timestamp falls on one of the allowed weekdays.
+
+    Takes the moment rather than a weekday on purpose. The weekday has to come
+    from the local Hero date via app_date_of(): a run finishing 23:30 UTC on
+    Monday is 01:30 on Tuesday in Europe/Berlin, and it is the Tuesday run.
+    """
+    if not allowed:
+        return True
+    return app_date_of(moment).isoweekday() in allowed
 
 # Sentinel for update_quest: "the caller said nothing about this field", which
 # is a different statement from "the caller wants it cleared".
@@ -44,6 +109,8 @@ QUEST_TYPE_LABELS = {
     "workout_count": "Anzahl wger-Trainings",
     "workout_variety": "Verschiedene Trainingsarten (Suchbegriffe)",
     "japanese_session_count": "Bestätigte Japanisch-Sessions",
+    "fittrackee_workout_count": "Ausdauereinheiten aus FitTrackee",
+    "fittrackee_duration_minutes": "Ausdauerminuten aus FitTrackee",
 }
 
 PERIOD_LABELS = {
@@ -423,6 +490,63 @@ def japanese_import_counts(record) -> bool:
     )
 
 
+def _qualifying_fittrackee_workouts(db: Session, quest: Quest):
+    """Workouts of the quest's window that may count at all.
+
+    Three filters, all of them non-negotiable. The sport must be one the user
+    enabled and the session long enough — that is what `qualifies_for_endurance`
+    records. And it must be reward-eligible: a baseline workout is history, and
+    history must not fill a quest bar any more than it pays XP.
+    """
+    from app.models import FitTrackeeWorkout
+
+    start, end = _period_window(quest)
+    q = db.query(FitTrackeeWorkout).filter(
+        FitTrackeeWorkout.qualifies_for_endurance == True,   # noqa: E712
+        FitTrackeeWorkout.reward_eligible == True,           # noqa: E712
+    )
+    if start is not None:
+        q = q.filter(FitTrackeeWorkout.workout_at >= start)
+    if end is not None:
+        q = q.filter(FitTrackeeWorkout.workout_at <= end)
+
+    rows = q.all()
+    allowed = parse_allowed_weekdays(quest.allowed_weekdays)
+    if allowed:
+        # Filtered in Python, not SQL: the weekday has to come from the local
+        # Hero date, and SQLite has no timezone-aware weekday function that
+        # would agree with app_date_of().
+        rows = [row for row in rows if weekday_is_allowed(row.workout_at, allowed)]
+    return rows
+
+
+def _count_fittrackee_workouts_in_period(db: Session, quest: Quest) -> int:
+    """Distinct qualifying activities in the window.
+
+    Distinct by external id, so re-syncing the same activity can never advance
+    a quest twice — though the unique index already makes a second row
+    impossible, and this is the belt to that pair of braces.
+    """
+    rows = _qualifying_fittrackee_workouts(db, quest)
+    return len({row.external_id for row in rows})
+
+
+def _count_fittrackee_minutes_in_period(db: Session, quest: Quest) -> int:
+    """Qualifying endurance minutes in the window.
+
+    Summed in seconds and converted once at the end. Rounding each workout to
+    whole minutes first would lose up to 59 seconds per activity, so three
+    sessions of 29:50 would count as 87 minutes instead of 89½ — the quest would
+    be harder than it says.
+    """
+    rows = _qualifying_fittrackee_workouts(db, quest)
+    seen: dict[str, int] = {}
+    for row in rows:
+        seconds = row.moving_seconds if row.moving_seconds is not None else row.duration_seconds
+        seen[row.external_id] = seconds or 0
+    return sum(seen.values()) // 60
+
+
 def _count_japanese_sessions_in_period(db: Session, quest: Quest) -> int:
     """Count confirmed Japanese sessions whose SAVE date falls in the window.
 
@@ -600,6 +724,10 @@ def count_quest_progress(db: Session, quest: Quest) -> Optional[int]:
         return _count_goal_habit_variety_in_period(db, quest)
     if qtype == "japanese_session_count":
         return _count_japanese_sessions_in_period(db, quest)
+    if qtype == "fittrackee_workout_count":
+        return _count_fittrackee_workouts_in_period(db, quest)
+    if qtype == "fittrackee_duration_minutes":
+        return _count_fittrackee_minutes_in_period(db, quest)
     return None
 
 
@@ -708,6 +836,7 @@ def create_quest(
     effort: Optional[str] = None,
     period_start: Optional[datetime] = None,
     period_end: Optional[datetime] = None,
+    allowed_weekdays: Optional[list[int]] = None,
 ) -> Quest:
     """Create and persist a user-defined quest."""
     xp, computed_stats = _resolve_quest_xp(
@@ -735,6 +864,7 @@ def create_quest(
         effort=effort if effort in EFFORT_CHOICES else None,
         period_start=period_start,
         period_end=period_end,
+        allowed_weekdays=serialize_allowed_weekdays(allowed_weekdays),
         goal_id=goal_id,
     )
     db.add(quest)

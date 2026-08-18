@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy import (
@@ -100,6 +100,11 @@ class Quest(Base):
     goal_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     # A one-off, goal-linked quest is displayed as a milestone of that goal.
     is_milestone: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Optional weekday restriction for sources that count dated activities, as
+    # a sorted list of ISO weekday digits ("2", "6,7"). NULL means "any day",
+    # which is how every quest before this behaved. Validated on write by
+    # quests.serialize_allowed_weekdays — never free-form data.
+    allowed_weekdays: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     # Python-side defaults (not server_default) so values are always supplied on
     # insert, even on databases migrated via ALTER TABLE ADD COLUMN.
@@ -372,3 +377,116 @@ class StatXpEvent(Base):
     source_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     title: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# FitTrackee — endurance activities from an external, read-only source
+# ---------------------------------------------------------------------------
+
+class FitTrackeeSport(Base):
+    """One sport as FitTrackee reports it, plus the user's endurance decision.
+
+    Sport ids are per-instance and not stable across FitTrackee installations,
+    so nothing here may be inferred from an id or from a name. A newly seen
+    sport arrives with ``counts_for_endurance = False`` and stays inert until
+    the user ticks it — which is also why a FitTrackee update that adds a sport
+    needs no code change here.
+    """
+
+    __tablename__ = "fittrackee_sports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sport_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    label: Mapped[str] = mapped_column(String(100))
+    # Whether FitTrackee still offers it. A retired sport keeps its history.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # The one user decision: does this sport count as endurance training?
+    counts_for_endurance: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class FitTrackeeWorkout(Base):
+    """One synchronised FitTrackee activity.
+
+    Deliberately holds no GPS track, no coordinates, no map, no notes, no
+    description and no media. None of that is needed to award XP, count a quest
+    or deduplicate, and storing it would move private route data into this
+    database for no purpose.
+
+    ``reward_eligible`` is the baseline flag and is written exactly once, when
+    the row is first imported. A workout that existed before the connection was
+    made is history, not an achievement, and no later edit, sport activation or
+    restart may turn it into XP.
+    """
+
+    __tablename__ = "fittrackee_workouts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # FitTrackee workout ids are short strings, not integers.
+    external_id: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    # Naive UTC, like every other timestamp in this app.
+    workout_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    # The calendar day in the application timezone, resolved once at import so
+    # weekday quests and period windows never re-derive it differently.
+    local_date: Mapped[date] = mapped_column(Date, index=True)
+
+    sport_id: Mapped[int] = mapped_column(Integer, index=True)
+    sport_label: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    moving_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    distance_km: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ave_speed: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    max_speed: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Stored and displayed when present, never used to compute XP.
+    ave_hr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    max_hr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    remote_modified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Sport enabled for endurance AND long enough. Recomputed on every change.
+    qualifies_for_endurance: Mapped[bool] = mapped_column(Boolean, default=False)
+    # False for everything imported by the baseline. Never flips to True.
+    reward_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    source_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    __table_args__ = (
+        # The two questions every quest counter asks.
+        Index("ix_ft_workouts_qualifying", "qualifies_for_endurance", "reward_eligible"),
+        Index("ix_ft_workouts_local_date", "local_date"),
+    )
+
+
+class FitTrackeeConnection(Base):
+    """The single row describing this Hero's link to one FitTrackee instance.
+
+    Holds no token and no secret — those live in a file-backed store outside the
+    database, so a database backup can never carry a usable credential.
+    """
+
+    __tablename__ = "fittrackee_connection"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    base_url: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    connected_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Set by the first successful baseline import. Until then nothing is
+    # reward-eligible, because there is no "before" to compare against.
+    baseline_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    baseline_workouts: Mapped[int] = mapped_column(Integer, default=0)
+    last_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    sports_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Sanitized text only — never a token, never a raw exception.
+    last_error: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    needs_reauth: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

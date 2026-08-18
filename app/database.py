@@ -37,6 +37,7 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("category", "VARCHAR(50)"),
         ("duration_size", "VARCHAR(20)"),
         ("effort", "VARCHAR(20)"),
+        ("allowed_weekdays", "VARCHAR(20)"),
     ],
     "habits": [
         ("category", "VARCHAR(50)"),
