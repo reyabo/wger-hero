@@ -851,8 +851,16 @@ CEFR or any assessment, and the character level is not the global Hero level —
 `HeroProfile.level` stays canonical and is computed from global XP.
 
 A version-2 SAVE states its level, rank and next threshold, so all three are
-checked against the table. A mismatch is **reported, never silently corrected**:
-the coach is the source and this table is only a check.
+checked against the table on **every import**, not only in the preview. A
+mismatch is reported, never silently corrected: the coach is the source and this
+table is only a check.
+
+`Lv 2 | 1038 / 1000` is not a valid version-2 state — 1038 cumulative XP is
+already past level 3's threshold of 1000 — and it is flagged as a defect rather
+than accepted, so a broken coach export gets found instead of hidden. The XP
+still follows the total, because the total is the part that is almost certainly
+right and withholding it would repeat the very failure this schema fixes. The
+correct form of that same progress is `Lv 3 | 1038 / 2100`.
 
 ### Rank bosses
 
@@ -882,6 +890,15 @@ An inconsistent combination grants nothing — an unknown id, a mismatched rewar
 id or name, a status without an id, an id without a status. None of that costs
 you the rest of the SAVE: the snapshot and its XP are processed normally and
 the problem is shown as a warning.
+
+**The uniqueness is on `boss_id` alone, which is correct only because this
+application has exactly one user.** There is no user table, no `user_id` and no
+owner key anywhere in the schema — `app/auth.py` protects access with a single
+password rather than separating tenants — so the table is implicitly per-user.
+If wger-hero ever gains real accounts this becomes a data model bug, because
+boss 01 could then be claimed once across the whole installation, and the
+constraint has to become composite over `(owner, boss_id)`. Two tests pin the
+single-user assumption so that change cannot pass unnoticed.
 
 **Idempotence is enforced by the boss id, not by the SAVE hash.** The hash stops
 an identical paste from importing twice, but the same boss reported in a

@@ -517,6 +517,17 @@ class JapaneseRankReward(Base):
 
     A reward is a milestone, never XP: the progression that reached the level
     was already paid for by the XP that got there.
+
+    **The uniqueness is on ``boss_id`` alone, and that is only correct because
+    this application has exactly one user.** There is no user table, no
+    ``user_id`` and no owner key anywhere in the schema; ``app.auth`` protects
+    access with a single password rather than separating tenants. The table is
+    therefore implicitly per-user.
+
+    If wger-hero ever gains real accounts, this constraint becomes a data model
+    bug — boss 01 could then be claimed once across the whole installation — and
+    it has to become composite over ``(owner, boss_id)``. A test pins the
+    single-user assumption so that change cannot pass unnoticed.
     """
 
     __tablename__ = "japanese_rank_rewards"

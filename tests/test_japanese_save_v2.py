@@ -1,14 +1,18 @@
 """SAVE version 2: cumulative XP, the version bridge, and rank boss rewards.
 
 The bug this fixes came from the coach switching to cumulative totals while
-wger-hero still read the bar as level-internal XP. Once a total passes the
-current level's threshold, the old code called it implausible and paid nothing:
+wger-hero still read the bar as level-internal XP, so a total that had passed
+the current level's threshold looked implausible and paid nothing.
 
-    Charakter: Lv 2 (見習い) | 1038 / 1000 XP
-    → "Der Levelbalken liegt über der Obergrenze. Es wird kein XP vergeben."
+The fix is the version marker plus the cross-version bridge, **not** tolerating
+a contradictory bar. `Lv 2 | 1038 / 1000` is internally inconsistent under
+version 2 — 1038 cumulative XP is already past level 3's threshold of 1000 —
+and it is treated as a defect to surface, not as a normal state. Legitimising it
+would hide broken coach exports instead of finding them.
 
 So the first thing tested here is that a version-2 SAVE is read with version-2
-semantics, and the second is that a version-1 SAVE is not.
+semantics, the second is that a version-1 SAVE is not, and the third is that a
+version-2 SAVE has to agree with the curve.
 
 Every SAVE below is synthetic.
 """
@@ -158,13 +162,77 @@ def test_only_a_version_two_save_reports_a_total():
 # The reported bug
 # ---------------------------------------------------------------------------
 
-def test_a_total_above_the_level_cap_no_longer_blocks_the_reward():
-    """The exact symptom: a cumulative bar reading past its own threshold."""
-    parsed = parse_save(save_text(level=2, rank="見習い", xp=1038, cap=1000))
+def test_the_reported_case_is_fixed_by_the_bridge_not_by_tolerating_bad_data():
+    """The user's stuck SAVE, in its *correct* version-2 form.
+
+    The coach's next export states level 3 with the level-4 threshold, which is
+    what 1038 cumulative XP actually is. That is the SAVE the bridge pays out.
+    """
+    parsed = parse_save(save_text(level=3, rank="修行者", xp=1038, cap=2100))
     result = calculate_delta(parsed, legacy_previous())
 
     assert result.xp_delta == 330
-    assert result.classification != "warning" or result.xp_delta > 0
+    assert result.classification != "warning"
+
+
+def test_a_contradictory_version_two_save_is_not_a_normal_state():
+    """`Lv 2 | 1038 / 1000` claims level 2 while holding level 3's threshold.
+
+    It must not pass silently: a coach export that says this is broken, and
+    accepting it would hide the defect rather than surface it.
+    """
+    parsed = parse_save(save_text(level=2, rank="見習い", xp=1038, cap=1000))
+    result = calculate_delta(parsed, legacy_previous())
+
+    assert result.warning is not None
+    assert "passt nicht zu 1038 Gesamt-XP" in result.warning
+    assert "Level 3" in result.warning
+
+
+def test_the_contradictory_save_still_follows_its_total():
+    """The XP is not withheld. The total is the part that is almost certainly
+    right, and withholding it would repeat the very failure this schema was
+    introduced to fix — the user would be stuck at 0 XP again."""
+    parsed = parse_save(save_text(level=2, rank="見習い", xp=1038, cap=1000))
+    result = calculate_delta(parsed, legacy_previous())
+    assert result.xp_delta == 330
+
+
+def test_a_valid_version_two_save_carries_no_curve_warning():
+    result = calculate_delta(
+        parse_save(save_text(level=3, rank="修行者", xp=1038, cap=2100)),
+        v2_previous(1000),
+    )
+    assert result.warning is None
+
+
+@pytest.mark.parametrize(
+    "level,rank,xp,cap,expected_fragment",
+    [
+        (2, "見習い", 1038, 1000, "passt nicht zu 1038 Gesamt-XP"),
+        (3, "見習い", 1038, 2100, "Rang"),
+        (3, "修行者", 1038, 9999, "nächste Schwelle"),
+        (99, "修行者", 1038, 2100, "außerhalb der Kurve"),
+    ],
+)
+def test_every_kind_of_curve_disagreement_is_reported(
+    level, rank, xp, cap, expected_fragment
+):
+    result = calculate_delta(
+        parse_save(save_text(level=level, rank=rank, xp=xp, cap=cap)), v2_previous(1000)
+    )
+    assert expected_fragment in (result.warning or "")
+
+
+def test_a_legacy_save_is_never_checked_against_the_curve():
+    """The curve describes cumulative totals. A level-internal bar would fail it
+    for no reason, so version 1 is left entirely alone."""
+    result = calculate_delta(
+        parse_save(save_text(version=None, level=2, rank="見習い", xp=808, cap=1000)),
+        legacy_previous(xp=708),
+    )
+    assert result.xp_delta == 100
+    assert result.warning is None
 
 
 def test_the_same_bar_under_version_one_still_warns():
@@ -195,13 +263,20 @@ def test_the_delta_is_a_plain_difference(old, new, cap, expected):
     assert result.reward_calculation == CALC_CUMULATIVE
 
 
-def test_a_level_up_does_not_inflate_the_delta():
-    """The old level-change formula would give (2100-2090)+2120 = 2130."""
+def test_a_valid_level_up_gives_the_plain_difference():
+    """Lv 3 2090/2100 → Lv 4 2120/3300 = +30.
+
+    Both sides are internally consistent against the curve, so this is the
+    reference case for a version-2 level change. The old level-change formula
+    would have given (2100-2090)+2120 = 2130.
+    """
     result = calculate_delta(
         parse_save(save_text(level=4, rank="探究者", xp=2120, cap=3300)),
-        v2_previous(2090),
+        v2_previous(2090, level=3, cap=2100),
     )
     assert result.xp_delta == 30
+    assert result.reward_calculation == CALC_CUMULATIVE
+    assert result.warning is None
 
 
 def test_crossing_several_levels_at_once_still_works():
@@ -646,3 +721,91 @@ def test_max_level_shows_a_full_bar():
     view = progress_view(30, 70000, 0, cumulative=True)
     assert view.at_max is True
     assert view.percent == 100
+
+
+# ---------------------------------------------------------------------------
+# What the reward uniqueness rests on
+# ---------------------------------------------------------------------------
+
+def test_the_reward_uniqueness_is_on_the_boss_id_alone():
+    """Correct only because this application has exactly one user.
+
+    With real accounts, boss 01 could be claimed once across the whole
+    installation — a genuine data model bug. The two tests below pin the
+    assumption that makes the bare key sound, so adding accounts breaks here
+    and points straight at the constraint that has to become composite.
+    """
+    from app.models import JapaneseRankReward
+
+    boss_column = JapaneseRankReward.__table__.c.boss_id
+    assert boss_column.unique is True
+
+    owner_like = [
+        c.name
+        for c in JapaneseRankReward.__table__.columns
+        if c.name in {"user_id", "owner_id", "account_id", "profile_id", "hero_id"}
+    ]
+    assert not owner_like, (
+        f"{owner_like} exists, so uniqueness must be composite over it and boss_id"
+    )
+
+
+def test_the_schema_has_no_user_concept_at_all():
+    """The single-user assumption, checked across the whole model.
+
+    `app.auth` protects access with one password rather than separating
+    tenants, and no table carries an owner. If that ever changes, every
+    'unique per installation' key in the project needs revisiting — starting
+    with japanese_rank_rewards.boss_id.
+    """
+    from app.models import Base
+
+    offenders = []
+    for table in Base.metadata.tables.values():
+        for column in table.columns:
+            if column.name in {"user_id", "owner_id", "account_id", "tenant_id"}:
+                offenders.append(f"{table.name}.{column.name}")
+
+    assert not offenders, (
+        "The schema gained an owner key: " + ", ".join(offenders) + ". "
+        "japanese_rank_rewards.boss_id must become unique per owner."
+    )
+    assert "users" not in Base.metadata.tables
+
+
+def test_two_bosses_do_not_collide_with_each_other(db):
+    """The constraint separates bosses, which is what it is for."""
+    from app.models import JapaneseRankReward
+
+    _seed_v2_baseline(db)
+    import_save(db, save_text(**BOSS_SAVE))
+    import_save(
+        db,
+        save_text(level=10, rank="熟練者", xp=10850, cap=12600, day="2026-09-01",
+                  boss="jp-rank-boss-02", status="bestanden",
+                  reward_id="jp-rank-reward-02", reward_name="修行の証"),
+    )
+    assert db.query(JapaneseRankReward).count() == 2
+
+
+def test_the_database_refuses_a_duplicate_boss_row(db):
+    """Not just the preceding query — the index itself. Two concurrent imports
+    that both pass the check still cannot both insert."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models import JapaneseRankReward
+
+    for _ in range(2):
+        db.add(
+            JapaneseRankReward(
+                boss_id="jp-rank-boss-01",
+                reward_id="jp-rank-reward-01",
+                reward_name="旅立ちの証",
+                boss_title="昇格試験 I – 旅立ちの試練",
+                source_level=5,
+                tier=1,
+            )
+        )
+    with pytest.raises(IntegrityError):
+        db.commit()
+    db.rollback()

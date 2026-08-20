@@ -45,7 +45,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 from typing import Optional
 
-from app.japanese_levels import BASELINE_LEVEL
+from app.japanese_levels import BASELINE_LEVEL, validate_level_claim
 
 # Guard against pathological pastes. Generous enough for any real SAVE block.
 # SAVE schema versions. A SAVE without the marker is Version 1 and keeps the
@@ -1007,10 +1007,29 @@ def calculate_delta(
 
     # --- version 2: the bar is a cumulative total ---------------------------
     if current.is_cumulative:
-        return replace(
-            _cumulative_delta(current, previous),
-            reported_session_xp=reported,
+        result = _cumulative_delta(current, previous)
+        # A version-2 SAVE states its level, rank and next threshold, so all
+        # three can be checked against the curve — and an internally
+        # contradictory SAVE must not pass as a normal state. `Lv 2 | 1038/1000`
+        # claims level 2 while already holding level 3's threshold; accepting
+        # that silently would hide a broken coach export instead of surfacing
+        # it. The XP still follows the total, because the total is the part
+        # that is almost certainly right and withholding it would repeat the
+        # very failure this schema was introduced to fix.
+        problems = validate_level_claim(
+            current.character_level,
+            current.level_xp,
+            current.character_rank,
+            current.level_xp_cap,
         )
+        if problems:
+            result = replace(
+                result,
+                warning="; ".join(
+                    part for part in ([result.warning] if result.warning else []) + problems
+                ),
+            )
+        return replace(result, reported_session_xp=reported)
 
     # --- legacy format: fall back to the level-bar delta --------------------
     # Method stays 'legacy_level_delta' even for its warning outcomes;
