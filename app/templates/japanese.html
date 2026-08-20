@@ -39,9 +39,54 @@
     <div><span class="label">Streak</span><span class="jp-value">{{ latest.streak }}</span></div>
     <div><span class="label">WaniKani</span><span class="jp-value">Lv {{ latest.wanikani_level or 0 }}</span></div>
     <div><span class="label">Bunpro</span><span class="jp-value">{{ latest.bunpro_level or "—" }} · {{ latest.bunpro_points or 0 }} P.</span></div>
-    <div><span class="label">Quell-Level</span><span class="jp-value">Lv {{ latest.source_character_level }} ({{ latest.source_level_xp }}/{{ latest.source_level_xp_cap }})</span></div>
+    {% set jp = jp_progress(latest) %}
+    <div><span class="label">Quell-Level</span><span class="jp-value">
+      Lv {{ latest.source_character_level }}{% if jp and jp.rank %} ({{ jp.rank }}){% endif %}
+      · {{ latest.source_level_xp }}/{{ latest.source_level_xp_cap }}
+    </span></div>
+    <div><span class="label">Rangstufe</span><span class="jp-value">
+      {% if jp and jp.tier_numeral %}{{ jp.tier_numeral }} {{ jp.tier_name }}{% else %}—{% endif %}
+    </span></div>
+    <div><span class="label">SAVE-Version</span><span class="jp-value">
+      {{ latest.save_version or 1 }}{% if jp and jp.cumulative %} · kumulativ{% endif %}
+    </span></div>
     <div><span class="label">Grammatikpunkt</span><span class="jp-value">{{ latest.current_grammar_point or "—" }}</span></div>
   </div>
+  {% set jp = jp_progress(latest) %}
+  {% if jp %}
+  <div class="quest-progress-row">
+    <span class="progress-text">
+      {% if jp.at_max %}Höchstes Level erreicht
+      {% elif jp.cumulative %}{{ jp.total_xp }} / {{ jp.span_end }} XP bis Lv {{ jp.level + 1 }}
+      {% else %}{{ latest.source_level_xp }} / {{ latest.source_level_xp_cap }} XP{% endif %}
+    </span>
+    <div class="bar-wrap">
+      <div class="bar" style="width: {{ jp.percent }}%"></div>
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if rank_rewards %}
+<section class="card">
+  <div class="card-title">Rangbelohnungen</div>
+  <ul class="day-list">
+    {% for reward in rank_rewards %}
+    <li class="day-item">
+      <div class="day-item-main">
+        <span class="day-item-title">{{ reward.reward_name }}</span>
+        <span class="muted small">{{ reward.boss_title }}</span>
+        <span class="tag">Lv {{ reward.source_level }}</span>
+        <span class="muted small">{{ reward.unlocked_at.strftime('%d.%m.%Y') }}</span>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="muted small">
+    Ein Rangstufenboss vergibt seine Belohnung genau einmal. Sie ist ein
+    dauerhafter Meilenstein und enthält keinen zusätzlichen XP-Bonus.
+  </p>
 </section>
 {% endif %}
 

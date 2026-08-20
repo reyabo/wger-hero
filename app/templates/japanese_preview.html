@@ -29,6 +29,7 @@
     <div class="summary-value">
       {% if previous %}Lv {{ previous.source_character_level }} · {{ previous.source_level_xp }}/{{ previous.source_level_xp_cap }} →{% endif %}
       Lv {{ save.character_level }} · {{ save.level_xp }}/{{ save.level_xp_cap }}
+      <span class="muted small">(SAVE-Version {{ save.save_version }}{% if save.is_cumulative %}, kumulativ{% endif %})</span>
     </div>
     <div class="summary-sub">{{ save.character_rank }}</div>
   </div>
@@ -178,5 +179,51 @@
   <div class="card-title">Rohtext</div>
   <pre class="code-block jp-raw">{{ raw_save }}</pre>
 </section>
+
+
+{% if preview.rank_boss %}
+<section class="card">
+  <div class="card-title">Rangstufenboss</div>
+  {% if preview.rank_reward_already_held %}
+  <p><strong>Belohnung bereits erhalten:</strong> {{ preview.rank_boss.reward_name }}</p>
+  <p class="muted small">
+    {{ preview.rank_boss.title }} · Ein Rangstufenboss vergibt seine Belohnung
+    genau einmal. Der übrige SAVE wird normal verarbeitet.
+  </p>
+  {% else %}
+  <p><strong>RANGSTUFENBOSS BESTANDEN</strong></p>
+  <p>{{ preview.rank_boss.title }}</p>
+  <p>Belohnung: <strong>{{ preview.rank_boss.reward_name }}</strong></p>
+  <p class="muted small">
+    Dauerhafter Meilenstein ohne zusätzlichen XP-Bonus.
+  </p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if preview.rank_problems %}
+<section class="card">
+  <div class="card-title">Boss-Ereignis unvollständig</div>
+  <ul>
+    {% for problem in preview.rank_problems %}<li>{{ problem }}</li>{% endfor %}
+  </ul>
+  <p class="muted small">
+    Es wird keine Belohnung vergeben. Der übrige SAVE bleibt davon unberührt.
+  </p>
+</section>
+{% endif %}
+
+{% if preview.curve_problems %}
+<section class="card">
+  <div class="card-title">Hinweise zur Levelkurve</div>
+  <ul>
+    {% for problem in preview.curve_problems %}<li>{{ problem }}</li>{% endfor %}
+  </ul>
+  <p class="muted small">
+    Der SAVE wird unverändert übernommen; wger-hero korrigiert die gemeldeten
+    Zahlen nicht.
+  </p>
+</section>
+{% endif %}
 
 {% endblock %}

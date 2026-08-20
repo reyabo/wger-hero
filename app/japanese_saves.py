@@ -45,7 +45,17 @@ from dataclasses import dataclass, replace
 from datetime import date
 from typing import Optional
 
+from app.japanese_levels import BASELINE_LEVEL
+
 # Guard against pathological pastes. Generous enough for any real SAVE block.
+# SAVE schema versions. A SAVE without the marker is Version 1 and keeps the
+# level-internal XP semantics it was written with; Version 2 reports cumulative
+# totals. An unknown version is refused rather than guessed at — reading a
+# future format with today's rules is how a wrong reward gets paid.
+SAVE_VERSION_LEGACY = 1
+SAVE_VERSION_CUMULATIVE = 2
+SUPPORTED_SAVE_VERSIONS = (SAVE_VERSION_LEGACY, SAVE_VERSION_CUMULATIVE)
+
 MAX_SAVE_LENGTH = 10_000
 
 START_MARKER = "状態 SAVE"
@@ -65,6 +75,10 @@ CALC_LEGACY = "legacy_level_delta"
 CALC_HISTORICAL = "historical"
 CALC_DUPLICATE = "duplicate"
 CALC_WARNING = "warning"
+# Version 2: the bar is a cumulative total, so the delta is a plain difference.
+CALC_CUMULATIVE = "cumulative_total_delta"
+# The one-off step from a legacy Lv-2 snapshot into cumulative counting.
+CALC_BRIDGE = "version_bridge"
 
 # ---------------------------------------------------------------------------
 # Deterministic session rewards
@@ -256,6 +270,37 @@ class JapaneseSave:
     session_mode_raw: Optional[str] = None
     session_completion: Optional[str] = None
     session_completion_raw: Optional[str] = None
+    # 1 for a legacy SAVE, 2 once the coach reports cumulative totals.
+    save_version: int = SAVE_VERSION_LEGACY
+    # The optional boss event, exactly as written. Validation happens in
+    # japanese_levels.validate_boss_event, never here.
+    rank_boss_id: Optional[str] = None
+    rank_boss_status: Optional[str] = None
+    rank_reward_id: Optional[str] = None
+    rank_reward_name: Optional[str] = None
+
+    @property
+    def is_cumulative(self) -> bool:
+        """Whether level_xp is a cumulative total rather than level-internal.
+
+        The one place that decides which XP semantics apply. Version 1 counts
+        inside the current level and resets on level-up; Version 2 never resets.
+        """
+        return self.save_version >= SAVE_VERSION_CUMULATIVE
+
+    @property
+    def total_xp(self) -> Optional[int]:
+        """Cumulative total, or None for a legacy SAVE where none is stated."""
+        return self.level_xp if self.is_cumulative else None
+
+    @property
+    def has_boss_event(self) -> bool:
+        return any(
+            v for v in (
+                self.rank_boss_id, self.rank_boss_status,
+                self.rank_reward_id, self.rank_reward_name,
+            )
+        )
 
     @property
     def has_session_fields(self) -> bool:
@@ -291,6 +336,13 @@ class JapaneseSave:
             "" if self.session_xp is None else str(self.session_xp),
             self.session_mode or _normalize_text(self.session_mode_raw or ""),
             self.session_completion or _normalize_text(self.session_completion_raw or ""),
+            # The version changes what the numbers mean, so two SAVEs with the
+            # same figures under different versions are not the same snapshot.
+            str(self.save_version),
+            _normalize_text(self.rank_boss_id or ""),
+            _normalize_text(self.rank_boss_status or ""),
+            _normalize_text(self.rank_reward_id or ""),
+            _normalize_text(self.rank_reward_name or ""),
         ]
         return "|".join(parts)
 
@@ -356,6 +408,14 @@ _PATTERNS: dict[str, re.Pattern] = {
         r"読解\s*(?P<reading>-?\d+)\s*\|\s*聴解\s*(?P<listening>-?\d+)\s*\|\s*"
         r"会話\s*(?P<speaking>-?\d+)\s*$"
     ),
+    # Version marker. Its absence means Version 1 — see SAVE_VERSION_LEGACY.
+    "save_version": re.compile(r"^SAVE-Version:\s*(?P<value>.*)$", re.IGNORECASE),
+    # Optional, event-only rank boss group. Written by the coach exactly once,
+    # in the SAVE directly after a boss was cleared for the first time.
+    "boss_id": re.compile(r"^Rangstufenboss-ID:\s*(?P<value>.*)$", re.IGNORECASE),
+    "boss_status": re.compile(r"^Rangstufenboss-Status:\s*(?P<value>.*)$", re.IGNORECASE),
+    "reward_id": re.compile(r"^Rangbelohnung-ID:\s*(?P<value>.*)$", re.IGNORECASE),
+    "reward_name": re.compile(r"^Rangbelohnung:\s*(?P<value>.*)$", re.IGNORECASE),
     "grammatikpunkt": re.compile(r"^Aktueller Grammatikpunkt:\s*(?P<value>.*)$", re.IGNORECASE),
     "debuffs": re.compile(r"^Debuffs:\s*(?P<value>.*)$", re.IGNORECASE),
     "vokabeln": re.compile(r"^Neue Vokabeln heute:\s*(?P<value>.*)$", re.IGNORECASE),
@@ -407,6 +467,7 @@ _MISSING_MESSAGES = {
 # Prefix → key, used to detect a line that is *meant* as a field but malformed,
 # and to detect the same field appearing twice.
 _PREFIXES = [
+    ("save-version:", "save_version"),
     ("datum:", "datum"),
     ("wanikani-level:", "wanikani_level"),
     ("bunpro-level:", "bunpro_level"),
@@ -421,6 +482,13 @@ _PREFIXES = [
     ("session-xp:", "session_xp"),
     ("session-modus:", "session_mode"),
     ("session-abschluss:", "session_completion"),
+    # The optional rank boss group. "rangbelohnung-id:" has to be tested before
+    # "rangbelohnung:", or startswith() would claim the longer line for the
+    # shorter prefix and the id would be read as a reward name.
+    ("rangstufenboss-id:", "boss_id"),
+    ("rangstufenboss-status:", "boss_status"),
+    ("rangbelohnung-id:", "reward_id"),
+    ("rangbelohnung:", "reward_name"),
 ]
 
 
@@ -708,6 +776,38 @@ def parse_save(raw: str) -> JapaneseSave:
         session_completion_raw = found["session_completion"].group("value").strip()
         session_completion = normalize_session_completion(session_completion_raw)
 
+    # The version marker decides how every number above is interpreted, so an
+    # unreadable or unsupported one is a hard parse error rather than a warning.
+    save_version = SAVE_VERSION_LEGACY
+    if "save_version" in found:
+        written = found["save_version"].group("value").strip()
+        try:
+            save_version = int(written)
+        except ValueError:
+            errors.append(FieldError(
+                "save_version",
+                f"Die SAVE-Version „{written}“ ist keine Zahl.",
+            ))
+        else:
+            if save_version not in SUPPORTED_SAVE_VERSIONS:
+                errors.append(FieldError(
+                    "save_version",
+                    f"SAVE-Version {save_version} wird nicht unterstützt "
+                    f"(unterstützt: "
+                    f"{', '.join(str(v) for v in SUPPORTED_SAVE_VERSIONS)}).",
+                ))
+
+    def _boss_field(key: str) -> Optional[str]:
+        if key not in found:
+            return None
+        value = found[key].group("value").strip()
+        return value or None
+
+    rank_boss_id = _boss_field("boss_id")
+    rank_boss_status = _boss_field("boss_status")
+    rank_reward_id = _boss_field("reward_id")
+    rank_reward_name = _boss_field("reward_name")
+
     if errors:
         raise SaveParseError(errors)
 
@@ -736,6 +836,11 @@ def parse_save(raw: str) -> JapaneseSave:
         session_mode_raw=session_mode_raw,
         session_completion=session_completion,
         session_completion_raw=session_completion_raw,
+        save_version=save_version,
+        rank_boss_id=rank_boss_id,
+        rank_boss_status=rank_boss_status,
+        rank_reward_id=rank_reward_id,
+        rank_reward_name=rank_reward_name,
     )
 
 
@@ -751,6 +856,13 @@ class PreviousState:
     level_xp: int
     level_xp_cap: int
     save_date: date
+    # Which schema wrote it. Defaulted for callers that predate versioning —
+    # every stored snapshot without a recorded version is a legacy one.
+    save_version: int = SAVE_VERSION_LEGACY
+
+    @property
+    def is_cumulative(self) -> bool:
+        return self.save_version >= SAVE_VERSION_CUMULATIVE
 
 
 @dataclass(frozen=True)
@@ -893,6 +1005,13 @@ def calculate_delta(
             reported_session_xp=reported,
         )
 
+    # --- version 2: the bar is a cumulative total ---------------------------
+    if current.is_cumulative:
+        return replace(
+            _cumulative_delta(current, previous),
+            reported_session_xp=reported,
+        )
+
     # --- legacy format: fall back to the level-bar delta --------------------
     # Method stays 'legacy_level_delta' even for its warning outcomes;
     # classification carries the warning state, reward_calculation the method.
@@ -900,6 +1019,112 @@ def calculate_delta(
         _legacy_level_delta(current, previous),
         reward_calculation=CALC_LEGACY,
         reported_session_xp=reported,
+    )
+
+
+def _cumulative_delta(
+    current: JapaneseSave, previous: PreviousState
+) -> DeltaResult:
+    """Version-2 delta: the difference between two cumulative totals.
+
+    Level changes and moving caps are irrelevant here — that is the whole point
+    of counting cumulatively. ``2090 / 2100 → 2120 / 3300`` is +30, not the
+    ``(2100 - 2090) + 2120`` the level-internal formula would produce.
+
+    Crossing several levels at once is fine for the same reason: the difference
+    stays well defined however many thresholds it passes.
+    """
+    total = current.level_xp
+
+    if previous.is_cumulative:
+        delta = total - previous.level_xp
+        if delta < 0:
+            return DeltaResult(
+                classification=CLASSIFICATION_WARNING,
+                xp_delta=0,
+                warning=(
+                    f"Die Japanisch-Gesamt-XP sind gesunken "
+                    f"({previous.level_xp} → {total}). Es wird kein XP vergeben."
+                ),
+                reward_calculation=CALC_CUMULATIVE,
+            )
+        return DeltaResult(
+            classification=CLASSIFICATION_PROGRESS,
+            xp_delta=delta,
+            reward_calculation=CALC_CUMULATIVE,
+        )
+
+    return _bridge_from_legacy(current, previous)
+
+
+def _bridge_from_legacy(
+    current: JapaneseSave, previous: PreviousState
+) -> DeltaResult:
+    """The one-off step from a legacy snapshot into cumulative counting.
+
+    Safe in exactly one case. The documented campaign began at level 2, which
+    is also the cumulative zero point, so a legacy level-2 bar already *is* a
+    cumulative total and the difference is meaningful:
+
+        legacy  Lv 2 | 708 / 1000   →   v2  Lv 3 | 1038 / 2100   =   +330
+
+    Not ``(1000 - 708) + 1038 = 1330``: that formula assumes the new bar
+    restarted at zero, which under Version 2 it does not.
+
+    From any other legacy level the old bar counts inside that level and its
+    cumulative equivalent is unknowable, so nothing is guessed. An explicit
+    Session-XP line is accepted as the user's own statement; otherwise the
+    snapshot is stored and no XP is paid.
+    """
+    total = current.level_xp
+
+    if previous.character_level == BASELINE_LEVEL:
+        delta = total - previous.level_xp
+        if delta < 0:
+            return DeltaResult(
+                classification=CLASSIFICATION_WARNING,
+                xp_delta=0,
+                warning=(
+                    f"Die neuen Gesamt-XP ({total}) liegen unter dem letzten "
+                    f"Legacy-Stand ({previous.level_xp}). Es wird kein XP vergeben."
+                ),
+                reward_calculation=CALC_BRIDGE,
+            )
+        return DeltaResult(
+            classification=CLASSIFICATION_PROGRESS,
+            xp_delta=delta,
+            warning=(
+                f"Wechsel auf SAVE-Version 2: der letzte Legacy-Stand "
+                f"(Lv {BASELINE_LEVEL}, {previous.level_xp} XP) wird als "
+                f"kumulative Baseline verwendet. Zuwachs {delta} XP."
+            ),
+            reward_calculation=CALC_BRIDGE,
+        )
+
+    if current.session_xp is not None:
+        return DeltaResult(
+            classification=CLASSIFICATION_PROGRESS,
+            xp_delta=max(0, current.session_xp),
+            warning=(
+                f"Wechsel auf SAVE-Version 2 aus Level "
+                f"{previous.character_level}: der kumulative Ausgangswert ist "
+                f"nicht bestimmbar. Es werden die angegebenen "
+                f"{max(0, current.session_xp)} Session-XP verwendet."
+            ),
+            reward_calculation=CALC_BRIDGE,
+        )
+
+    return DeltaResult(
+        classification=CLASSIFICATION_WARNING,
+        xp_delta=0,
+        warning=(
+            f"Wechsel auf SAVE-Version 2 aus Level "
+            f"{previous.character_level}: der letzte Legacy-Balken zählte "
+            f"innerhalb dieses Levels, sein kumulativer Wert ist nicht "
+            f"rekonstruierbar. Es wird kein XP vergeben — eine Zeile "
+            f"„Session-XP:“ im SAVE würde den Zuwachs eindeutig machen."
+        ),
+        reward_calculation=CALC_BRIDGE,
     )
 
 
