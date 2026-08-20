@@ -855,12 +855,51 @@ checked against the table on **every import**, not only in the preview. A
 mismatch is reported, never silently corrected: the coach is the source and this
 table is only a check.
 
-`Lv 2 | 1038 / 1000` is not a valid version-2 state — 1038 cumulative XP is
-already past level 3's threshold of 1000 — and it is flagged as a defect rather
-than accepted, so a broken coach export gets found instead of hidden. The XP
-still follows the total, because the total is the part that is almost certainly
-right and withholding it would repeat the very failure this schema fixes. The
-correct form of that same progress is `Lv 3 | 1038 / 2100`.
+**Under version 2 the cumulative total is canonical.** Level, rank and the next
+threshold are derived from it; the rest of the character line is a rendering of
+the total, not an independent fact. When the two disagree the total wins.
+
+`Lv 2 | 1038 / 1000` is therefore not a valid version-2 state — 1038 cumulative
+XP is already past level 3's threshold of 1000. Three things happen, and all
+three matter:
+
+1. **A warning is recorded.** The disagreement is surfaced, so a broken coach
+   export gets found instead of hidden.
+2. **The XP is not withheld.** It follows the total, which is the part that is
+   almost certainly right; refusing it would put you back at 0 XP — the very
+   failure this schema was introduced to fix.
+3. **The row is stored in its corrected form**, here `Lv 3 (修行者) | 1038 /
+   2100`. A row that claimed level 2 beside a total of 1038 would contradict
+   itself, and it would hand the wrong level to the next import — which reads
+   the stored snapshot as its baseline.
+
+The correction is an interpretation, never a rewrite of the source: `raw_save`
+keeps the SAVE exactly as it was written, and the preview shows the correction
+before you confirm it. A SAVE that already agrees with the curve is stored
+untouched, and a version-1 SAVE is never corrected at all — it counts inside a
+level, so the curve says nothing about it.
+
+The check runs on **every** version-2 import, not only the cumulative delta
+path: the baseline, a backdated SAVE and both session paths return before that
+branch is reached, yet the row is corrected regardless — so validating only
+there meant a contradictory claim could be corrected silently, which is exactly
+the hiding this exists to prevent.
+
+**At level 30 there is no canonical cap**, because there is no next threshold.
+Whatever the coach wrote is not adopted as fact; the stored cap is 0, meaning
+"none", and the bar renders as `MAX`. The coach specification deliberately
+leaves that format open, so nothing is warned about there — it is simply not
+believed.
+
+**A cumulative counter is measured from its high-water mark.** A SAVE whose
+total fell — a coach reset, a different campaign, a bad export — is kept as a
+warning snapshot, but it does not become the measuring point. Otherwise the
+recovery would pay the range between the two all over again.
+
+**A version-1 SAVE after a version-2 one pays nothing.** The two are different
+scales: the stored value is a cumulative total, the incoming bar counts inside
+its level. Subtracting one from the other invented XP, so it is refused with a
+warning rather than guessed at.
 
 ### Rank bosses
 

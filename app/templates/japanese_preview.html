@@ -213,6 +213,24 @@
 </section>
 {% endif %}
 
+{% if preview.canonical_correction %}
+<section class="card">
+  <div class="card-title">Gespeichert wird der Stand laut Gesamt-XP</div>
+  <p>
+    Der SAVE meldet <strong>Lv {{ save.character_level }} ({{ save.character_rank }})</strong>,
+    die {{ save.level_xp }} Gesamt-XP entsprechen aber
+    <strong>Lv {{ preview.canonical_correction.level }}
+    ({{ preview.canonical_correction.rank }})</strong>.
+  </p>
+  <p class="muted small">
+    Bei SAVE-Version 2 sind die Gesamt-XP maßgeblich; Level, Rang und Schwelle
+    werden daraus abgeleitet. Gespeichert wird der abgeleitete Stand, damit der
+    Datensatz sich nicht selbst widerspricht. Der SAVE-Text bleibt unverändert
+    erhalten, und die XP folgen wie immer den Gesamt-XP.
+  </p>
+</section>
+{% endif %}
+
 {% if preview.curve_problems %}
 <section class="card">
   <div class="card-title">Hinweise zur Levelkurve</div>

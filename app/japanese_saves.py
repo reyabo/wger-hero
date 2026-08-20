@@ -859,10 +859,21 @@ class PreviousState:
     # Which schema wrote it. Defaulted for callers that predate versioning —
     # every stored snapshot without a recorded version is a legacy one.
     save_version: int = SAVE_VERSION_LEGACY
+    # The highest cumulative total ever recorded, which is what a version-2
+    # delta measures from. Defaults to level_xp so a caller that does not know
+    # about regressions behaves exactly as before.
+    highest_total: Optional[int] = None
 
     @property
     def is_cumulative(self) -> bool:
         return self.save_version >= SAVE_VERSION_CUMULATIVE
+
+    @property
+    def measuring_total(self) -> int:
+        """What a cumulative delta is measured from."""
+        if self.highest_total is None:
+            return self.level_xp
+        return max(self.level_xp, self.highest_total)
 
 
 @dataclass(frozen=True)
@@ -894,6 +905,37 @@ class DeltaResult:
         return self.xp_delta > 0 and self.reward_calculation == CALC_DETERMINISTIC
 
 
+def _with_curve_warning(result: "DeltaResult", current: JapaneseSave) -> "DeltaResult":
+    """Append the curve disagreements of a version-2 SAVE to a result.
+
+    Applied to *every* outcome, not just the cumulative one. The baseline, the
+    historical and both session paths return before the cumulative branch is
+    reached, and the import corrects the stored level regardless of which path
+    ran — so validating only inside that branch meant a contradictory claim
+    could be corrected silently, which is precisely the hiding this check
+    exists to prevent.
+
+    A version-1 SAVE is never touched: it counts inside a level, so the curve
+    says nothing about it.
+    """
+    if not current.is_cumulative:
+        return result
+    problems = validate_level_claim(
+        current.character_level,
+        current.level_xp,
+        current.character_rank,
+        current.level_xp_cap,
+    )
+    if not problems:
+        return result
+    return replace(
+        result,
+        warning="; ".join(
+            part for part in ([result.warning] if result.warning else []) + problems
+        ),
+    )
+
+
 def calculate_delta(
     current: JapaneseSave,
     previous: Optional[PreviousState],
@@ -921,7 +963,7 @@ def calculate_delta(
         # A baseline never pays, not even with a valid session mode: the
         # historical total cannot be reconstructed from a level bar.
         if accept_baseline_credit:
-            return DeltaResult(
+            return _with_curve_warning(DeltaResult(
                 classification=CLASSIFICATION_BASELINE,
                 xp_delta=max(0, current.level_xp),
                 warning=(
@@ -930,8 +972,8 @@ def calculate_delta(
                 ),
                 reward_calculation=CALC_BASELINE,
                 reported_session_xp=reported,
-            )
-        return DeltaResult(
+            ), current)
+        return _with_curve_warning(DeltaResult(
             classification=CLASSIFICATION_BASELINE,
             xp_delta=0,
             warning=(
@@ -941,10 +983,10 @@ def calculate_delta(
             ),
             reward_calculation=CALC_BASELINE,
             reported_session_xp=reported,
-        )
+        ), current)
 
     if current.save_date < previous.save_date:
-        return DeltaResult(
+        return _with_curve_warning(DeltaResult(
             classification=CLASSIFICATION_HISTORICAL,
             xp_delta=0,
             warning=(
@@ -954,7 +996,7 @@ def calculate_delta(
             ),
             reward_calculation=CALC_HISTORICAL,
             reported_session_xp=reported,
-        )
+        ), current)
 
     # --- new format: mode + completion decide everything -------------------
     if current.has_session_fields:
@@ -966,14 +1008,14 @@ def calculate_delta(
                 f"Der SAVE meldet {reported} Session-XP. Nach den Regeln von "
                 f"wger-hero ergibt diese Sitzung {xp} XP. Verwendet werden {xp} XP."
             )
-        return DeltaResult(
+        return _with_curve_warning(DeltaResult(
             classification=CLASSIFICATION_PROGRESS,
             xp_delta=xp,
             warning=warning,
             reward_calculation=CALC_DETERMINISTIC,
             reported_session_xp=reported,
             reported_mismatch=mismatch,
-        )
+        ), current)
 
     # A session line was written but could not be understood, or only one of
     # the two was given. Never guess — snapshot only, no reward.
@@ -993,7 +1035,7 @@ def calculate_delta(
             )
         elif current.session_completion_raw is None:
             problems.append("die Zeile „Session-Abschluss:“ fehlt")
-        return DeltaResult(
+        return _with_curve_warning(DeltaResult(
             classification=CLASSIFICATION_WARNING,
             xp_delta=0,
             warning=(
@@ -1003,33 +1045,14 @@ def calculate_delta(
             ),
             reward_calculation=CALC_WARNING,
             reported_session_xp=reported,
-        )
+        ), current)
 
     # --- version 2: the bar is a cumulative total ---------------------------
     if current.is_cumulative:
-        result = _cumulative_delta(current, previous)
-        # A version-2 SAVE states its level, rank and next threshold, so all
-        # three can be checked against the curve — and an internally
-        # contradictory SAVE must not pass as a normal state. `Lv 2 | 1038/1000`
-        # claims level 2 while already holding level 3's threshold; accepting
-        # that silently would hide a broken coach export instead of surfacing
-        # it. The XP still follows the total, because the total is the part
-        # that is almost certainly right and withholding it would repeat the
-        # very failure this schema was introduced to fix.
-        problems = validate_level_claim(
-            current.character_level,
-            current.level_xp,
-            current.character_rank,
-            current.level_xp_cap,
+        return _with_curve_warning(
+            replace(_cumulative_delta(current, previous), reported_session_xp=reported),
+            current,
         )
-        if problems:
-            result = replace(
-                result,
-                warning="; ".join(
-                    part for part in ([result.warning] if result.warning else []) + problems
-                ),
-            )
-        return replace(result, reported_session_xp=reported)
 
     # --- legacy format: fall back to the level-bar delta --------------------
     # Method stays 'legacy_level_delta' even for its warning outcomes;
@@ -1056,14 +1079,17 @@ def _cumulative_delta(
     total = current.level_xp
 
     if previous.is_cumulative:
-        delta = total - previous.level_xp
+        # Measured from the high-water mark, so a total that fell once cannot
+        # make the recovery pay the same range a second time.
+        baseline = previous.measuring_total
+        delta = total - baseline
         if delta < 0:
             return DeltaResult(
                 classification=CLASSIFICATION_WARNING,
                 xp_delta=0,
                 warning=(
                     f"Die Japanisch-Gesamt-XP sind gesunken "
-                    f"({previous.level_xp} → {total}). Es wird kein XP vergeben."
+                    f"({baseline} → {total}). Es wird kein XP vergeben."
                 ),
                 reward_calculation=CALC_CUMULATIVE,
             )
@@ -1151,6 +1177,25 @@ def _legacy_level_delta(
     current: JapaneseSave, previous: PreviousState
 ) -> DeltaResult:
     """Pre-session-mode behaviour: derive the delta from the source level bar."""
+
+    # A version-1 SAVE measured against a version-2 snapshot compares two
+    # different scales: the previous value is a cumulative total, the current
+    # bar counts inside its level. Subtracting one from the other invents XP —
+    # a cumulative 1500 against a level bar of 200 produced +800 out of
+    # nothing. There is no honest conversion in this direction, so nothing is
+    # guessed.
+    if previous.is_cumulative:
+        return DeltaResult(
+            classification=CLASSIFICATION_WARNING,
+            xp_delta=0,
+            warning=(
+                "Dieser SAVE ist Version 1, der letzte Import war Version 2. "
+                "Der levelinterne Balken lässt sich nicht gegen einen "
+                "kumulativen Gesamtstand rechnen. Es wird kein XP vergeben — "
+                "ein Version-2-SAVE macht den Zuwachs eindeutig."
+            ),
+            reward_calculation=CALC_LEGACY,
+        )
 
     # Implausible caps make every derived delta meaningless.
     if current.level_xp_cap <= 0 or previous.level_xp_cap <= 0:

@@ -42,7 +42,7 @@
     {% set jp = jp_progress(latest) %}
     <div><span class="label">Quell-Level</span><span class="jp-value">
       Lv {{ latest.source_character_level }}{% if jp and jp.rank %} ({{ jp.rank }}){% endif %}
-      · {{ latest.source_level_xp }}/{{ latest.source_level_xp_cap }}
+      · {{ latest.source_level_xp }}/{% if latest.source_level_xp_cap %}{{ latest.source_level_xp_cap }}{% else %}MAX{% endif %}
     </span></div>
     <div><span class="label">Rangstufe</span><span class="jp-value">
       {% if jp and jp.tier_numeral %}{{ jp.tier_numeral }} {{ jp.tier_name }}{% else %}—{% endif %}
@@ -147,7 +147,7 @@ Session-Abschluss: vollständig</pre>
       {% for imp in recent_imports %}
       <tr>
         <td><a href="/japanese/imports/{{ imp.id }}">{{ imp.save_date.strftime('%d.%m.%Y') }}</a></td>
-        <td class="muted small">Lv {{ imp.source_character_level }} · {{ imp.source_level_xp }}/{{ imp.source_level_xp_cap }}</td>
+        <td class="muted small">Lv {{ imp.source_character_level }} · {{ imp.source_level_xp }}/{% if imp.source_level_xp_cap %}{{ imp.source_level_xp_cap }}{% else %}MAX{% endif %}</td>
         <td><span class="tag jp-tag-{{ imp.classification }}">{{ imp.classification }}</span></td>
         <td class="right xp-reward">{% if imp.xp_awarded %}+{{ imp.xp_awarded }}{% else %}0{% endif %}</td>
       </tr>

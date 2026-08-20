@@ -16,11 +16,18 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.japanese_levels import RankBoss, validate_boss_event, validate_level_claim
+from app.japanese_levels import (
+    RankBoss,
+    canonical_state,
+    validate_boss_event,
+    validate_level_claim,
+)
 from app.models import JapaneseRankReward
 from app.japanese_saves import (
+    SAVE_VERSION_CUMULATIVE,
     SAVE_VERSION_LEGACY,
     CALC_DUPLICATE,
     CLASSIFICATION_DUPLICATE,
@@ -59,6 +66,10 @@ class PreviewResult:
     # What the SAVE's own level claim looks like against the curve, and what
     # its optional boss event would do. Both are computed, never written.
     curve_problems: list[str] = field(default_factory=list)
+    # For version 2, the state the total actually represents — which is what
+    # the import will store. Present only when it differs from the claim, so
+    # the screen can show the correction before it is confirmed.
+    canonical_correction: Optional[object] = None
     rank_boss: Optional[RankBoss] = None
     rank_reward_already_held: bool = False
     rank_problems: list[str] = field(default_factory=list)
@@ -145,12 +156,29 @@ def _find_duplicate(db: Session, digest: str) -> Optional[JapaneseSaveImport]:
     )
 
 
-def _previous_state(row: Optional[JapaneseSaveImport]) -> Optional[PreviousState]:
+def _previous_state(
+    db: Session, row: Optional[JapaneseSaveImport]
+) -> Optional[PreviousState]:
     if row is None:
         return None
     save_date = row.save_date
     if isinstance(save_date, datetime):
         save_date = save_date.date()
+    # A cumulative counter is measured from the highest total ever recorded,
+    # not from the newest row. A SAVE whose total fell — a coach reset, a
+    # different campaign, a bad export — is kept as a warning snapshot, but if
+    # it became the measuring point the next import would pay the range between
+    # the two all over again. The high-water mark makes that impossible.
+    highest = row.source_level_xp
+    if (row.save_version or SAVE_VERSION_LEGACY) >= SAVE_VERSION_CUMULATIVE:
+        peak = (
+            db.query(func.max(JapaneseSaveImport.source_level_xp))
+            .filter(JapaneseSaveImport.save_version >= SAVE_VERSION_CUMULATIVE)
+            .scalar()
+        )
+        if peak is not None:
+            highest = max(highest, peak)
+
     return PreviousState(
         character_level=row.source_character_level,
         level_xp=row.source_level_xp,
@@ -159,6 +187,7 @@ def _previous_state(row: Optional[JapaneseSaveImport]) -> Optional[PreviousState
         # Rows written before versioning existed carry NULL and are legacy,
         # which is exactly what they are.
         save_version=row.save_version or SAVE_VERSION_LEGACY,
+        highest_total=highest,
     )
 
 
@@ -251,7 +280,7 @@ def preview_save(
     previous = get_latest_import(db)
     delta = calculate_delta(
         save,
-        _previous_state(previous),
+        _previous_state(db, previous),
         accept_baseline_credit=accept_baseline_credit,
     )
 
@@ -271,12 +300,19 @@ def preview_save(
             save.character_level, save.level_xp, save.character_rank, save.level_xp_cap
         )
 
+    correction = None
+    if save.is_cumulative:
+        canonical = canonical_state(save.level_xp)
+        if (canonical.level, canonical.rank) != (save.character_level, save.character_rank):
+            correction = canonical
+
     reward_state = rank_reward_state(db, save)
 
     return PreviewResult(
         save=save,
         delta=delta,
         curve_problems=curve_problems,
+        canonical_correction=correction,
         rank_boss=reward_state.boss,
         rank_reward_already_held=reward_state.boss is not None and reward_state.already_held,
         rank_problems=reward_state.problems,
@@ -318,10 +354,32 @@ def import_save(
     previous = get_latest_import(db)
     delta = calculate_delta(
         save,
-        _previous_state(previous),
+        _previous_state(db, previous),
         accept_baseline_credit=accept_baseline_credit,
     )
     awarded = max(0, delta.xp_delta)
+
+    # Under version 2 the cumulative total is canonical and the rest of the
+    # character line is a rendering of it. A SAVE whose level, rank or cap
+    # disagrees is stored in its *corrected* form: the delta already follows
+    # the total, and persisting the claim beside it would leave a row that
+    # contradicts itself and would hand the wrong level to the next import.
+    # The disagreement is not lost — it is in the warning, and raw_save keeps
+    # the SAVE exactly as it was written.
+    stored_level = save.character_level
+    stored_rank = save.character_rank
+    stored_cap = save.level_xp_cap
+    if save.is_cumulative:
+        canonical = canonical_state(save.level_xp)
+        stored_level = canonical.level
+        stored_rank = canonical.rank
+        # At the ceiling there is no next threshold, so there is no canonical
+        # cap either — and taking the claim instead would persist exactly the
+        # contradiction this correction exists to remove. 0 records "none".
+        # The coach specification deliberately leaves the right-hand side of a
+        # level-30 bar undefined, so whatever it wrote is not warned about; it
+        # is simply not adopted as fact.
+        stored_cap = canonical.next_threshold if canonical.next_threshold is not None else 0
 
     try:
         record = JapaneseSaveImport(
@@ -330,11 +388,11 @@ def import_save(
             wanikani_level=save.wanikani_level,
             bunpro_level=save.bunpro_level,
             bunpro_points=save.bunpro_points,
-            source_character_level=save.character_level,
-            source_character_rank=save.character_rank,
+            source_character_level=stored_level,
+            source_character_rank=stored_rank,
             save_version=save.save_version,
             source_level_xp=save.level_xp,
-            source_level_xp_cap=save.level_xp_cap,
+            source_level_xp_cap=stored_cap,
             rank_boss_id=save.rank_boss_id,
             rank_boss_status=save.rank_boss_status,
             rank_reward_id=save.rank_reward_id,

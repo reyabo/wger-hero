@@ -809,3 +809,293 @@ def test_the_database_refuses_a_duplicate_boss_row(db):
     with pytest.raises(IntegrityError):
         db.commit()
     db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# Under version 2 the cumulative total is canonical
+# ---------------------------------------------------------------------------
+
+def test_the_total_decides_level_rank_and_cap():
+    from app.japanese_levels import canonical_state
+
+    state = canonical_state(1038)
+    assert (state.level, state.rank, state.next_threshold) == (3, "修行者", 2100)
+
+
+@pytest.mark.parametrize(
+    "total,level,rank,cap",
+    [
+        (0, 2, "見習い", 1000),
+        (999, 2, "見習い", 1000),
+        (1000, 3, "修行者", 2100),
+        (2100, 4, "探究者", 3300),
+        (65800, 30, "言霊の覇者", None),
+        (99999, 30, "言霊の覇者", None),
+    ],
+)
+def test_the_canonical_state_follows_the_curve(total, level, rank, cap):
+    from app.japanese_levels import canonical_state
+
+    state = canonical_state(total)
+    assert (state.level, state.rank, state.next_threshold) == (level, rank, cap)
+
+
+def test_a_contradictory_claim_is_stored_in_its_corrected_form(db):
+    """The row must not disagree with itself, and the next import must not be
+    handed the wrong level."""
+    _seed_v2_baseline(db, xp=1000)
+    result = import_save(db, save_text(level=2, rank="見習い", xp=1038, cap=1000))
+    row = result.created
+
+    assert row.source_character_level == 3
+    assert row.source_character_rank == "修行者"
+    assert row.source_level_xp_cap == 2100
+    assert row.source_level_xp == 1038
+
+
+def test_correcting_the_claim_does_not_block_the_xp(db):
+    _seed_v2_baseline(db, xp=1000)
+    result = import_save(db, save_text(level=2, rank="見習い", xp=1038, cap=1000))
+
+    assert result.xp_awarded == 38
+    assert result.created.warning_text
+
+
+def test_the_disagreement_is_still_reported(db):
+    """Corrected, not hidden."""
+    _seed_v2_baseline(db, xp=1000)
+    result = import_save(db, save_text(level=2, rank="見習い", xp=1038, cap=1000))
+
+    assert "passt nicht zu 1038 Gesamt-XP" in result.created.warning_text
+
+
+def test_the_raw_save_keeps_what_was_actually_written(db):
+    """The correction is a stored interpretation, never a rewrite of the source."""
+    _seed_v2_baseline(db, xp=1000)
+    result = import_save(db, save_text(level=2, rank="見習い", xp=1038, cap=1000))
+
+    assert "Lv 2 (見習い) | 1038 / 1000 XP" in result.created.raw_save
+
+
+def test_a_consistent_version_two_save_is_stored_unchanged(db):
+    """Correction only ever moves a row onto the curve; a row already on it
+    must come out byte-for-byte the same."""
+    _seed_v2_baseline(db, xp=1000)
+    result = import_save(db, save_text(level=3, rank="修行者", xp=1038, cap=2100))
+    row = result.created
+
+    assert (row.source_character_level, row.source_character_rank, row.source_level_xp_cap) == (
+        3, "修行者", 2100,
+    )
+    assert row.warning_text is None
+
+
+def test_a_legacy_save_is_never_corrected(db):
+    """Version 1 counts inside a level, so the curve says nothing about it and
+    its claim is the only truth there is."""
+    result = import_save(
+        db, save_text(version=None, level=2, rank="見習い", xp=708, cap=1000)
+    )
+    row = result.created
+
+    assert row.source_character_level == 2
+    assert row.source_character_rank == "見習い"
+    assert row.source_level_xp_cap == 1000
+
+
+def test_the_next_import_measures_from_the_corrected_row(db):
+    """The point of correcting: a contradictory row would otherwise hand the
+    wrong level to every later delta."""
+    _seed_v2_baseline(db, xp=1000)
+    import_save(db, save_text(level=2, rank="見習い", xp=1038, cap=1000))
+
+    later = import_save(
+        db, save_text(level=3, rank="修行者", xp=1100, cap=2100, day="2026-08-20")
+    )
+    assert later.xp_awarded == 62          # 1100 - 1038, measured from the total
+    assert later.created.warning_text is None
+
+
+def test_max_level_adopts_no_cap_at_all(db):
+    """Level 30 has no next threshold, so there is no canonical cap to store.
+    Taking the claim instead would persist the very contradiction the
+    correction exists to remove, so 0 records "none".
+
+    Superseded the earlier expectation that the coach's cap was kept: an
+    adversarial pass showed that let a self-contradicting row through.
+    """
+    _seed_v2_baseline(db, xp=65800)
+    result = import_save(
+        db, save_text(level=30, rank="言霊の覇者", xp=66000, cap=65800, day="2026-08-20")
+    )
+    assert result.created.source_character_level == 30
+    assert result.created.source_level_xp_cap == 0
+
+
+def test_the_stored_row_always_agrees_with_the_curve(db):
+    """The invariant itself, over a spread of contradictory claims."""
+    from app.japanese_levels import level_for_total_xp
+
+    _seed_v2_baseline(db, xp=0)
+    for n, (level, rank, xp, cap) in enumerate(
+        [(2, "見習い", 1038, 1000), (9, "使い手", 2200, 10800), (3, "修行者", 5000, 2100)]
+    ):
+        result = import_save(
+            db, save_text(level=level, rank=rank, xp=xp, cap=cap, day=f"2026-09-0{n + 1}")
+        )
+        row = result.created
+        assert row.source_character_level == level_for_total_xp(row.source_level_xp)
+
+
+# ---------------------------------------------------------------------------
+# Gaps an adversarial pass found in the first version of the correction
+# ---------------------------------------------------------------------------
+
+def test_level_thirty_has_no_canonical_cap_so_none_is_adopted(db):
+    """At the ceiling there is no next threshold, so taking the claim would
+    persist exactly the contradiction the correction removes. The coach spec
+    leaves the right-hand side undefined there, so it is not warned about —
+    it is simply not adopted as fact."""
+    _seed_v2_baseline(db, xp=65800)
+    result = import_save(
+        db, save_text(level=30, rank="言霊の覇者", xp=66000, cap=99999, day="2026-08-20")
+    )
+    assert result.created.source_character_level == 30
+    assert result.created.source_level_xp_cap == 0
+
+
+def test_level_thirty_still_pays_normally(db):
+    _seed_v2_baseline(db, xp=65800)
+    result = import_save(
+        db, save_text(level=30, rank="言霊の覇者", xp=66000, cap=99999, day="2026-08-20")
+    )
+    assert result.xp_awarded == 200
+
+
+@pytest.mark.parametrize(
+    "extra,label",
+    [
+        (("Session-Modus: GENKI", "Session-Abschluss: vollständig"), "deterministic"),
+        (("Session-Modus: unsinn", "Session-Abschluss: vollständig"), "unreadable"),
+    ],
+)
+def test_a_session_line_does_not_smuggle_a_claim_past_the_curve(db, extra, label):
+    """Those paths return before the cumulative branch, but the import corrects
+    the level anyway — so validating only inside that branch meant a silent
+    correction, which is the hiding this check exists to prevent."""
+    _seed_v2_baseline(db, xp=1000)
+    result = import_save(
+        db, save_text(level=2, rank="見習い", xp=1038, cap=1000, extra_lines=extra)
+    )
+
+    assert result.created.source_character_level == 3
+    assert "passt nicht zu 1038 Gesamt-XP" in (result.created.warning_text or "")
+
+
+def test_the_first_import_is_also_checked_against_the_curve(db):
+    """The baseline path returns early too."""
+    result = import_save(db, save_text(level=2, rank="見習い", xp=1038, cap=1000))
+    assert "passt nicht zu 1038 Gesamt-XP" in (result.created.warning_text or "")
+
+
+def test_a_backdated_save_is_also_checked_against_the_curve(db):
+    _seed_v2_baseline(db, xp=1000, day="2026-08-18")
+    result = import_save(
+        db, save_text(level=2, rank="見習い", xp=1038, cap=1000, day="2026-08-01")
+    )
+    assert "passt nicht zu 1038 Gesamt-XP" in (result.created.warning_text or "")
+
+
+def test_a_legacy_save_is_still_never_checked(db):
+    result = import_save(
+        db, save_text(version=None, level=2, rank="見習い", xp=708, cap=1000)
+    )
+    assert result.created.warning_text is None or "Gesamt-XP" not in result.created.warning_text
+
+
+# ---------------------------------------------------------------------------
+# A cumulative counter is measured from its high-water mark
+# ---------------------------------------------------------------------------
+
+def test_a_total_that_fell_does_not_become_the_measuring_point(db):
+    """Otherwise the recovery pays the range between the two all over again."""
+    _seed_v2_baseline(db, xp=2000)
+
+    dropped = import_save(db, save_text(xp=1500, cap=2100, day="2026-08-19"))
+    recovered = import_save(db, save_text(xp=2000, cap=2100, day="2026-08-20"))
+
+    assert dropped.xp_awarded == 0
+    assert recovered.xp_awarded == 0
+
+
+def test_progress_past_the_high_water_mark_still_pays(db):
+    _seed_v2_baseline(db, xp=2000)
+    import_save(db, save_text(xp=1500, cap=2100, day="2026-08-19"))
+    import_save(db, save_text(xp=2000, cap=2100, day="2026-08-20"))
+
+    ahead = import_save(db, save_text(xp=2050, cap=2100, day="2026-08-21"))
+    assert ahead.xp_awarded == 50
+
+
+def test_the_dropped_snapshot_is_still_kept(db):
+    """It is a record of what the coach reported, warning and all."""
+    _seed_v2_baseline(db, xp=2000)
+    result = import_save(db, save_text(xp=1500, cap=2100, day="2026-08-19"))
+
+    assert result.created is not None
+    assert result.created.source_level_xp == 1500
+    assert "gesunken" in (result.created.warning_text or "")
+
+
+def test_the_high_water_mark_ignores_legacy_rows(db):
+    """Legacy totals are level-internal and are not on the same scale."""
+    import_save(db, save_text(version=None, level=2, rank="見習い", xp=708, cap=1000))
+    result = import_save(
+        db, save_text(level=3, rank="修行者", xp=1038, cap=2100, day="2026-08-20")
+    )
+    assert result.xp_awarded == 330      # the bridge, not a high-water comparison
+
+
+def test_a_normal_ascending_chain_is_unaffected(db):
+    _seed_v2_baseline(db, xp=1000)
+    for n, total in enumerate((1038, 1100, 1250), start=1):
+        result = import_save(db, save_text(xp=total, cap=2100, day=f"2026-08-2{n}"))
+    assert result.created.source_level_xp == 1250
+    assert db.query(HeroProfile).one().total_xp == 250
+
+
+def test_a_version_one_save_after_a_version_two_one_invents_nothing(db):
+    """The two scales are not comparable: the previous value is a cumulative
+    total, the current bar counts inside its level. Subtracting one from the
+    other produced +800 out of nothing."""
+    _seed_v2_baseline(db, xp=1500)
+    result = import_save(
+        db, save_text(version=None, level=4, rank="探究者", xp=200, cap=3300, day="2026-08-20")
+    )
+
+    assert result.xp_awarded == 0
+    assert "Version 1" in result.created.warning_text
+    assert "kumulativen Gesamtstand" in result.created.warning_text
+
+
+def test_that_refusal_does_not_touch_a_normal_legacy_chain(db):
+    import_save(db, save_text(version=None, level=2, rank="見習い", xp=708, cap=1000))
+    result = import_save(
+        db, save_text(version=None, level=2, rank="見習い", xp=808, cap=1000, day="2026-08-20")
+    )
+    assert result.xp_awarded == 100
+    assert result.created.warning_text is None
+
+
+def test_a_zero_cap_at_max_level_no_longer_misleads(db):
+    """The stored cap of 0 used to surface as "Unplausible XP-Obergrenze",
+    blaming the data instead of the schema mismatch."""
+    _seed_v2_baseline(db, xp=65800)
+    import_save(
+        db, save_text(level=30, rank="言霊の覇者", xp=66000, cap=99999, day="2026-08-20")
+    )
+    result = import_save(
+        db, save_text(version=None, level=30, rank="言霊の覇者", xp=120, cap=3000, day="2026-08-21")
+    )
+    assert "Version 1" in result.created.warning_text
+    assert "Unplausible" not in result.created.warning_text

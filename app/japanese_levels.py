@@ -295,6 +295,29 @@ def validate_boss_event(
     return boss, problems
 
 
+@dataclass(frozen=True)
+class CanonicalState:
+    """Level, rank and next threshold derived from a cumulative total.
+
+    Under version 2 the total is the fact and the rest of the character line is
+    a rendering of it. When the two disagree the total wins, because it is what
+    every delta is computed from — storing the claimed level beside a total that
+    contradicts it would leave a row that disagrees with itself and would feed
+    the wrong level into the next import.
+    """
+
+    level: int
+    rank: str
+    next_threshold: Optional[int]
+
+
+def canonical_state(total_xp: int) -> CanonicalState:
+    """The state a cumulative total actually represents."""
+    level = level_for_total_xp(total_xp)
+    row = _BY_LEVEL[level]
+    return CanonicalState(level=level, rank=row.rank, next_threshold=row.next_threshold)
+
+
 # ---------------------------------------------------------------------------
 # What a view needs
 # ---------------------------------------------------------------------------
