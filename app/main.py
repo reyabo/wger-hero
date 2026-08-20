@@ -189,7 +189,38 @@ def _csrf_input(request: Request) -> Markup:
     )
 
 
+def _rank_rewards(db: Session):
+    """Unlocked Japanese rank rewards, newest first."""
+    from app.models import JapaneseRankReward
+
+    return (
+        db.query(JapaneseRankReward)
+        .order_by(JapaneseRankReward.source_level.desc())
+        .all()
+    )
+
+
+def _jp_progress(record) -> object:
+    """Bounded curve position for a Japanese snapshot, for the templates.
+
+    A global rather than a per-route context value, so every page that renders
+    a snapshot gets the same bounded numbers without four routes having to
+    remember to pass them.
+    """
+    from app.japanese_levels import progress_view
+
+    if record is None:
+        return None
+    return progress_view(
+        record.source_character_level,
+        record.source_level_xp,
+        record.source_level_xp_cap,
+        cumulative=(getattr(record, "save_version", 1) or 1) >= 2,
+    )
+
+
 templates.env.globals["csrf_input"] = _csrf_input
+templates.env.globals["jp_progress"] = _jp_progress
 
 # Paths a form may ask to return to. An open redirect would let a crafted link
 # bounce the user off this host, so the value is matched against this list
@@ -1398,6 +1429,7 @@ async def japanese_page(request: Request, db: Session = Depends(get_db)):
             **_hero_context(hero),
             "recent_imports": get_recent_imports(db),
             "latest": get_latest_import(db),
+                "rank_rewards": _rank_rewards(db),
             "legacy_habit": find_legacy_japanese_habit(db),
         },
     )
@@ -1434,6 +1466,7 @@ async def japanese_preview(request: Request, db: Session = Depends(get_db)):
                 **_hero_context(hero),
                 "recent_imports": get_recent_imports(db),
                 "latest": get_latest_import(db),
+                "rank_rewards": _rank_rewards(db),
                 "errors": exc.errors,
                 "raw_save": raw,
             },
@@ -1480,6 +1513,7 @@ async def japanese_import(request: Request, db: Session = Depends(get_db)):
                 **_hero_context(hero),
                 "recent_imports": get_recent_imports(db),
                 "latest": get_latest_import(db),
+                "rank_rewards": _rank_rewards(db),
                 "errors": exc.errors,
                 "raw_save": raw,
             },

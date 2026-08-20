@@ -288,8 +288,22 @@ class JapaneseSaveImport(Base):
     # Progress inside the *source* level bar — not cumulative lifetime XP.
     source_character_level: Mapped[int] = mapped_column(Integer, default=1)
     source_character_rank: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # Which SAVE schema wrote this row, and therefore what the two numbers
+    # below mean. 1 = XP inside the current source level, which resets on
+    # level-up. 2 = cumulative total since the level-2 baseline, which never
+    # resets. Existing rows predate versioning and are all 1.
+    save_version: Mapped[int] = mapped_column(Integer, default=1)
+    # Deliberately reused rather than renamed: under version 1 this is the
+    # level-internal value it always was, under version 2 the cumulative total.
+    # `save_version` says which, and no historical row is rewritten.
     source_level_xp: Mapped[int] = mapped_column(Integer, default=0)
     source_level_xp_cap: Mapped[int] = mapped_column(Integer, default=0)
+    # The optional rank boss event, as reported. Presence here is a record of
+    # what the SAVE said; whether a reward was granted lives in
+    # JapaneseRankReward, which is what makes granting idempotent.
+    rank_boss_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    rank_boss_status: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    rank_reward_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     reported_session_xp: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     vocabulary_score: Mapped[int] = mapped_column(Integer, default=0)
@@ -490,3 +504,41 @@ class FitTrackeeConnection(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class JapaneseRankReward(Base):
+    """One permanently unlocked rank-boss reward.
+
+    Separate from the snapshot on purpose. Deduplicating rewards by SAVE hash
+    would fail the moment the same boss is reported in a differently worded
+    SAVE — a re-export, a corrected line, a second paste — and would hand out
+    the badge twice. The unique boss id is the guarantee instead, enforced by
+    the database rather than by a preceding query.
+
+    A reward is a milestone, never XP: the progression that reached the level
+    was already paid for by the XP that got there.
+
+    **The uniqueness is on ``boss_id`` alone, and that is only correct because
+    this application has exactly one user.** There is no user table, no
+    ``user_id`` and no owner key anywhere in the schema; ``app.auth`` protects
+    access with a single password rather than separating tenants. The table is
+    therefore implicitly per-user.
+
+    If wger-hero ever gains real accounts, this constraint becomes a data model
+    bug — boss 01 could then be claimed once across the whole installation — and
+    it has to become composite over ``(owner, boss_id)``. A test pins the
+    single-user assumption so that change cannot pass unnoticed.
+    """
+
+    __tablename__ = "japanese_rank_rewards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    boss_id: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    reward_id: Mapped[str] = mapped_column(String(50))
+    reward_name: Mapped[str] = mapped_column(String(100))
+    boss_title: Mapped[str] = mapped_column(String(200))
+    source_level: Mapped[int] = mapped_column(Integer)
+    tier: Mapped[int] = mapped_column(Integer)
+    # Which import first reported it, for the audit trail.
+    import_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    unlocked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

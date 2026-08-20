@@ -752,6 +752,260 @@ it still grants **global XP**, but **no attribute XP** — its amount comes from
 coach-maintained progress bar rather than a wger-hero rule, so only fully
 specified sessions move the radar.
 
+## Japanese SAVE version 2
+
+The coach moved from level-internal XP to cumulative totals. Both schemas are
+read; which one applies is decided by one line.
+
+```text
+SAVE-Version: 2
+```
+
+No marker means version 1. An unrecognised version is **refused**, not guessed
+at — reading a future format with today's rules is how a wrong reward gets paid.
+
+### What changed, and why it broke
+
+Under version 1, `708 / 1000 XP` meant "708 of the 1000 XP needed inside this
+level", and the left number reset on level-up. Under version 2 it never resets:
+`1038 / 2100` means 1038 cumulative XP since the level-2 baseline, with level 4
+starting at 2100.
+
+That difference produced the bug this fixes. Once a cumulative total passes the
+current level's threshold the bar legitimately reads past it — `1038 / 1000` —
+and the version-1 rule that a bar above its cap is implausible refused to award
+anything:
+
+```text
+Der Levelbalken liegt über der Obergrenze (1038 / 1000). Es wird kein XP vergeben.
+```
+
+That rule is still right for version 1 and still applies there. Version 2 simply
+does not use it.
+
+### Deltas
+
+| Case | Rule |
+|---|---|
+| two version-2 SAVEs | `new_total - old_total` |
+| two version-1 SAVEs | unchanged: same level → bar difference, +1 level → `(old_cap - old) + new` |
+| version 1 → version 2 | the bridge below |
+
+Level changes and moving caps are irrelevant to a cumulative delta — that is the
+point of counting cumulatively:
+
+```text
+1038 / 2100  →  1068 / 2100  =  +30
+2090 / 2100  →  2120 / 3300  =  +30      (a level-up, not +2130)
+3290 / 3300  →  3335 / 4600  =  +45
+```
+
+Crossing several levels at once works for the same reason. A falling total
+awards nothing and **never deducts**.
+
+### The version bridge
+
+The campaign began at level 2, which is also the cumulative zero point, so a
+legacy level-2 bar already *is* a cumulative total:
+
+```text
+legacy  Lv 2 | 708 / 1000     →     v2  Lv 3 | 1038 / 2100     =  +330 XP
+```
+
+Not `(1000 - 708) + 1038 = 1330`: that formula assumes the new bar restarted at
+zero, which under version 2 it does not.
+
+From any **other** legacy level the old bar counted inside that level and its
+cumulative equivalent is unknowable, so nothing is guessed. An explicit
+`Session-XP:` line is accepted as your own statement of the increment;
+otherwise the snapshot is stored and no XP is paid.
+
+### The curve
+
+Thirty levels, defined once in `app/japanese_levels.py` and never duplicated
+into a module or a template. Level 1 is historical prologue; level 2 is the
+cumulative zero point.
+
+| Lv | Rank | from | Lv | Rank | from |
+|---:|---|---:|---:|---|---:|
+| 2 | 見習い | 0 | 17 | 練達者 | 25500 |
+| 3 | 修行者 | 1000 | 18 | 達人 | 28000 |
+| 4 | 探究者 | 2100 | 19 | 師範代 | 30600 |
+| 5 | 挑戦者 | 3300 | 20 | 師範 | 33300 |
+| 6 | 旅人 | 4600 | 21 | 言葉の達人 | 36100 |
+| 7 | 冒険者 | 6000 | 22 | 声の達人 | 39000 |
+| 8 | 実践者 | 7500 | 23 | 文の達人 | 42000 |
+| 9 | 使い手 | 9100 | 24 | 会話の達人 | 45100 |
+| 10 | 熟練者 | 10800 | 25 | 言の葉の達人 | 48300 |
+| 11 | 言葉の旅人 | 12600 | 26 | 言霊使い | 51600 |
+| 12 | 文の探究者 | 14500 | 27 | 言の葉の賢者 | 55000 |
+| 13 | 声の使い手 | 16500 | 28 | 言霊の賢者 | 58500 |
+| 14 | 会話の使い手 | 18600 | 29 | 言霊の導師 | 62100 |
+| 15 | 言葉の使い手 | 20800 | 30 | 言霊の覇者 | 65800 |
+| 16 | 熟達者 | 23100 | | | |
+
+Six tiers of five levels: I 旅立ち, II 修行, III 実践, IV 熟練, V 奥義, VI 言霊.
+
+**This is coach gamification only.** Ranks and tiers carry no relation to JLPT,
+CEFR or any assessment, and the character level is not the global Hero level —
+`HeroProfile.level` stays canonical and is computed from global XP.
+
+A version-2 SAVE states its level, rank and next threshold, so all three are
+checked against the table on **every import**, not only in the preview. A
+mismatch is reported, never silently corrected: the coach is the source and this
+table is only a check.
+
+**Under version 2 the cumulative total is canonical.** Level, rank and the next
+threshold are derived from it; the rest of the character line is a rendering of
+the total, not an independent fact. When the two disagree the total wins.
+
+`Lv 2 | 1038 / 1000` is therefore not a valid version-2 state — 1038 cumulative
+XP is already past level 3's threshold of 1000. Three things happen, and all
+three matter:
+
+1. **A warning is recorded.** The disagreement is surfaced, so a broken coach
+   export gets found instead of hidden.
+2. **The XP is not withheld.** It follows the total, which is the part that is
+   almost certainly right; refusing it would put you back at 0 XP — the very
+   failure this schema was introduced to fix.
+3. **The row is stored in its corrected form**, here `Lv 3 (修行者) | 1038 /
+   2100`. A row that claimed level 2 beside a total of 1038 would contradict
+   itself, and it would hand the wrong level to the next import — which reads
+   the stored snapshot as its baseline.
+
+The correction is an interpretation, never a rewrite of the source: `raw_save`
+keeps the SAVE exactly as it was written, and the preview shows the correction
+before you confirm it. A SAVE that already agrees with the curve is stored
+untouched, and a version-1 SAVE is never corrected at all — it counts inside a
+level, so the curve says nothing about it.
+
+The check runs on **every** version-2 import, not only the cumulative delta
+path: the baseline, a backdated SAVE and both session paths return before that
+branch is reached, yet the row is corrected regardless — so validating only
+there meant a contradictory claim could be corrected silently, which is exactly
+the hiding this exists to prevent.
+
+**At level 30 there is no canonical cap**, because there is no next threshold.
+Whatever the coach wrote is not adopted as fact; the stored cap is 0, meaning
+"none", and the bar renders as `MAX`. The coach specification deliberately
+leaves that format open, so nothing is warned about there — it is simply not
+believed.
+
+**A cumulative counter is measured from its high-water mark.** A SAVE whose
+total fell — a coach reset, a different campaign, a bad export — is kept as a
+warning snapshot, but it does not become the measuring point. Otherwise the
+recovery would pay the range between the two all over again.
+
+**A version-1 SAVE after a version-2 one pays nothing.** The two are different
+scales: the stored value is a cumulative total, the incoming bar counts inside
+its level. Subtracting one from the other invented XP, so it is refused with a
+warning rather than guessed at.
+
+### Rank bosses
+
+Six milestones, one at the end of each tier. A SAVE written directly after a
+boss was first cleared may carry an optional, event-only group:
+
+```text
+Rangstufenboss-ID: jp-rank-boss-01
+Rangstufenboss-Status: bestanden
+Rangbelohnung-ID: jp-rank-reward-01
+Rangbelohnung: 旅立ちの証
+```
+
+| Boss | Lv | Title | Reward |
+|---|---:|---|---|
+| `jp-rank-boss-01` | 5 | 昇格試験 I – 旅立ちの試練 | 旅立ちの証 |
+| `jp-rank-boss-02` | 10 | 昇格試験 II – 修行の試練 | 修行の証 |
+| `jp-rank-boss-03` | 15 | 昇格試験 III – 実践の試練 | 実践の証 |
+| `jp-rank-boss-04` | 20 | 昇格試験 IV – 熟練の試練 | 熟練の証 |
+| `jp-rank-boss-05` | 25 | 昇格試験 V – 奥義の試練 | 奥義の証 |
+| `jp-rank-boss-06` | 30 | 昇格試験 VI – 言霊の試練 | 言霊の証 |
+
+A reward is a **permanent milestone and carries no XP**: reaching the level was
+already paid for by the XP that got there.
+
+An inconsistent combination grants nothing — an unknown id, a mismatched reward
+id or name, a status without an id, an id without a status. None of that costs
+you the rest of the SAVE: the snapshot and its XP are processed normally and
+the problem is shown as a warning.
+
+**The uniqueness is on `boss_id` alone, which is correct only because this
+application has exactly one user.** There is no user table, no `user_id` and no
+owner key anywhere in the schema — `app/auth.py` protects access with a single
+password rather than separating tenants — so the table is implicitly per-user.
+If wger-hero ever gains real accounts this becomes a data model bug, because
+boss 01 could then be claimed once across the whole installation, and the
+constraint has to become composite over `(owner, boss_id)`. Two tests pin the
+single-user assumption so that change cannot pass unnoticed.
+
+**Idempotence is enforced by the boss id, not by the SAVE hash.** The hash stops
+an identical paste from importing twice, but the same boss reported in a
+differently worded SAVE — a re-export, a corrected line, a later snapshot that
+still carries the group — would slip past it. `japanese_rank_rewards` has a
+unique index on `boss_id`, so a second grant cannot be written even if two
+requests race. Both mechanisms are needed and both are in place.
+
+### Storage
+
+`save_version` is new on `japanese_save_imports`; rows written before it are
+version 1, which is exactly what they are. `source_level_xp` keeps its column
+and gains a second meaning — level-internal under version 1, cumulative under
+version 2 — with `save_version` saying which. **No historical import is
+reinterpreted and no XP event is rewritten.**
+
+### Level 30
+
+Level 30 starts at 65800 cumulative XP and is the ceiling; totals keep rising
+while the level stays 30. The coach specification does not yet define a
+machine-readable right-hand side for the bar at that point, so nothing is
+frozen here: the progress view reports `at_max` and renders a full bar, and the
+delta is unaffected because it never reads the cap. When the coach settles on a
+format — a literal `MAX`, a repeated threshold, an omitted right side — it can
+be added to `japanese_levels.py` alone.
+
+### Example SAVEs
+
+Plain version 2:
+
+```text
+=== 状態 SAVE ===
+SAVE-Version: 2
+Datum: 2026-08-19 | Streak: 23
+WaniKani-Level: 2
+Bunpro-Level: N5
+Grammatikpunkte im SRS: 22
+Charakter: Lv 3 (修行者) | 1038 / 2100 XP
+語彙 295 | 文法 590 | 読解 10 | 聴解 0 | 会話 355
+Aktueller Grammatikpunkt: と
+Debuffs: keine
+Neue Vokabeln heute: keine
+Tagesquest: Beispiel
+=== END SAVE ===
+```
+
+With a cleared boss:
+
+```text
+=== 状態 SAVE ===
+SAVE-Version: 2
+Datum: 2026-09-02 | Streak: 37
+WaniKani-Level: 3
+Bunpro-Level: N5
+Grammatikpunkte im SRS: 41
+Charakter: Lv 5 (挑戦者) | 3350 / 4600 XP
+語彙 420 | 文法 810 | 読解 40 | 聴解 10 | 会話 500
+Aktueller Grammatikpunkt: ので
+Debuffs: keine
+Neue Vokabeln heute: keine
+Tagesquest: Beispiel
+Rangstufenboss-ID: jp-rank-boss-01
+Rangstufenboss-Status: bestanden
+Rangbelohnung-ID: jp-rank-reward-01
+Rangbelohnung: 旅立ちの証
+=== END SAVE ===
+```
+
 ## wger workout sync
 
 wger is read-only and the source of truth for workouts. The sync is explicit —
@@ -928,7 +1182,7 @@ For a local UI run, see [docs/UI_CHECKLIST.md](docs/UI_CHECKLIST.md).
 
 ## Migrations
 
-Alembic, revisions `0001_baseline` through `0007_fittrackee_endurance`.
+Alembic, revisions `0001_baseline` through `0008_japanese_save_version_2`.
 
 - **The app never migrates by itself** — not on import, not on startup. A test
   asserts that no application module touches Alembic at import time.
@@ -948,6 +1202,7 @@ Alembic, revisions `0001_baseline` through `0007_fittrackee_endurance`.
 | `0005_habit_schedule_days` | `habit_schedule_days`, ISO weekdays, unique per habit and day |
 | `0006_optional_learning_metrics` | makes `wanikani_level` and `bunpro_points` nullable |
 | `0007_fittrackee_endurance` | `fittrackee_sports`, `fittrackee_workouts`, `fittrackee_connection`, and `allowed_weekdays` on quests |
+| `0008_japanese_save_version_2` | `save_version` and the rank-boss fields on Japanese imports, plus `japanese_rank_rewards` |
 
 ### About `0006`
 

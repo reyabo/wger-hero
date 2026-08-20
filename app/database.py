@@ -48,6 +48,10 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     # deterministic session rewards and must be back-filled on databases that
     # already have the table.
     "japanese_save_imports": [
+        ("save_version", "INTEGER DEFAULT 1"),
+        ("rank_boss_id", "VARCHAR(50)"),
+        ("rank_boss_status", "VARCHAR(30)"),
+        ("rank_reward_id", "VARCHAR(50)"),
         ("session_mode", "VARCHAR(20)"),
         ("session_completion", "VARCHAR(20)"),
         ("reward_calculation", "VARCHAR(30)"),

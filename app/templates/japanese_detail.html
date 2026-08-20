@@ -23,7 +23,7 @@
   <div class="summary-card">
     <div class="summary-label">Quellfortschritt</div>
     <div class="summary-value accent-cyan">Lv {{ record.source_character_level }}</div>
-    <div class="summary-sub">{{ record.source_level_xp }} / {{ record.source_level_xp_cap }} XP</div>
+    <div class="summary-sub">{{ record.source_level_xp }} / {% if record.source_level_xp_cap %}{{ record.source_level_xp_cap }}{% else %}MAX{% endif %} XP</div>
   </div>
   <div class="summary-card">
     <div class="summary-label">Streak</div>
