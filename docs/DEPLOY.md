@@ -173,6 +173,49 @@ Erwartet: überall `200`. Die Installation als App setzt **HTTPS** voraus — ü
 Caddy, nicht über den direkten Port 8091. Ein Browser registriert sonst keinen
 Service Worker.
 
+### 3g. Nach dem wger-Update: Sessions mit `datetime_start`
+
+**Keine neue Migration.** Reine Codeänderung, der Datenbankstand bleibt bei
+`0005_habit_schedule_days`.
+
+Seit dem wger-Update liefert `/api/v2/workoutsession/` kein Feld `date` mehr,
+sondern `datetime_start` und `datetime_end`. Der Sync liest den Tag jetzt an
+einer Stelle (`app.sync.session_date_str`), bevorzugt `datetime_start` und
+fällt auf `date` zurück.
+
+Vor dem Deployment die Feldnamen der eigenen Instanz prüfen — die Diagnose
+nennt das erkannte Datumsfeld und druckt ausschließlich Feldnamen, keine Werte:
+
+```bash
+docker compose exec wger-hero python -m app.diagnostics wger \
+                                           > "$LOG-30-wger-fields.txt"   2>&1
+grep -E "Date field recognized|workoutsession" "$LOG-30-wger-fields.txt"
+```
+
+Erwartet: `Date field recognized : datetime_start`. Meldet die Zeile `NONE`,
+kennt diese wger-Version keines der beiden Felder — dann **nicht** syncen,
+sondern erst die Feldnamen klären.
+
+**Achtung, der erste Sync nach dem Fix ist nicht folgenlos.** Der
+Deduplizierungs-Hash wird über die rohe API-Antwort gebildet. Weil sich deren
+Form geändert hat, gilt jede bereits importierte Session als „verändert“ und
+läuft erneut durch den Re-Sync-Pfad. Lokal mit synthetischen Daten
+reproduziert, drei bekannte Sessions:
+
+| Größe | vor dem Sync | danach |
+|---|---|---|
+| `hero_profile.total_xp` (Workout-XP) | 300 | 300 |
+| `sync_events` | 3 | 3, `synced_at` auf „jetzt“ gesetzt |
+| `xp_events` | 3 | 6 — die alten Zeilen bleiben stehen |
+| Quest `week-warrior` | offen | abgeschlossen, +200 XP |
+
+Die Workout-XP bleiben also korrekt, aber die Audit-Spur verdoppelt sich, und
+weil `week-warrior` Workouts über `sync_events.synced_at` statt über das
+Trainingsdatum zählt, schließt die Quest ab. **Vor dem ersten Sync sichern**
+(Abschnitt 2) und den Sync zuerst auf einer Kopie laufen lassen. Wie dieser
+Einmaleffekt behandelt wird, ist noch offen und bewusst nicht Teil dieses
+Fixes — er greift in die XP-Historie ein.
+
 ## 4a. Starter-Kampagne aktivieren (optional, nach dem Deployment)
 
 Getrennter, bewusst ausgelöster Schritt. Nicht Teil des Deployments.

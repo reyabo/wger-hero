@@ -70,6 +70,40 @@ def _sanitize_error(e: Exception) -> str:
     return f"Sync error: {type(e).__name__}"
 
 
+def session_date_str(session: dict) -> Optional[str]:
+    """The ISO day (YYYY-MM-DD) a wger session belongs to, or None if it has none.
+
+    THE date rule — every caller goes through here, so the SYNC_FROM_DATE
+    filter and the normalization cannot disagree about which day a session
+    belongs to. They did disagree once: the filter asked for `date` while
+    current wger versions report `datetime_start` / `datetime_end`, so every
+    session was discarded before normalization ever saw it.
+
+    `datetime_start` wins where both exist; the plain `date` of older wger
+    versions stays as a fallback so an unchanged instance keeps working.
+
+    Returns None rather than a guess. A missing day is the caller's decision to
+    make: substituting today would stamp a wrong date onto a real workout, and
+    the stored date is what quests, weeks and streaks are counted by.
+
+    The day is taken from the first ten characters, i.e. in the offset wger
+    itself reports, which is the day the session is filed under over there.
+    """
+    for key in ("datetime_start", "date"):
+        raw = session.get(key)
+        if raw is None:
+            continue
+        candidate = str(raw).strip()[:10]
+        if not candidate:
+            continue
+        try:
+            date.fromisoformat(candidate)
+        except ValueError:
+            continue  # unusable — try the next field rather than guessing
+        return candidate
+    return None
+
+
 def _hash_session(data: dict) -> str:
     serialized = json.dumps(data, sort_keys=True, default=str)
     return hashlib.sha256(serialized.encode()).hexdigest()
@@ -96,11 +130,14 @@ def _normalize_session(
 ) -> NormalizedWorkoutLog:
     session_id = str(session.get("id") or "unknown")
 
-    session_date_raw = session.get("date", "")
-    try:
-        session_date = date.fromisoformat(str(session_date_raw))
-    except (ValueError, TypeError):
+    day = session_date_str(session)
+    if day is None:
+        # Nothing usable in the payload. The historical fallback is kept so a
+        # malformed session does not abort the sync; sync_workouts() reports
+        # the session separately instead of letting it pass unnoticed.
         session_date = date.today()
+    else:
+        session_date = date.fromisoformat(day)
 
     # notes may contain private data — use only as label, never log the content
     title = session.get("notes") or None
@@ -178,14 +215,28 @@ async def sync_workouts(
         logger.error("Sync failed fetching sessions: %s", type(e).__name__)
         return result
 
-    # Enforce SYNC_FROM_DATE locally in case wger API ignores date__gte
+    # Enforce SYNC_FROM_DATE locally: the API may ignore the filter parameter,
+    # and it may have been dropped after a 400 (see get_workout_sessions).
     if sync_from_date is not None:
-        before = len(sessions)
-        sessions = [
-            s for s in sessions
-            if s.get("date") and s["date"] >= sync_from_date.isoformat()
-        ]
-        filtered = before - len(sessions)
+        cutoff = sync_from_date.isoformat()
+        dated = [(s, session_date_str(s)) for s in sessions]
+        undated = [s for s, day in dated if day is None]
+        sessions = [s for s, day in dated if day is not None and day >= cutoff]
+
+        # A session the cutoff cannot judge is still skipped — importing it
+        # would mean inventing a date. But it is now reported: silently
+        # discarding every session is exactly what made a broken import look
+        # like a quiet week.
+        if undated:
+            result.errors.append(
+                f"{len(undated)} wger session(s) carry no usable date "
+                "(expected datetime_start or date) and were not imported"
+            )
+            logger.warning(
+                "Skipped %d session(s) without a usable date field", len(undated)
+            )
+
+        filtered = len(dated) - len(sessions) - len(undated)
         if filtered:
             logger.info("Local date filter removed %d session(s) before %s", filtered, sync_from_date)
 

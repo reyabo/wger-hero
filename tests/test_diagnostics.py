@@ -106,6 +106,84 @@ async def test_probe_handles_401():
 
 
 @pytest.mark.asyncio
+async def test_a_404_on_a_known_absent_endpoint_reads_as_expected(capsys):
+    """/log/ and /workout/ are gone on current wger — that is not a fault."""
+
+    async def fake_probe(base_url, token, path):
+        if path in ("/api/v2/log/", "/api/v2/workout/"):
+            return (404, None, None, None)
+        return (200, 1, ["id", "datetime_start"], None)
+
+    with patch("app.diagnostics.probe_endpoint", side_effect=fake_probe):
+        await run_diagnostics(base_url=FAKE_BASE_URL, token=FAKE_TOKEN)
+
+    out = capsys.readouterr().out
+    assert "expected" in out.lower()
+    # A missing optional endpoint must not be announced as a problem.
+    assert "may not exist on this wger version" not in out
+
+
+@pytest.mark.asyncio
+async def test_a_404_on_a_required_endpoint_still_reads_as_a_problem(capsys):
+    async def fake_probe(base_url, token, path):
+        return (404, None, None, None)
+
+    with patch("app.diagnostics.probe_endpoint", side_effect=fake_probe):
+        await run_diagnostics(base_url=FAKE_BASE_URL, token=FAKE_TOKEN)
+
+    out = capsys.readouterr().out
+    assert "/api/v2/workoutsession/" in out
+    assert "may not exist on this wger version" in out
+
+
+@pytest.mark.asyncio
+async def test_the_recognised_session_date_field_is_reported(capsys):
+    """The field that broke the import is named explicitly, values never."""
+
+    async def fake_probe(base_url, token, path):
+        if path == "/api/v2/workoutsession/":
+            return (200, 2, ["datetime_end", "datetime_start", "id", "notes"], None)
+        return (404, None, None, None)
+
+    with patch("app.diagnostics.probe_endpoint", side_effect=fake_probe):
+        await run_diagnostics(base_url=FAKE_BASE_URL, token=FAKE_TOKEN)
+
+    out = capsys.readouterr().out
+    assert "datetime_start" in out
+
+
+@pytest.mark.asyncio
+async def test_a_session_without_any_date_field_is_called_out(capsys):
+    """If neither field is present, the sync cannot work — say so."""
+
+    async def fake_probe(base_url, token, path):
+        if path == "/api/v2/workoutsession/":
+            return (200, 2, ["id", "notes", "workout"], None)
+        return (404, None, None, None)
+
+    with patch("app.diagnostics.probe_endpoint", side_effect=fake_probe):
+        await run_diagnostics(base_url=FAKE_BASE_URL, token=FAKE_TOKEN)
+
+    out = capsys.readouterr().out
+    assert "no date field" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_normalization_smoke_test_covers_the_new_shape(capsys):
+    async def fake_probe(base_url, token, path):
+        return (200, 1, ["id", "datetime_start"], None)
+
+    with patch("app.diagnostics.probe_endpoint", side_effect=fake_probe):
+        await run_diagnostics(base_url=FAKE_BASE_URL, token=FAKE_TOKEN)
+
+    out = capsys.readouterr().out
+    assert "datetime_start" in out
+    # The synthetic new-shape session must normalize to its own day, which
+    # proves the running build understands the current wger response.
+    assert "2026-09-25" in out
+
+
+@pytest.mark.asyncio
 async def test_probe_connect_error():
     with patch("httpx.AsyncClient.get", side_effect=httpx.ConnectError("refused")):
         status, count, fields, error = await probe_endpoint(
