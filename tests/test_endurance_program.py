@@ -259,7 +259,9 @@ def _play(db, *days):
     goal = backdate_goal(db)
     for n, day in enumerate(days):
         add_workout(db, day, external_id=f"w{n}")
-    evaluate_quests(db, db.query(HeroProfile).one())
+    # Inside the pinned week, so the completion lands in the window
+    # week_outcome asks about rather than at the real clock's date.
+    evaluate_quests(db, db.query(HeroProfile).one(), when=SUNDAY)
     return week_outcome(db, goal, MONDAY.date())
 
 
@@ -319,7 +321,7 @@ def test_a_thursday_ride_still_earns_its_workout_xp(db):
 
 def test_the_weekly_quests_are_rewarded_exactly_once(db):
     _play(db, TUESDAY, SATURDAY)
-    evaluate_quests(db, db.query(HeroProfile).one())
+    evaluate_quests(db, db.query(HeroProfile).one(), when=SUNDAY)
 
     for title in ("Dienstagsrunde", "Wochenendrunde"):
         quest = db.query(Quest).filter(Quest.title == title).one()
@@ -336,6 +338,6 @@ def test_baseline_workouts_never_satisfy_the_week(db):
     goal = backdate_goal(db)
     add_workout(db, TUESDAY, external_id="hist-1", eligible=False)
     add_workout(db, SATURDAY, external_id="hist-2", eligible=False)
-    evaluate_quests(db, db.query(HeroProfile).one())
+    evaluate_quests(db, db.query(HeroProfile).one(), when=SUNDAY)
 
     assert week_outcome(db, goal, MONDAY.date()).achieved == 0

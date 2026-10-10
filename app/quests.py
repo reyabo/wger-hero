@@ -731,12 +731,20 @@ def count_quest_progress(db: Session, quest: Quest) -> Optional[int]:
     return None
 
 
-def evaluate_quests(db: Session, hero: HeroProfile) -> list[str]:
+def evaluate_quests(
+    db: Session, hero: HeroProfile, when: Optional[datetime] = None
+) -> list[str]:
     """
     Recalculate progress for auto-tracked quests and complete any that hit target.
 
     Manual quests are user-driven and never auto-completed here.
     Returns the titles of quests newly completed.
+
+    `when` is the moment a completion is recorded at; it defaults to now, which
+    is what every caller in the application wants. It exists so a test that
+    pins the calendar can put the completion inside the period it pinned —
+    otherwise the completion lands at the real clock's date and falls outside
+    the window `goal_progress.week_outcome` asks about.
     """
     newly_completed: list[str] = []
     active_quests = db.query(Quest).filter(Quest.active == True).all()
@@ -757,7 +765,7 @@ def evaluate_quests(db: Session, hero: HeroProfile) -> list[str]:
             quest.current_value = counted
 
         if quest.target_value and quest.current_value >= quest.target_value:
-            if _complete_quest(db, hero, quest):
+            if _complete_quest(db, hero, quest, when=when):
                 newly_completed.append(quest.title)
 
     db.commit()
