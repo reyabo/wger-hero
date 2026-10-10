@@ -24,7 +24,12 @@ from sqlalchemy.orm import Session
 
 from app.goal_progress import day_was_paused, pause_windows, week_was_paused
 from app.goals import STATUS_ACTIVE, STATUS_ARCHIVED, STATUS_COMPLETED, STATUS_PAUSED
-from app.habits import WEEKDAY_LABELS, WEEKDAY_SHORT, scheduled_weekdays
+from app.habits import (
+    WEEKDAY_LABELS,
+    WEEKDAY_SHORT,
+    remaining_completions,
+    scheduled_weekdays,
+)
 from app.models import Goal, Habit, HabitCompletion, Quest
 from app.momentum import week_end, week_start
 from app.quests import already_rewarded, count_quest_progress
@@ -83,6 +88,11 @@ class PlannedHabit:
     weekdays: list[int]
     completions: int
     paused: bool
+    # How many completions the habit still allows in the period this day falls
+    # into — from app/habits.py, the same rule the completion route enforces.
+    # For a weekly or monthly habit that is a different question from "how
+    # often was it completed today", which `completions` answers.
+    remaining: int = 0
 
     @property
     def planned(self) -> bool:
@@ -91,7 +101,8 @@ class PlannedHabit:
 
     @property
     def done(self) -> bool:
-        return self.completions >= max(1, self.habit.target_count or 1)
+        """Nothing left to record for this period."""
+        return self.remaining <= 0
 
     @property
     def status_label(self) -> str:
@@ -283,6 +294,7 @@ def day_plan(
             weekdays=scheduled_weekdays(db, habit),
             completions=counts.get(habit.id, 0),
             paused=paused,
+            remaining=remaining_completions(db, habit, day),
         )
         if iso in entry.weekdays:
             planned.append(entry)

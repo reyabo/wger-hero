@@ -5,17 +5,30 @@ Deliberately database-free so the rules stay unit-testable without a session —
 same principle as ``app/xp.py`` and ``app/rewards.py``. Nothing here calls a
 model, a session, or the network.
 
-The SAVE block is copy-pasted by the user and looks like this::
+The SAVE block is copy-pasted by the user. Only a small core is required —
+the date, the character line and the five scores::
 
     === 状態 SAVE ===
-    Datum: 2026-07-31 | Streak: 4
-    WaniKani: Lv 1 | Bunpro: N5, 5 Punkte
+    Datum: 2026-08-01 | Streak: 4
     Charakter: Lv 2 (見習い) | 433 / 1000 XP
     語彙 180 | 文法 250 | 読解 0 | 聴解 0 | 会話 215
+    === END SAVE ===
+
+Everything else is optional and independent: the learning metrics (as three
+separate lines or as the combined legacy line), the session pair, and the coach
+notes. A missing optional value is ``None`` — never ``0``, never a placeholder,
+and never the value from an earlier import::
+
+    === 状態 SAVE ===
+    Datum: 2026-08-01 | Streak: 4
+    WaniKani-Level: 2
+    Bunpro-Level: N5
+    Grammatikpunkte im SRS: 37
+    Charakter: Lv 2 (見習い) | 433 / 1000 XP
+    Session-Modus: START
+    Session-Abschluss: vollständig
+    語彙 180 | 文法 250 | 読解 0 | 聴解 0 | 会話 215
     Aktueller Grammatikpunkt: これ
-    Debuffs: keine
-    Neue Vokabeln heute: keine
-    Tagesquest: Erfüllt – Mini-Boss „Partikel-Golem“ besiegt.
     === END SAVE ===
 
 ``433 / 1000 XP`` is progress *inside the current source level*, not a lifetime
@@ -32,7 +45,17 @@ from dataclasses import dataclass, replace
 from datetime import date
 from typing import Optional
 
+from app.japanese_levels import BASELINE_LEVEL, validate_level_claim
+
 # Guard against pathological pastes. Generous enough for any real SAVE block.
+# SAVE schema versions. A SAVE without the marker is Version 1 and keeps the
+# level-internal XP semantics it was written with; Version 2 reports cumulative
+# totals. An unknown version is refused rather than guessed at — reading a
+# future format with today's rules is how a wrong reward gets paid.
+SAVE_VERSION_LEGACY = 1
+SAVE_VERSION_CUMULATIVE = 2
+SUPPORTED_SAVE_VERSIONS = (SAVE_VERSION_LEGACY, SAVE_VERSION_CUMULATIVE)
+
 MAX_SAVE_LENGTH = 10_000
 
 START_MARKER = "状態 SAVE"
@@ -52,6 +75,10 @@ CALC_LEGACY = "legacy_level_delta"
 CALC_HISTORICAL = "historical"
 CALC_DUPLICATE = "duplicate"
 CALC_WARNING = "warning"
+# Version 2: the bar is a cumulative total, so the delta is a plain difference.
+CALC_CUMULATIVE = "cumulative_total_delta"
+# The one-off step from a legacy Lv-2 snapshot into cumulative counting.
+CALC_BRIDGE = "version_bridge"
 
 # ---------------------------------------------------------------------------
 # Deterministic session rewards
@@ -202,15 +229,23 @@ def _strip_markers_and_normalize(raw: str) -> str:
 # Parsed SAVE
 # ---------------------------------------------------------------------------
 
+def _opt_number(value: Optional[int]) -> str:
+    """Canonical text for an optional number: "" when unset, never "0"."""
+    return "" if value is None else str(value)
+
+
 @dataclass(frozen=True)
 class JapaneseSave:
     """One fully parsed and validated SAVE snapshot."""
 
     save_date: date
     streak: int
-    wanikani_level: int
-    bunpro_level: str
-    bunpro_points: int
+    # Independent, optional learning metrics. None means "not stated in this
+    # SAVE" and is deliberately not 0: a missing count and a counted zero are
+    # different facts, and only one of them may be stored as a number.
+    wanikani_level: Optional[int]
+    bunpro_level: Optional[str]
+    bunpro_points: Optional[int]
     character_level: int
     character_rank: str
     level_xp: int
@@ -220,10 +255,12 @@ class JapaneseSave:
     reading: int
     listening: int
     speaking: int
-    grammar_point: str
-    debuffs: str
-    new_vocabulary: str
-    daily_quest: str
+    # Optional coach notes. Absent or empty is None — no placeholder is
+    # invented and no value is carried over from an earlier import.
+    grammar_point: Optional[str]
+    debuffs: Optional[str]
+    new_vocabulary: Optional[str]
+    daily_quest: Optional[str]
     session_xp: Optional[int]
     raw: str
     # New deterministic-reward fields. None when the line is absent (old format)
@@ -233,6 +270,37 @@ class JapaneseSave:
     session_mode_raw: Optional[str] = None
     session_completion: Optional[str] = None
     session_completion_raw: Optional[str] = None
+    # 1 for a legacy SAVE, 2 once the coach reports cumulative totals.
+    save_version: int = SAVE_VERSION_LEGACY
+    # The optional boss event, exactly as written. Validation happens in
+    # japanese_levels.validate_boss_event, never here.
+    rank_boss_id: Optional[str] = None
+    rank_boss_status: Optional[str] = None
+    rank_reward_id: Optional[str] = None
+    rank_reward_name: Optional[str] = None
+
+    @property
+    def is_cumulative(self) -> bool:
+        """Whether level_xp is a cumulative total rather than level-internal.
+
+        The one place that decides which XP semantics apply. Version 1 counts
+        inside the current level and resets on level-up; Version 2 never resets.
+        """
+        return self.save_version >= SAVE_VERSION_CUMULATIVE
+
+    @property
+    def total_xp(self) -> Optional[int]:
+        """Cumulative total, or None for a legacy SAVE where none is stated."""
+        return self.level_xp if self.is_cumulative else None
+
+    @property
+    def has_boss_event(self) -> bool:
+        return any(
+            v for v in (
+                self.rank_boss_id, self.rank_boss_status,
+                self.rank_reward_id, self.rank_reward_name,
+            )
+        )
 
     @property
     def has_session_fields(self) -> bool:
@@ -249,9 +317,9 @@ class JapaneseSave:
         parts = [
             self.save_date.isoformat(),
             str(self.streak),
-            str(self.wanikani_level),
-            self.bunpro_level.upper(),
-            str(self.bunpro_points),
+            _opt_number(self.wanikani_level),
+            (self.bunpro_level or "").upper(),
+            _opt_number(self.bunpro_points),
             str(self.character_level),
             _normalize_text(self.character_rank),
             str(self.level_xp),
@@ -261,13 +329,20 @@ class JapaneseSave:
             str(self.reading),
             str(self.listening),
             str(self.speaking),
-            _normalize_text(self.grammar_point),
-            _normalize_text(self.debuffs),
-            _normalize_text(self.new_vocabulary),
-            _normalize_text(self.daily_quest),
+            _normalize_text(self.grammar_point or ""),
+            _normalize_text(self.debuffs or ""),
+            _normalize_text(self.new_vocabulary or ""),
+            _normalize_text(self.daily_quest or ""),
             "" if self.session_xp is None else str(self.session_xp),
             self.session_mode or _normalize_text(self.session_mode_raw or ""),
             self.session_completion or _normalize_text(self.session_completion_raw or ""),
+            # The version changes what the numbers mean, so two SAVEs with the
+            # same figures under different versions are not the same snapshot.
+            str(self.save_version),
+            _normalize_text(self.rank_boss_id or ""),
+            _normalize_text(self.rank_boss_status or ""),
+            _normalize_text(self.rank_reward_id or ""),
+            _normalize_text(self.rank_reward_name or ""),
         ]
         return "|".join(parts)
 
@@ -288,16 +363,40 @@ _LV = r"(?:Lv\.?|Level)\s*(\d+)"
 # wording differs, so it is a wording variant of one field, not a second field.
 _BUNPRO_POINTS = r"(?P<points>-?\d+)\s*(?:Grammatik)?Punkte?(?:\s+im\s+SRS)?"
 
+# Bunpro levels the coach may report. JLPT N1–N5 are the levels Bunpro itself
+# organises its grammar by; nothing beyond them is invented here, and anything
+# else is refused rather than stored as an unknown string.
+BUNPRO_LEVELS = ("N1", "N2", "N3", "N4", "N5")
+
+# The optional Bunpro tail of the combined line: ", 10 Grammatikpunkte im SRS",
+# ", 5 Punkte", or nothing at all.
+_BUNPRO_TAIL = r"(?:\s*,\s*" + _BUNPRO_POINTS + r")?"
+
 _PATTERNS: dict[str, re.Pattern] = {
     "datum": re.compile(
         r"^Datum:\s*(?P<date>[0-9]{1,4}-[0-9]{1,2}-[0-9]{1,2})\s*\|\s*"
         r"Streak:\s*(?P<streak>-?\d+)\s*$",
         re.IGNORECASE,
     ),
+    # The combined legacy line. Everything after the WaniKani level is optional,
+    # so "WaniKani: Lv 2", "… | Bunpro: N5" and the full form all parse.
     "wanikani": re.compile(
-        r"^WaniKani:\s*" + _LV + r"\s*\|\s*Bunpro:\s*"
-        r"(?P<bunpro>[A-Za-z0-9]+)\s*,\s*" + _BUNPRO_POINTS + r"\s*$",
+        r"^WaniKani:\s*" + _LV +
+        r"(?:\s*\|\s*Bunpro:\s*(?P<bunpro>[A-Za-z0-9]+)" + _BUNPRO_TAIL + r")?\s*$",
         re.IGNORECASE,
+    ),
+    # The same Bunpro half on a line of its own, as older SAVEs wrote it.
+    "bunpro": re.compile(
+        r"^Bunpro:\s*(?P<bunpro>[A-Za-z0-9]+)" + _BUNPRO_TAIL + r"\s*$",
+        re.IGNORECASE,
+    ),
+    # Independent modern spellings. Each may appear alone, together with the
+    # others, or not at all. The value is captured loosely and validated below,
+    # so "zwei" produces a plain message instead of an unreadable-line error.
+    "wanikani_level": re.compile(r"^WaniKani-Level:\s*(?P<value>.*)$", re.IGNORECASE),
+    "bunpro_level": re.compile(r"^Bunpro-Level:\s*(?P<value>.*)$", re.IGNORECASE),
+    "srs_points": re.compile(
+        r"^Grammatikpunkte im SRS:\s*(?P<value>.*)$", re.IGNORECASE
     ),
     "charakter": re.compile(
         r"^Charakter:\s*" + _LV + r"\s*\((?P<rank>[^)]*)\)\s*\|\s*"
@@ -309,6 +408,14 @@ _PATTERNS: dict[str, re.Pattern] = {
         r"読解\s*(?P<reading>-?\d+)\s*\|\s*聴解\s*(?P<listening>-?\d+)\s*\|\s*"
         r"会話\s*(?P<speaking>-?\d+)\s*$"
     ),
+    # Version marker. Its absence means Version 1 — see SAVE_VERSION_LEGACY.
+    "save_version": re.compile(r"^SAVE-Version:\s*(?P<value>.*)$", re.IGNORECASE),
+    # Optional, event-only rank boss group. Written by the coach exactly once,
+    # in the SAVE directly after a boss was cleared for the first time.
+    "boss_id": re.compile(r"^Rangstufenboss-ID:\s*(?P<value>.*)$", re.IGNORECASE),
+    "boss_status": re.compile(r"^Rangstufenboss-Status:\s*(?P<value>.*)$", re.IGNORECASE),
+    "reward_id": re.compile(r"^Rangbelohnung-ID:\s*(?P<value>.*)$", re.IGNORECASE),
+    "reward_name": re.compile(r"^Rangbelohnung:\s*(?P<value>.*)$", re.IGNORECASE),
     "grammatikpunkt": re.compile(r"^Aktueller Grammatikpunkt:\s*(?P<value>.*)$", re.IGNORECASE),
     "debuffs": re.compile(r"^Debuffs:\s*(?P<value>.*)$", re.IGNORECASE),
     "vokabeln": re.compile(r"^Neue Vokabeln heute:\s*(?P<value>.*)$", re.IGNORECASE),
@@ -322,6 +429,10 @@ _PATTERNS: dict[str, re.Pattern] = {
 _FIELD_OF_KEY = {
     "datum": "save_date",
     "wanikani": "wanikani_level",
+    "bunpro": "bunpro_level",
+    "wanikani_level": "wanikani_level",
+    "bunpro_level": "bunpro_level",
+    "srs_points": "bunpro_points",
     "charakter": "character_level",
     "scores": "scores",
     "grammatikpunkt": "grammar_point",
@@ -333,33 +444,36 @@ _FIELD_OF_KEY = {
     "session_completion": "session_completion",
 }
 
+# The required core. Everything else is optional: the coach does not always
+# report a learning metric or a note, and a SAVE without them is a complete
+# snapshot, not a broken one. These three stay mandatory because the date drives
+# the baseline/historical classification, the character line drives the level
+# progress, and the five scores are the snapshot itself — dropping any of them
+# would leave existing XP or history logic undefined.
 _REQUIRED_KEYS = [
     "datum",
-    "wanikani",
     "charakter",
     "scores",
-    "grammatikpunkt",
-    "debuffs",
-    "vokabeln",
-    "tagesquest",
 ]
 
+# Only the required core can be reported as missing; everything else is
+# optional and its absence is a fact, not an error.
 _MISSING_MESSAGES = {
     "datum": "Zeile „Datum: … | Streak: …“ fehlt.",
-    "wanikani": "Zeile „WaniKani: … | Bunpro: …“ fehlt.",
     "charakter": "Zeile „Charakter: Lv … | … / … XP“ fehlt.",
     "scores": "Zeile mit den fünf Sprachwerten (語彙 / 文法 / 読解 / 聴解 / 会話) fehlt.",
-    "grammatikpunkt": "Zeile „Aktueller Grammatikpunkt: …“ fehlt.",
-    "debuffs": "Zeile „Debuffs: …“ fehlt.",
-    "vokabeln": "Zeile „Neue Vokabeln heute: …“ fehlt.",
-    "tagesquest": "Zeile „Tagesquest: …“ fehlt.",
 }
 
 # Prefix → key, used to detect a line that is *meant* as a field but malformed,
 # and to detect the same field appearing twice.
 _PREFIXES = [
+    ("save-version:", "save_version"),
     ("datum:", "datum"),
+    ("wanikani-level:", "wanikani_level"),
+    ("bunpro-level:", "bunpro_level"),
+    ("grammatikpunkte im srs:", "srs_points"),
     ("wanikani:", "wanikani"),
+    ("bunpro:", "bunpro"),
     ("charakter:", "charakter"),
     ("aktueller grammatikpunkt:", "grammatikpunkt"),
     ("debuffs:", "debuffs"),
@@ -368,7 +482,90 @@ _PREFIXES = [
     ("session-xp:", "session_xp"),
     ("session-modus:", "session_mode"),
     ("session-abschluss:", "session_completion"),
+    # The optional rank boss group. "rangbelohnung-id:" has to be tested before
+    # "rangbelohnung:", or startswith() would claim the longer line for the
+    # shorter prefix and the id would be read as a reward name.
+    ("rangstufenboss-id:", "boss_id"),
+    ("rangstufenboss-status:", "boss_status"),
+    ("rangbelohnung-id:", "reward_id"),
+    ("rangbelohnung:", "reward_name"),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Optional learning metrics: parse, then merge the two spellings
+# ---------------------------------------------------------------------------
+
+# Human-readable names, used in messages instead of internal field names.
+_METRIC_LABELS = {
+    "wanikani_level": "WaniKani-Level",
+    "bunpro_level": "Bunpro-Level",
+    "bunpro_points": "Grammatikpunkte im SRS",
+}
+
+
+def _parse_count(raw: str, field: str) -> tuple[Optional[int], Optional[FieldError]]:
+    """A non-negative integer, or a plain German message saying why not.
+
+    An empty value is an error, not "unset": the line was written, so it was
+    meant to state something, and silently dropping it would hide a typo.
+    """
+    text = (raw or "").strip()
+    expected = (
+        f"Ungültiger Wert für „{_METRIC_LABELS[field]}“: "
+        "Es wird eine nichtnegative Ganzzahl erwartet."
+    )
+    if not text:
+        return None, FieldError(field, expected)
+    if not re.fullmatch(r"-?\d+", text):
+        return None, FieldError(field, expected)
+    value = int(text)
+    if value < 0:
+        return None, FieldError(field, expected)
+    return value, None
+
+
+def _parse_bunpro_level(raw: str) -> tuple[Optional[str], Optional[FieldError]]:
+    """One of the known Bunpro levels, or a message listing them."""
+    text = (raw or "").strip().upper()
+    if text in BUNPRO_LEVELS:
+        return text, None
+    return None, FieldError(
+        "bunpro_level",
+        f"Unbekanntes Bunpro-Level: „{text[:20]}“. "
+        f"Erwartet wird eines von: {', '.join(BUNPRO_LEVELS)}.",
+    )
+
+
+def merge_metric(field: str, first, second) -> tuple[object, Optional[FieldError]]:
+    """Combine the combined-line value and the separate-line value of one metric.
+
+    Either may be None (not stated). If both are given they must agree —
+    a contradiction is reported, never resolved by quietly preferring one side.
+    """
+    if first is None:
+        return second, None
+    if second is None:
+        return first, None
+    if first == second:
+        return first, None
+    return None, FieldError(
+        field,
+        f"Widersprüchliche Angaben für „{_METRIC_LABELS[field]}“: "
+        f"{first} und {second}.",
+    )
+
+
+def _optional_note(found: dict, key: str) -> Optional[str]:
+    """A coach note, or None when the line is missing or written empty.
+
+    An absent note is not "keine" and not the previous import's value — the
+    SAVE simply did not say, and that is what gets stored.
+    """
+    match = found.get(key)
+    if match is None:
+        return None
+    return _normalize_text(match.group("value")) or None
 
 
 def _key_for_line(line: str) -> Optional[str]:
@@ -455,8 +652,85 @@ def parse_save(raw: str) -> JapaneseSave:
     if errors:
         raise SaveParseError(errors)
 
+    # --- optional learning metrics ------------------------------------------
+    # Two spellings may state the same three facts: the combined legacy line and
+    # the independent modern lines. Both are read into the same fields and then
+    # merged, so a SAVE may use either — or both, as long as they agree.
+    combined: dict[str, object] = {
+        "wanikani_level": None, "bunpro_level": None, "bunpro_points": None,
+    }
+    separate: dict[str, object] = dict(combined)
+
+    if "wanikani" in found:
+        match = found["wanikani"]
+        combined["wanikani_level"] = int(match.group(1))
+        if match.group("bunpro"):
+            level, error = _parse_bunpro_level(match.group("bunpro"))
+            errors.append(error) if error else None
+            combined["bunpro_level"] = level
+        if match.group("points") is not None:
+            value, error = _parse_count(match.group("points"), "bunpro_points")
+            errors.append(error) if error else None
+            combined["bunpro_points"] = value
+
+    if "bunpro" in found:
+        match = found["bunpro"]
+        level, error = _parse_bunpro_level(match.group("bunpro"))
+        errors.append(error) if error else None
+        # A standalone Bunpro line belongs to the same side as the combined one,
+        # which is why writing both halves of the old split format never
+        # conflicts with itself.
+        merged_level, conflict = merge_metric(
+            "bunpro_level", combined["bunpro_level"], level
+        )
+        errors.append(conflict) if conflict else None
+        combined["bunpro_level"] = merged_level
+        if match.group("points") is not None:
+            value, error = _parse_count(match.group("points"), "bunpro_points")
+            errors.append(error) if error else None
+            merged_points, conflict = merge_metric(
+                "bunpro_points", combined["bunpro_points"], value
+            )
+            errors.append(conflict) if conflict else None
+            combined["bunpro_points"] = merged_points
+
+    if "wanikani_level" in found:
+        value, error = _parse_count(found["wanikani_level"].group("value"), "wanikani_level")
+        errors.append(error) if error else None
+        separate["wanikani_level"] = value
+    if "bunpro_level" in found:
+        level, error = _parse_bunpro_level(found["bunpro_level"].group("value"))
+        errors.append(error) if error else None
+        separate["bunpro_level"] = level
+    if "srs_points" in found:
+        value, error = _parse_count(found["srs_points"].group("value"), "bunpro_points")
+        errors.append(error) if error else None
+        separate["bunpro_points"] = value
+
+    metrics: dict[str, object] = {}
+    for field_name in ("wanikani_level", "bunpro_level", "bunpro_points"):
+        value, conflict = merge_metric(
+            field_name, combined[field_name], separate[field_name]
+        )
+        if conflict:
+            errors.append(conflict)
+        metrics[field_name] = value
+
+    # --- session pair --------------------------------------------------------
+    # Mode and completion are one statement in two lines. Half of it cannot be
+    # evaluated deterministically, so it is refused rather than guessed at.
+    if ("session_mode" in found) != ("session_completion" in found):
+        errors.append(FieldError(
+            "session_mode",
+            "„Session-Modus“ und „Session-Abschluss“ müssen gemeinsam "
+            "angegeben werden.",
+        ))
+
+    if errors:
+        raise SaveParseError(errors)
+
     # --- typed extraction --------------------------------------------------
-    datum, wanikani = found["datum"], found["wanikani"]
+    datum = found["datum"]
     charakter, scores = found["charakter"], found["scores"]
 
     try:
@@ -467,8 +741,6 @@ def parse_save(raw: str) -> JapaneseSave:
 
     numbers = {
         "streak": int(datum.group("streak")),
-        "wanikani_level": int(wanikani.group(1)),
-        "bunpro_points": int(wanikani.group("points")),
         "character_level": int(charakter.group(1)),
         "level_xp": int(charakter.group("xp")),
         "level_xp_cap": int(charakter.group("cap")),
@@ -504,15 +776,47 @@ def parse_save(raw: str) -> JapaneseSave:
         session_completion_raw = found["session_completion"].group("value").strip()
         session_completion = normalize_session_completion(session_completion_raw)
 
+    # The version marker decides how every number above is interpreted, so an
+    # unreadable or unsupported one is a hard parse error rather than a warning.
+    save_version = SAVE_VERSION_LEGACY
+    if "save_version" in found:
+        written = found["save_version"].group("value").strip()
+        try:
+            save_version = int(written)
+        except ValueError:
+            errors.append(FieldError(
+                "save_version",
+                f"Die SAVE-Version „{written}“ ist keine Zahl.",
+            ))
+        else:
+            if save_version not in SUPPORTED_SAVE_VERSIONS:
+                errors.append(FieldError(
+                    "save_version",
+                    f"SAVE-Version {save_version} wird nicht unterstützt "
+                    f"(unterstützt: "
+                    f"{', '.join(str(v) for v in SUPPORTED_SAVE_VERSIONS)}).",
+                ))
+
+    def _boss_field(key: str) -> Optional[str]:
+        if key not in found:
+            return None
+        value = found[key].group("value").strip()
+        return value or None
+
+    rank_boss_id = _boss_field("boss_id")
+    rank_boss_status = _boss_field("boss_status")
+    rank_reward_id = _boss_field("reward_id")
+    rank_reward_name = _boss_field("reward_name")
+
     if errors:
         raise SaveParseError(errors)
 
     return JapaneseSave(
         save_date=save_date,
         streak=numbers["streak"],
-        wanikani_level=numbers["wanikani_level"],
-        bunpro_level=wanikani.group("bunpro").upper(),
-        bunpro_points=numbers["bunpro_points"],
+        wanikani_level=metrics["wanikani_level"],
+        bunpro_level=metrics["bunpro_level"],
+        bunpro_points=metrics["bunpro_points"],
         character_level=numbers["character_level"],
         character_rank=charakter.group("rank").strip(),
         level_xp=numbers["level_xp"],
@@ -522,16 +826,21 @@ def parse_save(raw: str) -> JapaneseSave:
         reading=numbers["reading"],
         listening=numbers["listening"],
         speaking=numbers["speaking"],
-        grammar_point=_normalize_text(found["grammatikpunkt"].group("value")),
-        debuffs=_normalize_text(found["debuffs"].group("value")),
-        new_vocabulary=_normalize_text(found["vokabeln"].group("value")),
-        daily_quest=_normalize_text(found["tagesquest"].group("value")),
+        grammar_point=_optional_note(found, "grammatikpunkt"),
+        debuffs=_optional_note(found, "debuffs"),
+        new_vocabulary=_optional_note(found, "vokabeln"),
+        daily_quest=_optional_note(found, "tagesquest"),
         session_xp=session_xp,
         raw=raw,
         session_mode=session_mode,
         session_mode_raw=session_mode_raw,
         session_completion=session_completion,
         session_completion_raw=session_completion_raw,
+        save_version=save_version,
+        rank_boss_id=rank_boss_id,
+        rank_boss_status=rank_boss_status,
+        rank_reward_id=rank_reward_id,
+        rank_reward_name=rank_reward_name,
     )
 
 
@@ -547,6 +856,24 @@ class PreviousState:
     level_xp: int
     level_xp_cap: int
     save_date: date
+    # Which schema wrote it. Defaulted for callers that predate versioning —
+    # every stored snapshot without a recorded version is a legacy one.
+    save_version: int = SAVE_VERSION_LEGACY
+    # The highest cumulative total ever recorded, which is what a version-2
+    # delta measures from. Defaults to level_xp so a caller that does not know
+    # about regressions behaves exactly as before.
+    highest_total: Optional[int] = None
+
+    @property
+    def is_cumulative(self) -> bool:
+        return self.save_version >= SAVE_VERSION_CUMULATIVE
+
+    @property
+    def measuring_total(self) -> int:
+        """What a cumulative delta is measured from."""
+        if self.highest_total is None:
+            return self.level_xp
+        return max(self.level_xp, self.highest_total)
 
 
 @dataclass(frozen=True)
@@ -578,6 +905,37 @@ class DeltaResult:
         return self.xp_delta > 0 and self.reward_calculation == CALC_DETERMINISTIC
 
 
+def _with_curve_warning(result: "DeltaResult", current: JapaneseSave) -> "DeltaResult":
+    """Append the curve disagreements of a version-2 SAVE to a result.
+
+    Applied to *every* outcome, not just the cumulative one. The baseline, the
+    historical and both session paths return before the cumulative branch is
+    reached, and the import corrects the stored level regardless of which path
+    ran — so validating only inside that branch meant a contradictory claim
+    could be corrected silently, which is precisely the hiding this check
+    exists to prevent.
+
+    A version-1 SAVE is never touched: it counts inside a level, so the curve
+    says nothing about it.
+    """
+    if not current.is_cumulative:
+        return result
+    problems = validate_level_claim(
+        current.character_level,
+        current.level_xp,
+        current.character_rank,
+        current.level_xp_cap,
+    )
+    if not problems:
+        return result
+    return replace(
+        result,
+        warning="; ".join(
+            part for part in ([result.warning] if result.warning else []) + problems
+        ),
+    )
+
+
 def calculate_delta(
     current: JapaneseSave,
     previous: Optional[PreviousState],
@@ -605,7 +963,7 @@ def calculate_delta(
         # A baseline never pays, not even with a valid session mode: the
         # historical total cannot be reconstructed from a level bar.
         if accept_baseline_credit:
-            return DeltaResult(
+            return _with_curve_warning(DeltaResult(
                 classification=CLASSIFICATION_BASELINE,
                 xp_delta=max(0, current.level_xp),
                 warning=(
@@ -614,8 +972,8 @@ def calculate_delta(
                 ),
                 reward_calculation=CALC_BASELINE,
                 reported_session_xp=reported,
-            )
-        return DeltaResult(
+            ), current)
+        return _with_curve_warning(DeltaResult(
             classification=CLASSIFICATION_BASELINE,
             xp_delta=0,
             warning=(
@@ -625,10 +983,10 @@ def calculate_delta(
             ),
             reward_calculation=CALC_BASELINE,
             reported_session_xp=reported,
-        )
+        ), current)
 
     if current.save_date < previous.save_date:
-        return DeltaResult(
+        return _with_curve_warning(DeltaResult(
             classification=CLASSIFICATION_HISTORICAL,
             xp_delta=0,
             warning=(
@@ -638,7 +996,7 @@ def calculate_delta(
             ),
             reward_calculation=CALC_HISTORICAL,
             reported_session_xp=reported,
-        )
+        ), current)
 
     # --- new format: mode + completion decide everything -------------------
     if current.has_session_fields:
@@ -650,14 +1008,14 @@ def calculate_delta(
                 f"Der SAVE meldet {reported} Session-XP. Nach den Regeln von "
                 f"wger-hero ergibt diese Sitzung {xp} XP. Verwendet werden {xp} XP."
             )
-        return DeltaResult(
+        return _with_curve_warning(DeltaResult(
             classification=CLASSIFICATION_PROGRESS,
             xp_delta=xp,
             warning=warning,
             reward_calculation=CALC_DETERMINISTIC,
             reported_session_xp=reported,
             reported_mismatch=mismatch,
-        )
+        ), current)
 
     # A session line was written but could not be understood, or only one of
     # the two was given. Never guess — snapshot only, no reward.
@@ -677,7 +1035,7 @@ def calculate_delta(
             )
         elif current.session_completion_raw is None:
             problems.append("die Zeile „Session-Abschluss:“ fehlt")
-        return DeltaResult(
+        return _with_curve_warning(DeltaResult(
             classification=CLASSIFICATION_WARNING,
             xp_delta=0,
             warning=(
@@ -687,6 +1045,13 @@ def calculate_delta(
             ),
             reward_calculation=CALC_WARNING,
             reported_session_xp=reported,
+        ), current)
+
+    # --- version 2: the bar is a cumulative total ---------------------------
+    if current.is_cumulative:
+        return _with_curve_warning(
+            replace(_cumulative_delta(current, previous), reported_session_xp=reported),
+            current,
         )
 
     # --- legacy format: fall back to the level-bar delta --------------------
@@ -699,10 +1064,138 @@ def calculate_delta(
     )
 
 
+def _cumulative_delta(
+    current: JapaneseSave, previous: PreviousState
+) -> DeltaResult:
+    """Version-2 delta: the difference between two cumulative totals.
+
+    Level changes and moving caps are irrelevant here — that is the whole point
+    of counting cumulatively. ``2090 / 2100 → 2120 / 3300`` is +30, not the
+    ``(2100 - 2090) + 2120`` the level-internal formula would produce.
+
+    Crossing several levels at once is fine for the same reason: the difference
+    stays well defined however many thresholds it passes.
+    """
+    total = current.level_xp
+
+    if previous.is_cumulative:
+        # Measured from the high-water mark, so a total that fell once cannot
+        # make the recovery pay the same range a second time.
+        baseline = previous.measuring_total
+        delta = total - baseline
+        if delta < 0:
+            return DeltaResult(
+                classification=CLASSIFICATION_WARNING,
+                xp_delta=0,
+                warning=(
+                    f"Die Japanisch-Gesamt-XP sind gesunken "
+                    f"({baseline} → {total}). Es wird kein XP vergeben."
+                ),
+                reward_calculation=CALC_CUMULATIVE,
+            )
+        return DeltaResult(
+            classification=CLASSIFICATION_PROGRESS,
+            xp_delta=delta,
+            reward_calculation=CALC_CUMULATIVE,
+        )
+
+    return _bridge_from_legacy(current, previous)
+
+
+def _bridge_from_legacy(
+    current: JapaneseSave, previous: PreviousState
+) -> DeltaResult:
+    """The one-off step from a legacy snapshot into cumulative counting.
+
+    Safe in exactly one case. The documented campaign began at level 2, which
+    is also the cumulative zero point, so a legacy level-2 bar already *is* a
+    cumulative total and the difference is meaningful:
+
+        legacy  Lv 2 | 708 / 1000   →   v2  Lv 3 | 1038 / 2100   =   +330
+
+    Not ``(1000 - 708) + 1038 = 1330``: that formula assumes the new bar
+    restarted at zero, which under Version 2 it does not.
+
+    From any other legacy level the old bar counts inside that level and its
+    cumulative equivalent is unknowable, so nothing is guessed. An explicit
+    Session-XP line is accepted as the user's own statement; otherwise the
+    snapshot is stored and no XP is paid.
+    """
+    total = current.level_xp
+
+    if previous.character_level == BASELINE_LEVEL:
+        delta = total - previous.level_xp
+        if delta < 0:
+            return DeltaResult(
+                classification=CLASSIFICATION_WARNING,
+                xp_delta=0,
+                warning=(
+                    f"Die neuen Gesamt-XP ({total}) liegen unter dem letzten "
+                    f"Legacy-Stand ({previous.level_xp}). Es wird kein XP vergeben."
+                ),
+                reward_calculation=CALC_BRIDGE,
+            )
+        return DeltaResult(
+            classification=CLASSIFICATION_PROGRESS,
+            xp_delta=delta,
+            warning=(
+                f"Wechsel auf SAVE-Version 2: der letzte Legacy-Stand "
+                f"(Lv {BASELINE_LEVEL}, {previous.level_xp} XP) wird als "
+                f"kumulative Baseline verwendet. Zuwachs {delta} XP."
+            ),
+            reward_calculation=CALC_BRIDGE,
+        )
+
+    if current.session_xp is not None:
+        return DeltaResult(
+            classification=CLASSIFICATION_PROGRESS,
+            xp_delta=max(0, current.session_xp),
+            warning=(
+                f"Wechsel auf SAVE-Version 2 aus Level "
+                f"{previous.character_level}: der kumulative Ausgangswert ist "
+                f"nicht bestimmbar. Es werden die angegebenen "
+                f"{max(0, current.session_xp)} Session-XP verwendet."
+            ),
+            reward_calculation=CALC_BRIDGE,
+        )
+
+    return DeltaResult(
+        classification=CLASSIFICATION_WARNING,
+        xp_delta=0,
+        warning=(
+            f"Wechsel auf SAVE-Version 2 aus Level "
+            f"{previous.character_level}: der letzte Legacy-Balken zählte "
+            f"innerhalb dieses Levels, sein kumulativer Wert ist nicht "
+            f"rekonstruierbar. Es wird kein XP vergeben — eine Zeile "
+            f"„Session-XP:“ im SAVE würde den Zuwachs eindeutig machen."
+        ),
+        reward_calculation=CALC_BRIDGE,
+    )
+
+
 def _legacy_level_delta(
     current: JapaneseSave, previous: PreviousState
 ) -> DeltaResult:
     """Pre-session-mode behaviour: derive the delta from the source level bar."""
+
+    # A version-1 SAVE measured against a version-2 snapshot compares two
+    # different scales: the previous value is a cumulative total, the current
+    # bar counts inside its level. Subtracting one from the other invents XP —
+    # a cumulative 1500 against a level bar of 200 produced +800 out of
+    # nothing. There is no honest conversion in this direction, so nothing is
+    # guessed.
+    if previous.is_cumulative:
+        return DeltaResult(
+            classification=CLASSIFICATION_WARNING,
+            xp_delta=0,
+            warning=(
+                "Dieser SAVE ist Version 1, der letzte Import war Version 2. "
+                "Der levelinterne Balken lässt sich nicht gegen einen "
+                "kumulativen Gesamtstand rechnen. Es wird kein XP vergeben — "
+                "ein Version-2-SAVE macht den Zuwachs eindeutig."
+            ),
+            reward_calculation=CALC_LEGACY,
+        )
 
     # Implausible caps make every derived delta meaningless.
     if current.level_xp_cap <= 0 or previous.level_xp_cap <= 0:

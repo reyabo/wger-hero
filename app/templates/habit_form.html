@@ -10,22 +10,22 @@
   <form method="POST" action="{{ form_action }}" class="form">
   {{ csrf_input(request) }}
     <div class="form-row">
-      <label for="title">Title</label>
+      <label for="title">Titel</label>
       <input type="text" id="title" name="title" required
-             value="{{ habit.title if habit else '' }}" placeholder="e.g. Read for 30 minutes">
+             value="{{ habit.title if habit else '' }}" placeholder="z. B. 30 Minuten lesen">
     </div>
 
     <div class="form-row">
-      <label for="description">Description</label>
+      <label for="description">Beschreibung</label>
       <textarea id="description" name="description" rows="2"
-                placeholder="Optional notes">{{ habit.description if habit and habit.description else '' }}</textarea>
+                placeholder="Optionale Notizen">{{ habit.description if habit and habit.description else '' }}</textarea>
     </div>
 
     <div class="form-grid">
       <div class="form-row">
-        <label for="category">Category</label>
+        <label for="category">Kategorie</label>
         <select id="category" name="category" onchange="updatePreview()">
-          <option value="">— select —</option>
+          <option value="">— bitte wählen —</option>
           {% for key, label in categories.items() %}
           <option value="{{ key }}" {% if habit and habit.category == key %}selected{% endif %}>{{ label }}</option>
           {% endfor %}
@@ -33,9 +33,9 @@
       </div>
 
       <div class="form-row">
-        <label for="duration_size">Duration</label>
+        <label for="duration_size">Dauer</label>
         <select id="duration_size" name="duration_size" onchange="updatePreview()">
-          <option value="">— select —</option>
+          <option value="">— bitte wählen —</option>
           {% for key, label in duration_labels.items() %}
           <option value="{{ key }}" {% if habit and habit.duration_size == key %}selected{% endif %}>{{ label }}</option>
           {% endfor %}
@@ -43,9 +43,9 @@
       </div>
 
       <div class="form-row">
-        <label for="effort">Effort</label>
+        <label for="effort">Aufwand</label>
         <select id="effort" name="effort" onchange="updatePreview()">
-          <option value="">— select —</option>
+          <option value="">— bitte wählen —</option>
           {% for key, label in effort_labels.items() %}
           <option value="{{ key }}" {% if habit and habit.effort == key %}selected{% endif %}>{{ label }}</option>
           {% endfor %}
@@ -53,16 +53,16 @@
       </div>
 
       <div class="form-row">
-        <label for="recurrence">Recurrence</label>
+        <label for="recurrence">Wiederholung</label>
         <select id="recurrence" name="recurrence">
           {% for r in recurrences %}
-          <option value="{{ r }}" {% if habit and habit.recurrence == r %}selected{% elif not habit and r == 'daily' %}selected{% endif %}>{{ r }}</option>
+          <option value="{{ r }}" {% if habit and habit.recurrence == r %}selected{% elif not habit and r == 'daily' %}selected{% endif %}>{{ recurrence_labels.get(r, r) }}</option>
           {% endfor %}
         </select>
       </div>
 
       <div class="form-row">
-        <label for="target_count">Target count (per period)</label>
+        <label for="target_count">Zielzahl (pro Zeitraum)</label>
         <input type="number" id="target_count" name="target_count" min="1"
                value="{{ habit.target_count if habit else 1 }}">
       </div>
@@ -93,13 +93,13 @@
     <div class="form-row checkbox-row">
       <label class="checkbox">
         <input type="checkbox" name="active" {% if not habit or habit.active %}checked{% endif %}>
-        Active
+        Aktiv
       </label>
     </div>
 
     <div class="form-actions">
-      <button type="submit" class="btn btn-primary">Save</button>
-      <a href="/habits" class="btn btn-ghost">Cancel</a>
+      <button type="submit" class="btn btn-primary">Speichern</button>
+      <a href="/habits" class="btn btn-ghost">Abbrechen</a>
     </div>
   </form>
 </section>

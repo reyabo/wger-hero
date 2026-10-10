@@ -22,20 +22,24 @@ def _client(sessions=None, logs=None, exercises=None, log_exc=None):
     return c
 
 
-SESSIONS = [{"id": 1, "date": "2024-03-01", "workout": 1}]
+SESSIONS = [{"id": "test-session-1", "date": "2024-03-01", "routine": 1}]
 
 
-# ── 1. /api/v2/log/ 404 treated as expected, not an error ────────────────────
+# ── 1. A 404 on the log endpoint must not fail the sync ─────────────────────
 
 @pytest.mark.asyncio
 async def test_log_404_returns_empty_not_error(db):
-    """WgerClient.get_exercise_logs must return [] silently on 404."""
+    """A 404 still yields [] so the sync carries on without exercise detail.
+
+    On a supported wger version this is not an expected success case — the
+    client logs it as a warning — but the sync must not lose the workout XP
+    over missing detail.
+    """
     from app.wger_client import WgerClient as RealClient
 
-    # Patch _get_all to raise 404 for /log/ path
     async def fake_get_all(path, params=None):
-        if "/log/" in path:
-            raise WgerClientError("HTTP 404 from /api/v2/log/")
+        if "workoutlog" in path:
+            raise WgerClientError("HTTP 404")
         return []
 
     client = RealClient.__new__(RealClient)
@@ -86,7 +90,10 @@ async def test_exercise_catalog_fetched_when_logs_present(db):
     db.add(hero)
     db.commit()
 
-    logs = [{"id": 1, "exercise": 5, "reps": 8, "weight": 60, "rir": None, "workout": 1}]
+    logs = [{
+        "id": "test-log-1", "session": "test-session-1", "exercise": 5,
+        "repetitions": "8", "weight": "60", "rir": None, "routine": 1,
+    }]
     client = _client(sessions=SESSIONS, logs=logs, exercises=[{"id": 5, "name": "Squat"}])
     await sync_workouts(db, client, fetch_exercise_logs=True)
 
@@ -182,3 +189,63 @@ def test_wger_fetch_exercise_logs_setting_false(monkeypatch):
     s = cfg.Settings()
     assert s.WGER_FETCH_EXERCISE_LOGS is False
     cfg._settings = None
+
+
+# ── The log endpoint and its filter ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_the_log_endpoint_is_workoutlog():
+    """/api/v2/log/ answers 404 on the deployed wger; workoutlog is the one."""
+    from app.wger_client import WgerClient as RealClient
+
+    seen: dict = {}
+
+    async def fake_get_all(path, params=None):
+        seen["path"] = path
+        seen["params"] = params
+        return []
+
+    client = RealClient.__new__(RealClient)
+    client._base_url = "https://wger.example.com"
+    client._headers = {}
+    client._get_all = fake_get_all
+
+    await client.get_exercise_logs()
+    assert seen["path"] == "/api/v2/workoutlog/"
+    assert "/api/v2/log/" != seen["path"]
+
+
+@pytest.mark.asyncio
+async def test_a_session_filter_passes_the_uuid_through_unchanged():
+    """The session id is a string — coercing it to int would drop every log."""
+    from app.wger_client import WgerClient as RealClient
+
+    seen: dict = {}
+
+    async def fake_get_all(path, params=None):
+        seen["params"] = params
+        return []
+
+    client = RealClient.__new__(RealClient)
+    client._base_url = "https://wger.example.com"
+    client._headers = {}
+    client._get_all = fake_get_all
+
+    await client.get_exercise_logs(session_id="test-session-aaaa-1111")
+    assert seen["params"] == {"session": "test-session-aaaa-1111"}
+
+
+@pytest.mark.asyncio
+async def test_a_non_404_error_still_propagates():
+    from app.wger_client import WgerClient as RealClient
+
+    async def fake_get_all(path, params=None):
+        raise WgerClientError("HTTP 500")
+
+    client = RealClient.__new__(RealClient)
+    client._base_url = "https://wger.example.com"
+    client._headers = {}
+    client._get_all = fake_get_all
+
+    with pytest.raises(WgerClientError):
+        await client.get_exercise_logs()

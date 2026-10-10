@@ -12,16 +12,70 @@ Your [wger](https://wger.de) instance is one **automatic** data source (workout 
 
 ## Features
 
-- **Manual habits** — repeatable, user-defined actions with their own XP and stat rewards
-- **Custom quests** — `manual`, `habit_count`, and `workout_count` goals over daily/weekly/monthly/once periods
-- **Global XP vs. stat XP** — global XP drives your level; stat XP grows 10 attributes (data ready for a future radar screen)
+- **Goals** — long-running aims with status, pause history, momentum and streaks; archived, never deleted
+- **Manual habits** — repeatable, user-defined actions with their own XP and stat rewards, optionally planned on weekdays
+- **Custom quests** — `manual`, `habit_count`, `workout_count`, `workout_variety` and `japanese_session_count` over daily/weekly/monthly/once periods, with append-only `QuestCompletion` deduplication
+- **`/today` and `/week`** — read-only operational views over everything above
+- **Global XP vs. stat XP** — global XP drives your level; stat XP grows 10 attributes
+- **Japanese SAVE import** — a small required core plus independent optional metrics, deterministic session rewards
+- **Progressive Web App** — installable, with a deliberately tiny service worker and a static offline page
+- **Starter campaign** — three prepared goals, previewed and confirmed, idempotent, never automatic
 - Reads wger via the REST API (read-only) and awards XP for completed workouts, conditioning, and logged RIR
 - Simple level progression: `1000 + level × 250 XP` per level
 - Achievements (First Blood, Triple Threat, …)
 - Accidental double-click protection on habit completion
-- Clean server-rendered dashboard — no external CDN, no analytics, no tracking
+- Login, signed session cookies and CSRF on every state-changing form
+- Clean server-rendered interface — no external CDN, no fonts, no analytics, no tracking
 - Deduplication: syncing the same workout twice never awards XP twice
 - `/healthz` endpoint for container health checks
+
+## Architecture at a glance
+
+| Layer | What it is |
+|---|---|
+| HTTP | **FastAPI**, server-rendered **Jinja2** — no SPA, no client-side router |
+| Data | **SQLAlchemy 2.0** over **SQLite** (WAL in production), **Alembic** migrations |
+| Deployment | **Docker Compose**, one container behind **Caddy**, single user |
+| Auth | Argon2 password hash from a file, signed session cookie, CSRF on every POST |
+
+The domain rules live in modules that need neither FastAPI nor a database
+session, so they are unit-testable on their own: `xp.py`, `rewards.py`,
+`japanese_saves.py`, `momentum.py`, `goals.py` (its status rules). The
+database-facing services — `habits.py`, `quests.py`, `goal_progress.py`,
+`planning.py`, `japanese_import.py`, `starter.py` — map stored rows onto them
+and never reimplement a rule.
+
+Every reward is written as an auditable row: `XpEvent`, `StatXpEvent`,
+`HabitCompletion`, `QuestCompletion`, `JapaneseSaveImport`. Those tables are
+append-only. Nothing in the app recalculates history.
+
+## The interface
+
+Server-rendered, dark, and deliberately quiet. The navigation is Übersicht,
+Heute, Woche, Ziele, Habits, Quests, Achievements, Attribute, Japanisch,
+Einstellungen.
+
+`/today` leads with the hero panel — name, level, XP into the current level,
+total XP, all straight from `app/xp.py`. There is no character artwork: the
+sigil is a CSS ring around a rune, so no image is loaded and nobody's figure is
+imitated.
+
+**Completing a habit is a moment.** A confirmed completion writes one
+short-lived signed cookie; the next page consumes it, shows the reward and
+deletes it. That is what makes it appear exactly once — a reload has no cookie
+left, an inactive habit and a deduplicated double-click never set one, and a
+CSRF rejection never reaches the route. The text is bounded by the actual
+result: "+XP" only when XP was really awarded.
+
+Accessibility is part of it, not an afterthought: a skip link, visible focus
+rings, 44px touch targets, semantic headings, an `aria-live` region for the
+success message, and every status written as a **word** rather than signalled by
+colour alone. Under `prefers-reduced-motion` every animation is dropped and
+replaced by a standing border and background change, so a completed habit stays
+unmistakable without a single frame of movement.
+
+Nothing is ever labelled "failed". A paused goal is neutral, a missing week is
+"keine Daten", and a skipped day costs nothing.
 
 ## Quick Start (Docker)
 
@@ -54,13 +108,51 @@ chmod 600 secrets/wger_api_token.txt
 
 The Docker Compose file mounts this as a read-only secret at `/run/secrets/wger_api_token`.
 
-### 3. Create the data directory
+### 3. Set up access protection
+
+`AUTH_ENABLED` defaults to **true**, and the app reads both files below on
+*every* request. If either is missing the app answers `503 {"detail": "Auth not
+configured"}` on every path — including `/login` and `/healthz`, so the
+container's healthcheck goes red too. This is deliberate: without a signing key
+no session can be trusted, so it fails closed rather than open.
+
+```bash
+umask 077
+
+# The session signing key
+openssl rand -hex 32 > secrets/hero_session_secret
+
+# The Argon2 hash of your one password (typed interactively, so it never
+# reaches the shell history)
+python - <<'EOF' > secrets/hero_password_hash
+from argon2 import PasswordHasher
+from getpass import getpass
+print(PasswordHasher().hash(getpass("Passwort: ")), end="")
+EOF
+
+chmod 400 secrets/hero_session_secret secrets/hero_password_hash
+```
+
+Compose mounts both read-only at `/run/secrets/`. Rotating the session secret
+logs you out; rotating the password hash does not, until the session expires.
+
+To check what went wrong without exposing anything, read the log — the response
+stays deliberately terse, the log line is precise:
+
+```bash
+docker compose logs wger-hero | grep "Auth is enabled but unusable"
+```
+
+For local development only, `AUTH_ENABLED=false` skips this entirely (and
+disables CSRF with it). Never in production.
+
+### 4. Create the data directory
 
 ```bash
 sudo mkdir -p /srv/data/wger-hero
 ```
 
-### 4. Start the app
+### 5. Start the app
 
 ```bash
 docker compose up -d --build
@@ -68,7 +160,7 @@ docker compose up -d --build
 
 The app is available at `http://localhost:8091`.
 
-### 5. Sync your workouts
+### 6. Sync your workouts
 
 Open the dashboard and click **Sync Now**, or POST to `/sync`:
 
@@ -111,7 +203,7 @@ All tests use in-memory SQLite and mocked wger clients — no real wger instance
 | `HERO_NAME` | `Hero` | Display name for your character |
 | `DATABASE_URL` | `sqlite:////data/wger_hero.db` | SQLite database path |
 | `APP_ENV` | `production` | Environment label |
-| `WGER_FETCH_EXERCISE_LOGS` | `true` | Set `false` to skip `/api/v2/log/` + exercise catalog (older wger) |
+| `WGER_FETCH_EXERCISE_LOGS` | `true` | Set `false` to skip `/api/v2/workoutlog/` + the exercise catalogue. Workout XP and strength are unaffected |
 | `SYNC_FROM_DATE` | — | Only sync workouts on/after this date (`YYYY-MM-DD`), enforced locally |
 
 Token resolution order (highest priority first):
@@ -146,7 +238,32 @@ A habit is a repeatable action you complete for XP. Create one at `/habits/new`:
 | Stat rewards | XP added to specific attributes per completion |
 | Feste Wochentage | **Optional** weekday plan — see below |
 
-Completing a habit creates an auditable completion record, awards global XP **and** stat XP, writes the XP events, and updates your hero. A second click within a couple of seconds is ignored so you never double-award by accident. Inactive habits cannot be completed.
+Completing a habit creates an auditable completion record, awards global XP **and** stat XP, writes the XP events, and updates your hero. Inactive habits cannot be completed.
+
+#### How often a habit can be completed
+
+**Target count is a cap, not just a display.** A habit allows `target_count`
+completions per period, and the period is its own recurrence:
+
+| Recurrence | Period |
+|---|---|
+| `daily` | the calendar day |
+| `weekly` | Monday–Sunday |
+| `monthly` | the calendar month |
+| `flexible` | the calendar day — flexible means "not tied to a weekday", not "unlimited" |
+
+Once the allowance is used up, the completion route refuses with
+`period_complete`: no XP event, no stat XP, no completion row, and no reward
+animation. `/today` and the habit list stop offering the button and show the
+state instead, so the action is never dangled where it could only be rejected.
+
+This closes an XP loophole — before, only an accidental double-click within two
+seconds was blocked, and the same habit could otherwise be completed over and
+over for XP. The two guards are separate and both still apply.
+
+Existing history is never touched. A habit that already holds more completions
+than its target — recorded before this rule, or after the target was lowered —
+simply reports no remaining allowance; nothing is deleted or clawed back.
 
 #### Optional weekday planning
 
@@ -172,15 +289,17 @@ A quest is a larger goal with a period. Create one at `/quests/new`:
 
 | Type | Progress source |
 |---|---|
-| `manual` | You mark it complete yourself |
-| `habit_count` | Number of habit completions in the period (optionally filtered by a *match text* against habit titles) |
-| `workout_count` | Number of synced wger workouts in the period |
+| `manual` | You mark it complete yourself — nothing counts it for you |
+| `habit_count` | Habit completions in the period, bound by a stable habit id (a *match text* against titles remains as the fallback for older quests) |
+| `workout_count` | Synced wger workouts in the period |
+| `workout_variety` | Distinct workout names from a comma-separated term list |
+| `japanese_session_count` | Confirmed Japanese sessions — see below for what counts |
 
 Periods are `daily` · `weekly` · `monthly` · `once`. Quests can carry their own stat rewards and can be marked **repeatable** to re-arm for the next period after completion. The built-in seeded quests (Week Warrior, HOME HERO × SUPERMOVER 3) keep working unchanged.
 
 ## Stats
 
-Global XP (your level) and stat XP (your attributes) are tracked separately. There are 10 stats; stat totals are stored per attribute and surfaced on the dashboard (the radar chart is intentionally not built yet — the data is prepared for it):
+Global XP (your level) and stat XP (your attributes) are tracked separately. There are 10 stats, shown as a radar on `/stats`:
 
 | Key | Display (DE) | Key | Display (DE) |
 |---|---|---|---|
@@ -190,6 +309,246 @@ Global XP (your level) and stat XP (your attributes) are tracked separately. The
 | `mobility` | Beweglichkeit | `creativity` | Kreativität |
 | `body_control` | Körperkontrolle | `recovery` | Regeneration |
 
+### Attribute detail (`/stats/<key>`)
+
+Each attribute name on `/stats` links to its own page: level and progress, where
+the XP came from grouped by source (habit, quest, wger, Japanese), the strongest
+individual contributions, and the most recent awards.
+
+Two things it is careful about. Shares are computed over the **whole** ledger for
+that attribute, while the event list is only the last 30 entries and says so —
+the authoritative total is `HeroStat.xp`, never the visible slice. And the same
+title from two different sources stays two rows, because a habit and a quest may
+share a name without being the same thing.
+
+An unknown key is a 404, not an empty page.
+
+## FitTrackee endurance sync
+
+A read-only second activity source. wger stays the strength source; FitTrackee
+becomes the endurance source. The two never mix: separate source ids, separate
+quest types, separate stats, and no attempt to detect that the same real session
+was logged in both. **Log strength work in wger and endurance work in
+FitTrackee** — Hero cannot tell a double entry from two genuine sessions, and
+guessing from title, time or duration would be worse than not guessing.
+
+A FitTrackee activity never completes a habit. Awarding habit XP *and* activity
+XP for one real training session would pay twice for it.
+
+### What it reads, and what it refuses to store
+
+Three documented endpoints, verified against the FitTrackee 1.3.x API docs:
+
+| Endpoint | Why |
+|---|---|
+| `GET /api/sports` | the instance's sport catalogue |
+| `GET /api/workouts` | the activity collection, fully paginated |
+| `POST /api/oauth/token` | access token refresh |
+
+No cookies, no scraping, no frontend endpoint, nothing undocumented, and nothing
+that writes. The requested scope is **`workouts:read`** and nothing else.
+
+Of each activity Hero keeps only what the reward and quest rules need: id, sport,
+date, duration, moving time, distance, average and maximum speed, average and
+maximum heart rate, and the remote modification date. **GPS tracks, coordinates,
+bounds, maps, titles, notes, descriptions, media and weather are dropped at the
+client boundary** — they are never returned to the rest of the app, so no later
+layer can store or log them by accident.
+
+### OAuth2 setup
+
+Authorization Code with PKCE (`S256`) and a `state` parameter. In FitTrackee,
+under your profile's apps, create an OAuth client for wger-hero with the
+redirect URI pointing at Hero's callback:
+
+```
+https://your-hero-host/settings/fittrackee/callback
+```
+
+Then configure Hero:
+
+```bash
+FITTRACKEE_BASE_URL=https://fittrackee.example.com
+FITTRACKEE_CLIENT_ID=the-client-id-from-fittrackee
+FITTRACKEE_REDIRECT_URI=https://your-hero-host/settings/fittrackee/callback
+```
+
+The **client secret** goes in a read-only file, never in `.env`:
+
+```bash
+umask 077
+install -d -m 700 secrets/fittrackee
+# paste the secret, then Ctrl-D — it never becomes a command argument
+cat > secrets/fittrackee/client_secret
+chmod 400 secrets/fittrackee/client_secret
+```
+
+Access and refresh tokens need to be *rewritten* on every refresh, so they live
+in a separate writable directory — never the same place as the read-only
+secret, so a token write can never clobber it:
+
+```bash
+install -d -m 700 secrets/fittrackee-oauth
+```
+
+Compose mounts the secret read-only at `/run/secrets/fittrackee_client_secret`
+and the token store writable at `/run/wger-hero-fittrackee/`. Tokens are written
+atomically (temp file → `fsync` → `os.replace`) with mode `600`, because a
+half-written token file costs the refresh token and forces a reconnect.
+
+No token, refresh token, client secret or PKCE verifier is ever logged, rendered,
+put in an error message or stored in the database. `/settings/fittrackee` shows
+only *whether* a credential is configured.
+
+### Setup order — nothing pays before step 7
+
+1. Configure `FITTRACKEE_BASE_URL`
+2. Create the OAuth app in FitTrackee
+3. Configure the client id and mount the client secret
+4. **Connect to FitTrackee** on `/settings/fittrackee`
+5. **Refresh sports**
+6. **Tick the sports that count as endurance**
+7. **Create the baseline**
+8. **Create the endurance goal**
+9. From here, normal syncs
+
+### The baseline pays nothing
+
+The first import is history, not achievement. Every activity it finds is stored
+with `reward_eligible = false` and awards **0 XP** — connecting an account with
+two years of running in it must not hand out thousands of XP for training that
+happened before Hero existed.
+
+That flag is written once and never flips. Editing a historical workout,
+enabling its sport later, changing its duration or restarting the app all leave
+it ineligible. Its data is kept up to date; its reward stays zero.
+
+### What qualifies
+
+A workout counts as an endurance unit when **both** hold:
+
+- its sport is one you explicitly ticked, and
+- it lasted at least **10 minutes** (moving time when FitTrackee reports it,
+  otherwise total duration).
+
+Sport ids are per-instance and are never inferred — not from an id, not from a
+name. A newly seen sport arrives inert and stays inert until you enable it, so a
+FitTrackee release that adds a sport needs no code change here.
+
+Both rules are Hero gamification choices, not statements about training.
+
+### The reward
+
+Every qualifying unit is worth a flat **+40 global XP and +40 `endurance` XP**,
+whatever its distance, pace or heart rate.
+
+No per-kilometre or per-minute XP: that would let one long activity outscore a
+month of consistency and make sports incomparable. Heart rate is stored when
+present and **never scored** — no zone detection, no VO2max estimate, no
+max-HR formula, no calorie or training-load figure. Without individual baselines
+all of those would be invention. Extra volume is recognised through quests and
+milestones instead.
+
+### Quest sources
+
+| Source | Counts |
+|---|---|
+| `fittrackee_workout_count` | distinct qualifying activities in the period |
+| `fittrackee_duration_minutes` | qualifying minutes in the period |
+
+Both count only workouts that qualify *and* are reward-eligible, so history
+fills no progress bar either.
+
+Either source can be restricted to weekdays through `allowed_weekdays`, stored
+as sorted ISO weekday digits (`"2"`, `"6,7"`) — the same 1 = Monday … 7 = Sunday
+convention `habit_schedule_days` uses. It is validated on write and is never
+free-form data. The weekday comes from the **local** date via
+`quests.app_date_of()`: a run finishing 23:30 UTC on Monday is 01:30 on Tuesday
+in `Europe/Berlin`, and it is the Tuesday run.
+
+Minutes are summed in seconds and converted once at the end. Rounding each
+workout down first would turn three sessions of 29:50 into 87 minutes instead of
+89½ and make the quest quietly harder than it says.
+
+### The goal programme "Kardiovaskuläre Ausdauer"
+
+Optional, created only when you ask for it on `/settings/fittrackee`, and
+idempotent — running it again changes nothing, and a quest you edited yourself
+is never reset.
+
+It models one specific plan: **one endurance session on Tuesday, one at the
+weekend**.
+
+| | Quest | Source | Target | Reward |
+|---|---|---|---|---|
+| weekly | *Dienstagsrunde* | `fittrackee_workout_count`, Tuesday only | 1 | 75 + 75 |
+| weekly | *Wochenendrunde* | `fittrackee_workout_count`, Saturday or Sunday | 1 | 100 + 100 |
+| monthly | *Vier Stunden Basis* | `fittrackee_duration_minutes` | 240 | 150 + 150 |
+| milestone | *Der erste Schritt* | `fittrackee_workout_count` | 1 | 75 + 75 |
+| milestone | *Fünf Wochen Ausdauer* | `fittrackee_workout_count` | 10 | 125 + 125 |
+| milestone | *Zehn Stunden Ausdauer* | `fittrackee_duration_minutes` | 600 | 175 + 175 |
+| milestone | *Fünfzehn Wochen Ausdauer* | `fittrackee_workout_count` | 30 | 225 + 225 |
+| milestone | *Dreißig Stunden Ausdauer* | `fittrackee_duration_minutes` | 1800 | 300 + 300 |
+
+**The weekly pair is the whole trick.** The existing goal engine already counts
+a week as successful when every weekly quest of the goal was rewarded, so
+"Tuesday *and* the weekend" falls out of the data with no special casing
+anywhere in the goal, streak or momentum code. Tuesday and the weekend are
+disjoint, so one activity can never satisfy both.
+
+```
+Tuesday + Saturday   → successful week
+Tuesday + Sunday     → successful week
+Saturday + Sunday    → not successful (no Tuesday)
+Tuesday + Thursday   → not successful (no weekend day)
+two Tuesday sessions → only the Tuesday slot
+```
+
+The monthly quest and the milestones are deliberately *not* weekly, so they
+cannot affect that judgement. "Fünf Wochen" and "Fünfzehn Wochen" are motivating
+labels — the condition is 10 and 30 qualifying workouts, and no calendar week is
+derived from them.
+
+A Thursday ride still earns its flat 40 + 40 and still counts towards the
+monthly quest and the once-milestones. It simply fills neither weekly slot.
+That is intended: the plan is modelled by quests, and real extra movement is
+still recognised as activity.
+
+### Syncing
+
+Manual only — there is no cron, no scheduler, no background worker and no
+polling in this version, so XP never appears unexpectedly.
+
+```bash
+python -m app.fittrackee_sync status            # local state, contacts nothing
+python -m app.fittrackee_sync probe             # reachability + sports
+python -m app.fittrackee_sync baseline --dry-run
+python -m app.fittrackee_sync baseline
+python -m app.fittrackee_sync sync --dry-run
+python -m app.fittrackee_sync sync
+```
+
+A dry run reports what would happen — new, changed, unchanged, qualifying,
+not qualifying, and the XP that would be awarded — and writes nothing.
+
+The fetch must fully succeed before anything is written. A partial page walk
+must never become a partial sync: the missing activities would look like "these
+do not exist" and would be awarded again on the next run.
+
+Re-running an unchanged sync awards nothing. A changed activity has its previous
+award read back from the audit rows, removed, and rewritten exactly once, in one
+transaction — so a workout stretched from 20 to 45 minutes still nets one award,
+and one shortened below ten minutes has its award taken back while the record
+itself is kept.
+
+### Known limitation: deletions
+
+**Deleting an activity in FitTrackee is not undone in Hero in this version.**
+Absence from a single fetch is not proof of deletion — a sync window, an API
+error, a permission change or a temporary inconsistency all look identical to
+it, and revoking XP on that evidence would be destructive on a false positive.
+An explicit reconciliation can be built later as its own change.
+
 ## Japanese SAVE Import
 
 Paste the coach's SAVE block on `/japanese`, review the preview, confirm. The
@@ -197,12 +556,145 @@ import is the **single reward channel** for Japanese sessions — the seeded
 "Japanisch lernen" habit is no longer created, because it would reward the same
 session twice.
 
-### Preferred format
+### The required core
+
+A SAVE is valid with just these three lines between the markers:
 
 ```
 === 状態 SAVE ===
-Datum: 2026-07-31 | Streak: 4
-WaniKani: Lv 1 | Bunpro: N5, 5 Punkte
+Datum: 2026-08-01 | Streak: 4
+Charakter: Lv 2 (見習い) | 433 / 1000 XP
+語彙 180 | 文法 250 | 読解 0 | 聴解 0 | 会話 215
+=== END SAVE ===
+```
+
+They stay mandatory for a reason: the date drives the baseline / historical
+classification, the character line drives the level progress, and the five
+scores *are* the snapshot. Everything else is optional and simply absent when
+the coach did not report it.
+
+### Optional learning metrics
+
+Three independent lines. Each may appear alone, in any combination, or not at
+all:
+
+```
+WaniKani-Level: 2
+Bunpro-Level: N5
+Grammatikpunkte im SRS: 37
+```
+
+| Line | Accepted |
+|---|---|
+| `WaniKani-Level` | a non-negative integer — `2` yes, `zwei` no |
+| `Bunpro-Level` | one of `N1` … `N5`; anything else is refused |
+| `Grammatikpunkte im SRS` | any non-negative integer, `0` included; `-1` and `viele` are refused |
+
+**Absent is not zero — but it is *displayed* as zero.** Two separate rules:
+
+*Stored:* a missing line stores `None` (SQL `NULL`), meaning "the SAVE did not
+say". A written `0` stores `0`, a counted zero. They are different facts, they
+produce different normalized text and different duplicate hashes, and no value
+is ever carried over from an earlier import to fill a gap.
+
+*Displayed:* the two numeric metrics — `wanikani_level` and `bunpro_points` —
+are rendered as `0` when they are `NULL`. That is a presentation choice and
+nothing more. Rendering a page issues no `INSERT` and no `UPDATE`, never
+rewrites a `NULL` to `0`, and leaves the normalized text, the duplicate hash,
+the classification, the XP and the quest progress exactly as they were. A
+missing value and an imported `0` therefore look alike on screen while staying
+distinguishable inside — which is asserted by tests.
+
+The categorical `bunpro_level` is the exception: a missing level is shown as
+`—` / *Nicht angegeben*. Showing `0` or `N0` there would invent a level that
+does not exist.
+
+If a line is written but its number is missing or unreadable, that is a
+validation error, not "unset" — a typo should be corrected, not swallowed.
+
+### Combined legacy line
+
+The older single-line spelling keeps working, with every part after the
+WaniKani level optional:
+
+```
+WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS
+WaniKani: Lv 2 | Bunpro: N5, 1 Grammatikpunkt im SRS
+WaniKani: Lv 2 | Bunpro: N5, 5 Punkte
+WaniKani: Lv 2 | Bunpro: N5
+WaniKani: Lv 2
+Bunpro: N5
+```
+
+`Lv`, `Lv.` and `Level` are interchangeable, singular and plural both work, the
+suffix `im SRS` is optional, and whitespace around `|` and `,` is optional.
+
+Both spellings feed the **same three fields**, so this:
+
+```
+WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS
+```
+
+and this:
+
+```
+WaniKani-Level: 2
+Bunpro-Level: N5
+Grammatikpunkte im SRS: 10
+```
+
+produce identical values, identical normalized text and the identical duplicate
+hash.
+
+### When both spellings appear
+
+A SAVE may contain both. If every stated value agrees, it is accepted. If two
+statements contradict each other, the SAVE is refused with a message naming the
+field and both values:
+
+```
+Widersprüchliche Angaben für „Grammatikpunkte im SRS“: 10 und 37.
+```
+
+Neither side is quietly preferred — a contradiction is a question only the user
+can answer.
+
+### Optional coach notes
+
+```
+Aktueller Grammatikpunkt: これ
+Debuffs: keine
+Neue Vokabeln heute: keine
+Tagesquest: Erfüllt – Mini-Boss „Partikel-Golem“ besiegt.
+```
+
+Every one of them may be missing, and an empty value counts as missing. Absent
+stores `None`; no placeholder is invented and nothing is copied from a previous
+import. None of them influences XP, classification or duplicate detection.
+
+### Session mode and completion
+
+`Session-Modus` and `Session-Abschluss` are one statement written on two lines.
+Both present enables the deterministic session reward; both absent keeps the
+legacy level-delta evaluation. **Exactly one of them is a validation error** —
+half a statement cannot be evaluated deterministically, and guessing the other
+half is precisely what this app does not do:
+
+```
+„Session-Modus“ und „Session-Abschluss“ müssen gemeinsam angegeben werden.
+```
+
+An unknown *value* in either line is something else: the SAVE still imports as
+a snapshot, but the reward becomes a warning case with 0 XP, exactly as before.
+
+### Full example
+
+```
+=== 状態 SAVE ===
+Datum: 2026-08-01 | Streak: 4
+WaniKani-Level: 2
+Bunpro-Level: N5
+Grammatikpunkte im SRS: 37
 Charakter: Lv 2 (見習い) | 433 / 1000 XP
 Session-Modus: START
 Session-Abschluss: vollständig
@@ -214,25 +706,6 @@ Neue Vokabeln heute: keine
 Tagesquest: Erfüllt – Mini-Boss „Partikel-Golem“ besiegt.
 === END SAVE ===
 ```
-
-### Accepted wording variants
-
-The WaniKani/Bunpro line tolerates the coach's alternative phrasing. All four
-lines below are read identically (WaniKani level `2`, Bunpro level `N5`,
-`10` Bunpro points):
-
-```
-WaniKani: Lv 2 | Bunpro: N5, 10 Punkte
-WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS
-WaniKani: Lv 2|Bunpro: N5, 1 Grammatikpunkt im SRS
-WaniKani: Level 2 | Bunpro: N5, 10 Grammatikpunkte im SRS
-```
-
-`Lv`, `Lv.` and `Level` are interchangeable, `Punkt`/`Punkte`,
-`Grammatikpunkt`/`Grammatikpunkte` and the optional suffix `im SRS` are all
-accepted, and whitespace around `|` and `,` is optional. The number itself
-still has to be a non-negative integer — spelled-out numbers, a missing Bunpro
-count and negative values are rejected with a German error naming the line.
 
 ### Reward rules (deterministic, computed by wger-hero)
 
@@ -279,6 +752,358 @@ it still grants **global XP**, but **no attribute XP** — its amount comes from
 coach-maintained progress bar rather than a wger-hero rule, so only fully
 specified sessions move the radar.
 
+## Japanese SAVE version 2
+
+The coach moved from level-internal XP to cumulative totals. Both schemas are
+read; which one applies is decided by one line.
+
+```text
+SAVE-Version: 2
+```
+
+No marker means version 1. An unrecognised version is **refused**, not guessed
+at — reading a future format with today's rules is how a wrong reward gets paid.
+
+### What changed, and why it broke
+
+Under version 1, `708 / 1000 XP` meant "708 of the 1000 XP needed inside this
+level", and the left number reset on level-up. Under version 2 it never resets:
+`1038 / 2100` means 1038 cumulative XP since the level-2 baseline, with level 4
+starting at 2100.
+
+That difference produced the bug this fixes. Once a cumulative total passes the
+current level's threshold the bar legitimately reads past it — `1038 / 1000` —
+and the version-1 rule that a bar above its cap is implausible refused to award
+anything:
+
+```text
+Der Levelbalken liegt über der Obergrenze (1038 / 1000). Es wird kein XP vergeben.
+```
+
+That rule is still right for version 1 and still applies there. Version 2 simply
+does not use it.
+
+### Deltas
+
+| Case | Rule |
+|---|---|
+| two version-2 SAVEs | `new_total - old_total` |
+| two version-1 SAVEs | unchanged: same level → bar difference, +1 level → `(old_cap - old) + new` |
+| version 1 → version 2 | the bridge below |
+
+Level changes and moving caps are irrelevant to a cumulative delta — that is the
+point of counting cumulatively:
+
+```text
+1038 / 2100  →  1068 / 2100  =  +30
+2090 / 2100  →  2120 / 3300  =  +30      (a level-up, not +2130)
+3290 / 3300  →  3335 / 4600  =  +45
+```
+
+Crossing several levels at once works for the same reason. A falling total
+awards nothing and **never deducts**.
+
+### The version bridge
+
+The campaign began at level 2, which is also the cumulative zero point, so a
+legacy level-2 bar already *is* a cumulative total:
+
+```text
+legacy  Lv 2 | 708 / 1000     →     v2  Lv 3 | 1038 / 2100     =  +330 XP
+```
+
+Not `(1000 - 708) + 1038 = 1330`: that formula assumes the new bar restarted at
+zero, which under version 2 it does not.
+
+From any **other** legacy level the old bar counted inside that level and its
+cumulative equivalent is unknowable, so nothing is guessed. An explicit
+`Session-XP:` line is accepted as your own statement of the increment;
+otherwise the snapshot is stored and no XP is paid.
+
+### The curve
+
+Thirty levels, defined once in `app/japanese_levels.py` and never duplicated
+into a module or a template. Level 1 is historical prologue; level 2 is the
+cumulative zero point.
+
+| Lv | Rank | from | Lv | Rank | from |
+|---:|---|---:|---:|---|---:|
+| 2 | 見習い | 0 | 17 | 練達者 | 25500 |
+| 3 | 修行者 | 1000 | 18 | 達人 | 28000 |
+| 4 | 探究者 | 2100 | 19 | 師範代 | 30600 |
+| 5 | 挑戦者 | 3300 | 20 | 師範 | 33300 |
+| 6 | 旅人 | 4600 | 21 | 言葉の達人 | 36100 |
+| 7 | 冒険者 | 6000 | 22 | 声の達人 | 39000 |
+| 8 | 実践者 | 7500 | 23 | 文の達人 | 42000 |
+| 9 | 使い手 | 9100 | 24 | 会話の達人 | 45100 |
+| 10 | 熟練者 | 10800 | 25 | 言の葉の達人 | 48300 |
+| 11 | 言葉の旅人 | 12600 | 26 | 言霊使い | 51600 |
+| 12 | 文の探究者 | 14500 | 27 | 言の葉の賢者 | 55000 |
+| 13 | 声の使い手 | 16500 | 28 | 言霊の賢者 | 58500 |
+| 14 | 会話の使い手 | 18600 | 29 | 言霊の導師 | 62100 |
+| 15 | 言葉の使い手 | 20800 | 30 | 言霊の覇者 | 65800 |
+| 16 | 熟達者 | 23100 | | | |
+
+Six tiers of five levels: I 旅立ち, II 修行, III 実践, IV 熟練, V 奥義, VI 言霊.
+
+**This is coach gamification only.** Ranks and tiers carry no relation to JLPT,
+CEFR or any assessment, and the character level is not the global Hero level —
+`HeroProfile.level` stays canonical and is computed from global XP.
+
+A version-2 SAVE states its level, rank and next threshold, so all three are
+checked against the table on **every import**, not only in the preview. A
+mismatch is reported, never silently corrected: the coach is the source and this
+table is only a check.
+
+**Under version 2 the cumulative total is canonical.** Level, rank and the next
+threshold are derived from it; the rest of the character line is a rendering of
+the total, not an independent fact. When the two disagree the total wins.
+
+`Lv 2 | 1038 / 1000` is therefore not a valid version-2 state — 1038 cumulative
+XP is already past level 3's threshold of 1000. Three things happen, and all
+three matter:
+
+1. **A warning is recorded.** The disagreement is surfaced, so a broken coach
+   export gets found instead of hidden.
+2. **The XP is not withheld.** It follows the total, which is the part that is
+   almost certainly right; refusing it would put you back at 0 XP — the very
+   failure this schema was introduced to fix.
+3. **The row is stored in its corrected form**, here `Lv 3 (修行者) | 1038 /
+   2100`. A row that claimed level 2 beside a total of 1038 would contradict
+   itself, and it would hand the wrong level to the next import — which reads
+   the stored snapshot as its baseline.
+
+The correction is an interpretation, never a rewrite of the source: `raw_save`
+keeps the SAVE exactly as it was written, and the preview shows the correction
+before you confirm it. A SAVE that already agrees with the curve is stored
+untouched, and a version-1 SAVE is never corrected at all — it counts inside a
+level, so the curve says nothing about it.
+
+The check runs on **every** version-2 import, not only the cumulative delta
+path: the baseline, a backdated SAVE and both session paths return before that
+branch is reached, yet the row is corrected regardless — so validating only
+there meant a contradictory claim could be corrected silently, which is exactly
+the hiding this exists to prevent.
+
+**At level 30 there is no canonical cap**, because there is no next threshold.
+Whatever the coach wrote is not adopted as fact; the stored cap is 0, meaning
+"none", and the bar renders as `MAX`. The coach specification deliberately
+leaves that format open, so nothing is warned about there — it is simply not
+believed.
+
+**A cumulative counter is measured from its high-water mark.** A SAVE whose
+total fell — a coach reset, a different campaign, a bad export — is kept as a
+warning snapshot, but it does not become the measuring point. Otherwise the
+recovery would pay the range between the two all over again.
+
+**A version-1 SAVE after a version-2 one pays nothing.** The two are different
+scales: the stored value is a cumulative total, the incoming bar counts inside
+its level. Subtracting one from the other invented XP, so it is refused with a
+warning rather than guessed at.
+
+### Rank bosses
+
+Six milestones, one at the end of each tier. A SAVE written directly after a
+boss was first cleared may carry an optional, event-only group:
+
+```text
+Rangstufenboss-ID: jp-rank-boss-01
+Rangstufenboss-Status: bestanden
+Rangbelohnung-ID: jp-rank-reward-01
+Rangbelohnung: 旅立ちの証
+```
+
+| Boss | Lv | Title | Reward |
+|---|---:|---|---|
+| `jp-rank-boss-01` | 5 | 昇格試験 I – 旅立ちの試練 | 旅立ちの証 |
+| `jp-rank-boss-02` | 10 | 昇格試験 II – 修行の試練 | 修行の証 |
+| `jp-rank-boss-03` | 15 | 昇格試験 III – 実践の試練 | 実践の証 |
+| `jp-rank-boss-04` | 20 | 昇格試験 IV – 熟練の試練 | 熟練の証 |
+| `jp-rank-boss-05` | 25 | 昇格試験 V – 奥義の試練 | 奥義の証 |
+| `jp-rank-boss-06` | 30 | 昇格試験 VI – 言霊の試練 | 言霊の証 |
+
+A reward is a **permanent milestone and carries no XP**: reaching the level was
+already paid for by the XP that got there.
+
+An inconsistent combination grants nothing — an unknown id, a mismatched reward
+id or name, a status without an id, an id without a status. None of that costs
+you the rest of the SAVE: the snapshot and its XP are processed normally and
+the problem is shown as a warning.
+
+**The uniqueness is on `boss_id` alone, which is correct only because this
+application has exactly one user.** There is no user table, no `user_id` and no
+owner key anywhere in the schema — `app/auth.py` protects access with a single
+password rather than separating tenants — so the table is implicitly per-user.
+If wger-hero ever gains real accounts this becomes a data model bug, because
+boss 01 could then be claimed once across the whole installation, and the
+constraint has to become composite over `(owner, boss_id)`. Two tests pin the
+single-user assumption so that change cannot pass unnoticed.
+
+**Idempotence is enforced by the boss id, not by the SAVE hash.** The hash stops
+an identical paste from importing twice, but the same boss reported in a
+differently worded SAVE — a re-export, a corrected line, a later snapshot that
+still carries the group — would slip past it. `japanese_rank_rewards` has a
+unique index on `boss_id`, so a second grant cannot be written even if two
+requests race. Both mechanisms are needed and both are in place.
+
+### Storage
+
+`save_version` is new on `japanese_save_imports`; rows written before it are
+version 1, which is exactly what they are. `source_level_xp` keeps its column
+and gains a second meaning — level-internal under version 1, cumulative under
+version 2 — with `save_version` saying which. **No historical import is
+reinterpreted and no XP event is rewritten.**
+
+### Level 30
+
+Level 30 starts at 65800 cumulative XP and is the ceiling; totals keep rising
+while the level stays 30. The coach specification does not yet define a
+machine-readable right-hand side for the bar at that point, so nothing is
+frozen here: the progress view reports `at_max` and renders a full bar, and the
+delta is unaffected because it never reads the cap. When the coach settles on a
+format — a literal `MAX`, a repeated threshold, an omitted right side — it can
+be added to `japanese_levels.py` alone.
+
+### Example SAVEs
+
+Plain version 2:
+
+```text
+=== 状態 SAVE ===
+SAVE-Version: 2
+Datum: 2026-08-19 | Streak: 23
+WaniKani-Level: 2
+Bunpro-Level: N5
+Grammatikpunkte im SRS: 22
+Charakter: Lv 3 (修行者) | 1038 / 2100 XP
+語彙 295 | 文法 590 | 読解 10 | 聴解 0 | 会話 355
+Aktueller Grammatikpunkt: と
+Debuffs: keine
+Neue Vokabeln heute: keine
+Tagesquest: Beispiel
+=== END SAVE ===
+```
+
+With a cleared boss:
+
+```text
+=== 状態 SAVE ===
+SAVE-Version: 2
+Datum: 2026-09-02 | Streak: 37
+WaniKani-Level: 3
+Bunpro-Level: N5
+Grammatikpunkte im SRS: 41
+Charakter: Lv 5 (挑戦者) | 3350 / 4600 XP
+語彙 420 | 文法 810 | 読解 40 | 聴解 10 | 会話 500
+Aktueller Grammatikpunkt: ので
+Debuffs: keine
+Neue Vokabeln heute: keine
+Tagesquest: Beispiel
+Rangstufenboss-ID: jp-rank-boss-01
+Rangstufenboss-Status: bestanden
+Rangbelohnung-ID: jp-rank-reward-01
+Rangbelohnung: 旅立ちの証
+=== END SAVE ===
+```
+
+## wger workout sync
+
+wger is read-only and the source of truth for workouts. The sync is explicit —
+it never runs on container start.
+
+### What the current wger actually returns
+
+Verified against the deployed instance, not assumed:
+
+| Endpoint | Status | Notes |
+|---|---|---|
+| `/api/v2/workoutsession/` | 200 | `id` is a **string** UUID; there is no `workout` field |
+| `/api/v2/workoutlog/` | 200 | one row per performed **set**; links back through `session` |
+| `/api/v2/log/` | **404** | gone on this version — no longer used |
+
+So a session and its sets are linked as:
+
+```
+WorkoutSession.id  ←  WorkoutLog.session
+```
+
+Both are strings and are kept as strings throughout. Coercing a UUID to an
+integer would silently drop every log. The stable hero source id stays
+`session-<wger-session-id>`, so ids recorded by earlier syncs keep working.
+
+Field names moved too: `repetitions` replaces the old `reps` (and arrives as a
+string, like `weight`), while `rir` may be `null`. `reps` is still accepted as a
+fallback for older exports, but `repetitions` is the canonical name. An
+unreadable number never aborts a sync — that one set simply has no rep count.
+
+### "X exercises" counts exercises, not sets
+
+wger writes one `WorkoutLog` per set, so three sets of squats and two of bench
+press are five rows and **two exercises**. The sync summary reports the number
+of distinct exercises, identified by the stable wger exercise id. Every
+individual set is still kept — the weight and RIR of each one are what the
+bonuses are computed from.
+
+With `WGER_FETCH_EXERCISE_LOGS=false` no logs are requested at all, and the
+summary says **`exercise details disabled`**. That is deliberate: `0 exercises`
+would read as "this workout was empty", when the truth is that nothing was
+asked for.
+
+### Global XP and strength stat XP
+
+Two parallel ledgers, both auditable, both maintained by the same sync:
+
+| Award | Global XP | Stat XP |
+|---|---|---|
+| `workout_complete` | +100, attribute `Strength` | **+100 to the canonical `strength` stat** |
+| `conditioning_bonus` | +25 | — |
+| `rir_logged` | +10 | — |
+
+Only the completion award is mirrored onto a stat, one to one. Conditioning and
+RIR stay global-only: this project has no canonical stat mapping for them, and
+inventing one would quietly change the balance.
+
+### Re-syncing a changed workout
+
+A session whose content changed gets a new hash and is reconciled rather than
+added again. The previous awards are taken back from the **audit rows
+themselves** — every `XpEvent` and `StatXpEvent` for that `source_id` — and
+those rows are deleted before the new ones are written. `SyncEvent.xp_awarded`
+is a stored convenience total, not the authority: when the two disagree, the
+audit rows win and the discrepancy is reported instead of being subtracted
+twice on a guess.
+
+The whole sync commits once, so awards, stat awards, hero totals, level and
+sync events either all land or none do.
+
+Three invariants hold, each covered by a test:
+
+1. An unchanged sync never awards global XP twice.
+2. An unchanged sync never awards strength stat XP twice.
+3. A changed workout is reconciled without leaving stale audit rows behind and
+   without rewarding the hero twice.
+
+### Repairing workouts synced before this was fixed
+
+Workouts synced by an older version have their global XP but no strength stat
+XP. That is repaired once, explicitly:
+
+```bash
+python -m app.repair_wger_stat_xp --dry-run   # counts, writes nothing
+python -m app.repair_wger_stat_xp --apply     # adds only the missing stat XP
+```
+
+The candidates are read from the existing audit rows — every `XpEvent` with
+`source="wger"`, `event_type="workout_complete"` and `attribute="Strength"` —
+and each is credited with **its own** `xp` value. No count and no amount is
+hard-coded.
+
+It never touches global XP, `XpEvent` rows or `SyncEvent` rows. It is
+idempotent: a session that already has its stat award is skipped, and a second
+run reports nothing to do. Where the existing stat rows are ambiguous — two of
+them, or one with a different amount — the session is reported as a conflict
+and left completely alone rather than topped up on a guess.
+
 ## XP Rules (automatic, from wger)
 
 | Event | XP | Attribute |
@@ -314,12 +1139,27 @@ wger-hero/
 │   ├── wger_client.py  # wger API client (httpx)
 │   ├── sync.py         # Fetch → normalize → award XP
 │   ├── xp.py           # XP rules + level formula
-│   ├── habits.py       # Manual habit logic + completion rewards
-│   ├── quests.py       # Quest seeding, creation + progress
+│   ├── habits.py       # Manual habit logic, weekday plan + completion rewards
+│   ├── quests.py       # Quest seeding, creation, counters + progress
+│   ├── goals.py        # Goal status rules, pause bookkeeping
+│   ├── goal_progress.py# Stored history → week outcomes (pause overlap lives here)
+│   ├── momentum.py     # Pure momentum and streak calculation (no DB, no clock)
+│   ├── planning.py     # Read-only aggregation behind /today and /week
+│   ├── japanese_saves.py # SAVE parser, normalization, deterministic rewards
+│   ├── japanese_import.py# SAVE import service (snapshot + XP in one transaction)
+│   ├── starter.py      # Opt-in starter campaign: plan and apply
+│   ├── seed_programs.py# Optional programs + the starter CLI
 │   ├── stats.py        # 10-stat registry + stat-XP rewards
 │   ├── achievements.py # Achievement unlock logic
+│   ├── auth.py         # Password hash, session cookie, CSRF
 │   ├── templates/      # Jinja2 HTML templates
-│   └── static/         # CSS (no external CDN)
+│   └── static/         # CSS, manifest, service worker, local SVG icons
+├── migrations/         # Alembic revisions (0001 … 0006)
+├── docs/
+│   ├── ROADMAP.md      # What was built, in order, and what is left
+│   ├── DEPLOY.md       # The deployment and rollback procedure
+│   └── UI_CHECKLIST.md # Manual visual acceptance list
+├── scripts/            # Read-only smoke tests
 ├── tests/
 ├── Dockerfile
 ├── docker-compose.yml
@@ -327,14 +1167,264 @@ wger-hero/
 └── pyproject.toml
 ```
 
+## Development
+
+```bash
+pip install -e ".[dev]"
+WGER_BASE_URL=https://wger.example.com python -m pytest
+```
+
+Every test runs against in-memory SQLite with a mocked wger client — nothing
+here talks to a real instance. New domain logic belongs in a module that is
+unit-testable without a database, like `xp.py` and `momentum.py`.
+
+For a local UI run, see [docs/UI_CHECKLIST.md](docs/UI_CHECKLIST.md).
+
+## Migrations
+
+Alembic, revisions `0001_baseline` through `0008_japanese_save_version_2`.
+
+- **The app never migrates by itself** — not on import, not on startup. A test
+  asserts that no application module touches Alembic at import time.
+- Every revision is additive and has a working `downgrade()`, and each is tested
+  against a populated SQLite database.
+- Adopting an existing pre-Alembic database: `alembic stamp 0001_baseline`, then
+  `alembic upgrade head`. Never `upgrade` first — it fails loudly on an existing
+  schema, which is deliberate.
+- `0006` is the one revision whose downgrade loses information; see below.
+
+| Revision | What it adds |
+|---|---|
+| `0001_baseline` | the schema as it stood when Alembic was introduced |
+| `0002_goals` | `goals`, plus `goal_id` / `is_milestone` / `sort_order` on habits and quests |
+| `0003_quest_completions` | append-only `quest_completions` with a unique dedup key |
+| `0004_goal_pause_intervals` | `goal_pause_intervals` with a partial unique index on the open one |
+| `0005_habit_schedule_days` | `habit_schedule_days`, ISO weekdays, unique per habit and day |
+| `0006_optional_learning_metrics` | makes `wanikani_level` and `bunpro_points` nullable |
+| `0007_fittrackee_endurance` | `fittrackee_sports`, `fittrackee_workouts`, `fittrackee_connection`, and `allowed_weekdays` on quests |
+| `0008_japanese_save_version_2` | `save_version` and the rank-boss fields on Japanese imports, plus `japanese_rank_rewards` |
+
+### About `0006`
+
+Both columns were `NOT NULL DEFAULT 0`, so "not stated" could only be recorded
+by writing a number that was never counted. Making them nullable is what lets
+`NULL` mean "not stated" and `0` mean "a counted zero".
+
+Existing values are untouched, and **an existing `0` is never rewritten to
+`NULL`**. Only new imports that omit the line store `NULL`.
+
+The downgrade is lossy in exactly one direction: restoring `NOT NULL` needs a
+value in every row, so rows that say "not stated" become `0`. Counted values
+survive, but the distinction is then gone and cannot be reconstructed from the
+database.
+
+> **For a fully faithful rollback behind `0006_optional_learning_metrics`, use
+> the SQLite backup taken before the deployment. An Alembic downgrade alone does
+> not fully restore the original NULL semantics.**
+
+## Updating a running instance
+
+### First: does your installation use extra compose files?
+
+Compose loads **only** `docker-compose.yml` and `docker-compose.override.yml` by
+itself. Any additionally named file — a local `docker-compose.auth.yml`, a
+`docker-compose.prod.yml` — must be passed with `-f` on *every* call, including
+`build`, `run` and `up`. Leave it out of a call that recreates the container and
+the container comes back **without that file's mounts**.
+
+That is not hypothetical: it is how a working installation loses its auth secret
+mounts and starts answering `503 {"detail": "Auth not configured"}` on every
+path. The secrets are still on disk and still correct; they simply are not
+mounted any more.
+
+```bash
+ls -l docker-compose*.yml compose*.yaml 2>/dev/null
+```
+
+If that lists nothing but `docker-compose.yml`, the short version below applies
+as written. Otherwise pin the whole set once and use it for every call:
+
+```bash
+# Example for an installation with a local auth compose file. Note that
+# docker-compose.override.yml must now be listed explicitly too — as soon as
+# one -f is given, Compose stops loading it automatically.
+DC=(docker compose
+    -f docker-compose.yml
+    -f docker-compose.override.yml
+    -f docker-compose.auth.yml)
+```
+
+### The short version
+
+For a normal code update with no migration:
+
+```bash
+cd /path/to/wger-hero
+git status --short          # nothing unexpected about to be overwritten
+git pull origin main
+docker compose up -d --build
+curl -sS http://127.0.0.1:8091/healthz
+```
+
+With extra compose files, the same update is:
+
+```bash
+git pull origin main
+"${DC[@]}" build
+"${DC[@]}" up -d --force-recreate wger-hero
+"${DC[@]}" config | grep -c '/run/secrets/hero_'   # expect a number > 0
+curl -sS -o /dev/null -w 'login=%{http_code}\n' http://127.0.0.1:8091/login
+```
+
+The image is built locally, so there is no `pull` step for it.
+
+`up -d --build` rebuilds the image and replaces the container; the database
+lives in a mounted volume and is untouched.
+
+### Verify the update, especially auth
+
+```bash
+curl -sS -o /dev/null -w 'healthz=%{http_code}\n' http://127.0.0.1:8091/healthz
+curl -sS -o /dev/null -w 'login=%{http_code}\n'   http://127.0.0.1:8091/login
+curl -sS -o /dev/null -w 'today=%{http_code}\n'   http://127.0.0.1:8091/today
+```
+
+Expected: `healthz=200`, `login=200`, `today=303` (redirect to the login form).
+Three times `503` means an auth secret cannot be read — see
+**Restoring missing auth secrets** below, and read it in order: the usual cause
+is a missing `-f`, not a missing file.
+
+Two cases need more than the short version:
+
+- **A new Alembic revision.** Back up first, then migrate explicitly — the app
+  never migrates itself:
+
+  ```bash
+  docker compose exec wger-hero sqlite3 "$DB" ".backup '/data/backup-$(date +%F).sqlite'"
+  docker compose run --rm wger-hero python -m alembic upgrade head
+  docker compose up -d --build
+  ```
+
+- **A changed `.env`.** `env_file` is read when the container is *created*, not
+  when it restarts, so use `docker compose up -d --force-recreate`.
+
+`scripts/backup.sh` runs unattended from cron and is not a substitute for the
+explicit pre-deployment backup — take one before an update that migrates.
+
+For a production update — with rollback image, backup verification, a migration
+rehearsal on a copy and a read-only preflight — follow
+[docs/DEPLOY.md](docs/DEPLOY.md) instead.
+
+## Restoring missing auth secrets
+
+**Read this only after ruling out the far more common cause.** If the instance
+authenticated correctly before and now returns 503, the secret files are almost
+certainly still there and intact — what changed is that the container was
+recreated without the compose file that mounts them. Creating new secrets in
+that situation replaces your password for no reason and logs out every session.
+
+Check in this order, and stop at the first thing that is wrong:
+
+```bash
+[ -s secrets/hero_session_secret ] && echo "session secret: present, non-empty"
+[ -s secrets/hero_password_hash  ] && echo "password hash:  present, non-empty"
+"${DC[@]}" config | grep '/run/secrets/hero_'     # both targets listed?
+docker exec wger-hero test -r /run/secrets/hero_session_secret && echo readable
+docker logs --tail 100 wger-hero 2>&1 | grep "Auth is enabled but unusable"
+```
+
+Never print the contents — not with `cat`, not through `docker exec`. `test -s`,
+`test -r` and `stat` answer every question that comes up here.
+
+Only if a file is genuinely absent or empty, create that one file. The guard
+refuses to overwrite an existing secret, which is the point:
+
+```bash
+cd /path/to/wger-hero
+set -Eeuo pipefail
+umask 077
+install -d -m 700 secrets
+
+test ! -e secrets/hero_session_secret || {
+  echo "ABORT: hero_session_secret already exists — do not replace it"; exit 1; }
+openssl rand -hex 32 > secrets/hero_session_secret
+chmod 400 secrets/hero_session_secret
+```
+
+For the password hash, use the image rather than the host — Argon2 is a
+dependency of the app, not something the Debian host is expected to have:
+
+```bash
+test ! -e secrets/hero_password_hash || {
+  echo "ABORT: hero_password_hash already exists — do not replace it"; exit 1; }
+
+"${DC[@]}" run --rm --no-deps --entrypoint python wger-hero -c \
+  'from argon2 import PasswordHasher; from getpass import getpass; \
+   print(PasswordHasher().hash(getpass("New hero password: ")), end="")' \
+  > secrets/hero_password_hash
+
+chmod 400 secrets/hero_password_hash
+```
+
+The script goes in as an argument, the password does not: `getpass` reads it
+from the terminal at runtime. Leave stdin alone — a heredoc there would take the
+terminal away from `getpass`, which then reads nothing and hashes an empty
+string.
+
+If no terminal is available (a remote runner, a `-T` invocation), pipe the
+password instead and clear the variable afterwards:
+
+```bash
+read -rs -p "New hero password: " PW && echo
+printf '%s' "$PW" | "${DC[@]}" run --rm --no-deps -T --entrypoint python wger-hero -c \
+  'import sys; from argon2 import PasswordHasher; \
+   print(PasswordHasher().hash(sys.stdin.read()), end="")' \
+  > secrets/hero_password_hash
+unset PW
+chmod 400 secrets/hero_password_hash
+```
+
+The password is typed interactively, so it never becomes a command argument,
+never reaches the shell history, never lands in `.env` and never appears in a
+log. Check the file is a hash and not an error message before restarting:
+
+```bash
+head -c 7 secrets/hero_password_hash   # expect: $argon2
+```
+
+Replacing `hero_session_secret` invalidates existing sessions; replacing
+`hero_password_hash` changes the login password. Neither is needed to fix a
+missing mount.
+
+## Deployment
+
+The full procedure — check, back up, tag a rollback image, build, test the
+migration on a copy, stop, back up offline, migrate, start, verify, smoke-test —
+is in [docs/DEPLOY.md](docs/DEPLOY.md), together with the two distinct rollback
+paths (application only, or database restore).
+
+Read-only smoke tests that change nothing and print no secrets:
+
+```bash
+bash scripts/smoke_full.sh
+bash scripts/smoke_today_week.sh
+bash scripts/smoke_pwa_starter.sh
+```
+
+The one script that writes is `scripts/backup.sh`: a WAL-consistent online
+backup, verified with `PRAGMA integrity_check`, with age-based rotation confined
+to its own directory and its own filename pattern so it can never remove a
+deployment snapshot. Meant for cron — see
+[docs/DEPLOY.md](docs/DEPLOY.md), section "Automatische Sicherung".
+
 ## What Still Needs Live Verification
 
 The wger API client is designed to be easy to adapt. Verify against your live instance:
 
 | Item | Candidate | Notes |
 |---|---|---|
-| Completed sessions | `/api/v2/workoutsession/` | Check fields: `id`, `date`, `workout`, `notes` |
-| Exercise logs | `/api/v2/log/` | Check fields: `exercise`, `reps`, `weight`, `rir` |
+| Completed sessions | `/api/v2/workoutsession/` | Confirmed live: `id` (**str**, a UUID), `date`, `routine`, `notes`. There is no `workout` field |
+| Exercise logs | `/api/v2/workoutlog/` | Confirmed live: `id` (str), `session` (str), `exercise` (int), `repetitions` (str), `weight` (str), `rir`. The older `/api/v2/log/` answers **404** |
 | Routines | `/api/v2/routine/` | May not exist on older wger — client handles 404 gracefully |
 | Exercise names | `/api/v2/exercise/` | Names may be in a `translations` list, not a top-level `name` field |
 | Token format | `Authorization: Token <value>` | Verify this is correct (not `Bearer`) |
@@ -520,9 +1610,23 @@ can never disagree with what an activation does.
 
 | Goal | Weekly quest | Habits | Milestones |
 |---|---|---|---|
-| **Kraftpfad** (`kraftpfad`) | *Dreifachschlag* — 3 wger workouts per week (`workout_count`) | — | first counted workout · 4 fulfilled weeks · 12 fulfilled weeks |
-| **Weg des Japanischen** (`weg-des-japanischen`) | *Fünf Schriftrollen* — 5 SRS reviews per week (`habit_count`, bound by habit id) · *Zwei Gespräche mit dem Sensei* — 2 confirmed sessions per week (`japanese_session_count`) | *SRS-Review*, planned Mon–Fri | first review · 20 reviews · 8 confirmed sessions · 4 weeks with both goals |
-| **Körperkontrolle** (`koerperkontrolle`, short label *Routine K*) | *Der Fünfer-Rhythmus* — all five planned routines in one week | the five existing CONTROL routines, planned Mon, Tue, Wed, Thu, Sat | the four existing CONTROL stages |
+| **Kraftpfad** (`kraftpfad`) | *Dreifachschlag* — 3 wger workouts per week (`workout_count`, counts itself) | — | first counted workout · 4 fulfilled weeks · 12 fulfilled weeks |
+| **Weg des Japanischen** (`weg-des-japanischen`) | *Fünf Schriftrollen* — 5 SRS reviews per week (`habit_count`, bound by habit id, counts itself) · *Zwei Gespräche mit dem Sensei* — 2 confirmed sessions per week (`japanese_session_count`, counts itself) | *SRS-Review*, planned Mon–Fri | first review · 20 reviews · 8 confirmed sessions · 4 weeks with both goals |
+| **Körperkontrolle** (`koerperkontrolle`, short label *Routine K*) | *Der Fünfer-Rhythmus* — all five planned routines in one week (`goal_habit_variety`, counts itself) | the five existing CONTROL routines, planned Mon, Tue, Wed, Thu, Sat | the four existing CONTROL stages |
+
+**Der Fünfer-Rhythmus counts distinct habits, not completions.** The quest source
+`goal_habit_variety` counts how many *different* habits of its goal were completed
+inside the period. Five sessions of one routine therefore do not satisfy it — the
+question is which of the five happened, not how often. `habit_count` cannot answer
+that, because it binds exactly one habit id or one match-text substring.
+
+`workout_variety` is a different question and stays: it counts distinct free-text
+wger workout titles, not owned habits scoped by a goal foreign key.
+
+**Existing installs are upgraded in place.** A re-activation of the campaign turns
+an existing manual *Fünfer-Rhythmus* into the automatic source, but only when its
+period and target value still match the seeded definition. Anything you edited
+yourself is left alone, and no XP history is touched.
 
 Friday and Sunday stay deliberately free in Routine K.
 

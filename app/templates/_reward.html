@@ -1,0 +1,27 @@
+{#
+  The completion moment. Rendered only when the page consumed a reward flash,
+  which only a confirmed completion writes — so this never appears after a
+  failed POST, a CSRF rejection, a deduplicated second click or a plain reload.
+
+  Every line of text is backed by the actual result: the XP figure is what was
+  awarded, and when nothing was awarded no "+XP" is claimed.
+#}
+{% if reward %}
+<div class="reward-flash" role="status" aria-live="polite">
+  <span class="reward-flash-title">Gewohnheit abgeschlossen</span>
+  <span class="reward-flash-detail">{{ reward.title }}</span>
+  {% if reward.xp %}
+  <span class="reward-flash-xp">+{{ reward.xp }} XP</span>
+  {% else %}
+  <span class="reward-flash-detail">Fortschritt gespeichert</span>
+  {% endif %}
+  {% if reward.stat_xp %}
+  <span class="reward-flash-detail">+{{ reward.stat_xp }} Attribut-XP</span>
+  {% endif %}
+  {% if reward.quests %}
+  <span class="reward-flash-detail">
+    Questfortschritt: {{ reward.quests | join(", ") }}
+  </span>
+  {% endif %}
+</div>
+{% endif %}

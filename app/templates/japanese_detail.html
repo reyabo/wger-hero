@@ -23,7 +23,7 @@
   <div class="summary-card">
     <div class="summary-label">Quellfortschritt</div>
     <div class="summary-value accent-cyan">Lv {{ record.source_character_level }}</div>
-    <div class="summary-sub">{{ record.source_level_xp }} / {{ record.source_level_xp_cap }} XP</div>
+    <div class="summary-sub">{{ record.source_level_xp }} / {% if record.source_level_xp_cap %}{{ record.source_level_xp_cap }}{% else %}MAX{% endif %} XP</div>
   </div>
   <div class="summary-card">
     <div class="summary-label">Streak</div>
@@ -93,8 +93,8 @@
   <div class="card-title">Snapshot</div>
   <div class="jp-status-grid">
     <div><span class="label">SAVE-Datum</span><span class="jp-value">{{ record.save_date.strftime('%d.%m.%Y') }}</span></div>
-    <div><span class="label">WaniKani</span><span class="jp-value">Lv {{ record.wanikani_level }}</span></div>
-    <div><span class="label">Bunpro</span><span class="jp-value">{{ record.bunpro_level }} · {{ record.bunpro_points }} Punkte</span></div>
+    <div><span class="label">WaniKani</span><span class="jp-value">Lv {{ record.wanikani_level or 0 }}</span></div>
+    <div><span class="label">Bunpro</span><span class="jp-value">{{ record.bunpro_level or "—" }} · {{ record.bunpro_points or 0 }} Punkte</span></div>
     <div><span class="label">Rang</span><span class="jp-value">{{ record.source_character_rank or "—" }}</span></div>
     <div><span class="label">Grammatikpunkt</span><span class="jp-value">{{ record.current_grammar_point or "—" }}</span></div>
     <div><span class="label">Debuffs</span><span class="jp-value">{{ record.debuffs_text or "—" }}</span></div>

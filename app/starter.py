@@ -232,6 +232,7 @@ def _quest(db: Session, plan: StarterPlan, *, title: str, description: str,
            goal: Optional[Goal], goal_title: str, quest_type: str, period: str,
            target_value: int, repeatable: bool, is_milestone: bool,
            habit: Optional[Habit] = None, reuse_slug: Optional[str] = None,
+           upgrade_from: Optional[str] = None,
            kind: str = "Quest", apply: bool = False) -> Optional[Quest]:
     """Create, reuse or extend one quest.
 
@@ -271,6 +272,25 @@ def _quest(db: Session, plan: StarterPlan, *, title: str, description: str,
             if apply and goal is not None:
                 existing.goal_id = goal.id
             return existing
+
+        # A narrow, opt-in upgrade: only from the one named old source, and only
+        # when period and target already match, so nothing the user configured
+        # differently is overwritten. Everything else about the row is left
+        # alone — title, description, reward, progress and active state.
+        if (
+            upgrade_from is not None
+            and (existing.quest_type or "") == upgrade_from
+            and (existing.period or "") == period
+            and int(existing.target_value or 0) == int(target_value)
+        ):
+            plan.add(kind, title, EXTEND, goal=goal_title,
+                     detail=f"Quelle wird von „{upgrade_from}“ auf "
+                            f"„{quest_type}“ gehoben; sie zählt sich dann "
+                            f"selbst. Titel, Belohnung und Fortschritt bleiben.")
+            if apply:
+                existing.quest_type = quest_type
+            return existing
+
         plan.add(kind, title, SKIP, goal=goal_title, detail="Vorhanden und zugeordnet.")
         return existing
 
@@ -311,6 +331,8 @@ def _quest_detail(quest_type: str, target: int) -> str:
         "workout_count": "gezählte wger-Workouts",
         "habit_count": "Abschlüsse der verknüpften Gewohnheit",
         "japanese_session_count": "bestätigte Japanisch-Sessions",
+        "goal_habit_variety": "verschiedene Gewohnheiten des Ziels, je einmal "
+                              "pro Zeitraum",
         "manual": "manuell bestätigt",
     }
     return f"Ziel {target}, Quelle: {sources.get(quest_type, quest_type)}."
@@ -451,11 +473,15 @@ def _body_control(db: Session, plan: StarterPlan, apply: bool) -> None:
         db, plan,
         title="Der Fünfer-Rhythmus",
         description="Alle fünf geplanten Einheiten einer Kalenderwoche erledigt. "
-                    "Wird bestätigt, sobald die Woche vollständig ist — die "
-                    "Wochenansicht zeigt, was noch offen ist.",
+                    "Zählt sich selbst: jede Gewohnheit dieses Ziels zählt "
+                    "einmal pro Woche.",
         goal=goal, goal_title="Körperkontrolle",
-        quest_type="manual", period="weekly", target_value=5,
-        repeatable=True, is_milestone=False, apply=apply,
+        quest_type="goal_habit_variety", period="weekly", target_value=5,
+        repeatable=True, is_milestone=False,
+        # An install from before this source existed has the quest as "manual".
+        # Lifting it is safe and wanted, but only from exactly that state.
+        upgrade_from="manual",
+        apply=apply,
     )
 
     # The four stages already exist as CONTROL quests; they are reused by title.

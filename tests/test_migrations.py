@@ -662,3 +662,149 @@ def test_downgrade_keeps_habit_completions(db_url):
             assert conn.execute(text("SELECT count(*) FROM habits")).scalar() == 1
     finally:
         engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# 0006 — optional learning metrics on a Japanese SAVE import
+# ---------------------------------------------------------------------------
+
+def _seed_save_import_database(url: str) -> None:
+    """A database at revision 0005 with one imported SAVE."""
+    cfg = _alembic_config(url)
+    command.upgrade(cfg, "0005_habit_schedule_days")
+
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO japanese_save_imports (save_date, streak, wanikani_level,"
+            " bunpro_level, bunpro_points, source_character_level,"
+            " source_level_xp, source_level_xp_cap, vocabulary_score,"
+            " grammar_score, reading_score, listening_score, speaking_score,"
+            " raw_save, normalized_hash, created_at, xp_awarded,"
+            " stat_xp_awarded, classification)"
+            " VALUES ('2026-07-31', 4, 1, 'N5', 5, 2, 433, 1000, 180, 250, 0, 0,"
+            " 215, 'roh', 'hash-1', '2026-07-31 10:00:00', 0, 0, 'baseline')"
+        ))
+    engine.dispose()
+
+
+def _save_snapshot(url: str) -> list:
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            return conn.execute(text(
+                "SELECT save_date, wanikani_level, bunpro_level, bunpro_points,"
+                " normalized_hash, xp_awarded FROM japanese_save_imports"
+            )).fetchall()
+    finally:
+        engine.dispose()
+
+
+def test_metric_migration_runs_on_a_populated_database(db_url):
+    _seed_save_import_database(db_url)
+    before = _save_snapshot(db_url)
+
+    command.upgrade(_alembic_config(db_url), "0006_optional_learning_metrics")
+
+    assert _save_snapshot(db_url) == before, "existing imports must be untouched"
+
+
+def test_after_the_migration_a_metric_may_be_null(db_url):
+    _seed_save_import_database(db_url)
+    command.upgrade(_alembic_config(db_url), "0006_optional_learning_metrics")
+
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO japanese_save_imports (save_date, streak,"
+                " wanikani_level, bunpro_level, bunpro_points,"
+                " source_character_level, source_level_xp, source_level_xp_cap,"
+                " vocabulary_score, grammar_score, reading_score,"
+                " listening_score, speaking_score, raw_save, normalized_hash, created_at,"
+                " xp_awarded, stat_xp_awarded, classification)"
+                " VALUES ('2026-08-01', 5, NULL, NULL, NULL, 2, 433, 1000, 180,"
+                " 250, 0, 0, 215, 'roh', 'hash-2', '2026-08-01 10:00:00', 0, 0, 'progress')"
+            ))
+        with engine.connect() as conn:
+            row = conn.execute(text(
+                "SELECT wanikani_level, bunpro_points FROM japanese_save_imports"
+                " WHERE normalized_hash = 'hash-2'"
+            )).one()
+            assert row == (None, None)
+    finally:
+        engine.dispose()
+
+
+def test_before_the_migration_a_null_metric_is_refused(db_url):
+    """This is why the revision exists: NOT NULL could not record "not stated"."""
+    _seed_save_import_database(db_url)
+
+    engine = create_engine(db_url)
+    try:
+        with pytest.raises(Exception):
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "INSERT INTO japanese_save_imports (save_date, streak,"
+                    " wanikani_level, bunpro_level, bunpro_points,"
+                    " source_character_level, source_level_xp,"
+                    " source_level_xp_cap, vocabulary_score, grammar_score,"
+                    " reading_score, listening_score, speaking_score, raw_save,"
+                    " normalized_hash, created_at, xp_awarded, stat_xp_awarded,"
+                    " classification)"
+                    " VALUES ('2026-08-01', 5, NULL, NULL, NULL, 2, 433, 1000,"
+                    " 180, 250, 0, 0, 215, 'roh', 'hash-3', '2026-08-01 10:00:00', 0, 0, 'progress')"
+                ))
+    finally:
+        engine.dispose()
+
+
+def test_metric_migration_downgrade_and_upgrade_again(db_url):
+    _seed_save_import_database(db_url)
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, "0006_optional_learning_metrics")
+    before = _save_snapshot(db_url)
+
+    command.downgrade(cfg, "0005_habit_schedule_days")
+    assert _save_snapshot(db_url) == before, "counted values must survive a downgrade"
+
+    command.upgrade(cfg, "0006_optional_learning_metrics")
+    assert _save_snapshot(db_url) == before
+
+
+def test_downgrade_keeps_every_counted_value(db_url):
+    """Only "not stated" becomes 0 — a counted number is never rewritten."""
+    _seed_save_import_database(db_url)
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, "0006_optional_learning_metrics")
+
+    engine = create_engine(db_url)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO japanese_save_imports (save_date, streak, wanikani_level,"
+            " bunpro_level, bunpro_points, source_character_level, source_level_xp,"
+            " source_level_xp_cap, vocabulary_score, grammar_score, reading_score,"
+            " listening_score, speaking_score, raw_save, normalized_hash, created_at,"
+            " xp_awarded, stat_xp_awarded, classification)"
+            " VALUES ('2026-08-01', 5, NULL, NULL, NULL, 2, 433, 1000, 180, 250,"
+            " 0, 0, 215, 'roh', 'hash-4', '2026-08-01 10:00:00', 0, 0, 'progress')"
+        ))
+    engine.dispose()
+
+    command.downgrade(cfg, "0005_habit_schedule_days")
+
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            kept = conn.execute(text(
+                "SELECT wanikani_level, bunpro_points FROM japanese_save_imports"
+                " WHERE normalized_hash = 'hash-1'"
+            )).one()
+            filled = conn.execute(text(
+                "SELECT wanikani_level, bunpro_points FROM japanese_save_imports"
+                " WHERE normalized_hash = 'hash-4'"
+            )).one()
+            assert kept == (1, 5)
+            assert filled == (0, 0)
+    finally:
+        engine.dispose()

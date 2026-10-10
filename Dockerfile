@@ -13,6 +13,11 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir .
 
 COPY app/ ./app/
+# Migrations ship with the image: the documented deployment runs
+# `alembic upgrade` inside the container, which is impossible if the revisions
+# and their config stay outside it.
+COPY alembic.ini ./
+COPY migrations/ ./migrations/
 
 # Data directory for SQLite
 RUN mkdir -p /data

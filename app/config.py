@@ -40,6 +40,22 @@ class Settings(BaseSettings):
     LOGIN_MAX_ATTEMPTS: int = 5
     LOGIN_ATTEMPT_WINDOW_SECONDS: int = 300
 
+    # --- FitTrackee (read-only endurance source) ----------------------------
+    # Empty base URL means the integration is simply off; nothing is contacted.
+    FITTRACKEE_BASE_URL: Optional[str] = None
+    # The OAuth client id is not a secret — it travels in the authorization URL.
+    FITTRACKEE_CLIENT_ID: Optional[str] = None
+    # The client secret is. It comes from a read-only file, never from env.
+    FITTRACKEE_CLIENT_SECRET_FILE: Optional[str] = None
+    # Writable directory for the token store, which must never be the same
+    # place as the read-only client secret.
+    FITTRACKEE_TOKEN_DIR: Optional[str] = None
+    # Public URL of the callback route, as registered in the FitTrackee app.
+    FITTRACKEE_REDIRECT_URI: Optional[str] = None
+    # Only import activities on or after this date. Same semantics as
+    # SYNC_FROM_DATE: empty means the whole history.
+    FITTRACKEE_SYNC_FROM_DATE: Optional[date] = None
+
     def get_token(self) -> str:
         # Prefer explicit file path, then Docker secret, then env var
         token_file: Optional[Path] = None

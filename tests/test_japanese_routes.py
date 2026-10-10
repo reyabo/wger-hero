@@ -400,3 +400,133 @@ def test_srs_wording_is_still_detected_as_a_duplicate(env):
     db = Session()
     assert db.query(JapaneseSaveImport).count() == 1
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# Flexible SAVE end to end
+# ---------------------------------------------------------------------------
+
+MINIMAL_TEXT = """=== 状態 SAVE ===
+Datum: 2026-08-01 | Streak: 4
+Charakter: Lv 2 (見習い) | 433 / 1000 XP
+語彙 180 | 文法 250 | 読解 0 | 聴解 0 | 会話 215
+=== END SAVE ==="""
+
+SEPARATE_TEXT = MINIMAL_TEXT.replace(
+    "Charakter:",
+    "WaniKani-Level: 2\nBunpro-Level: N5\nGrammatikpunkte im SRS: 37\nCharakter:",
+)
+
+
+def test_preview_accepts_the_minimal_save(env):
+    client, _ = env
+    resp = client.post("/japanese/preview", data={"raw_save": MINIMAL_TEXT})
+    assert resp.status_code == 200
+    assert "konnte nicht gelesen werden" not in resp.text
+    assert "fehlt" not in resp.text
+
+
+def test_preview_shows_unset_metrics_neutrally(env):
+    client, _ = env
+    resp = client.post("/japanese/preview", data={"raw_save": MINIMAL_TEXT})
+    assert "Nicht angegeben" in resp.text
+
+
+def test_import_accepts_the_minimal_save(env):
+    client, Session = env
+    resp = client.post(
+        "/japanese/import", data={"raw_save": MINIMAL_TEXT}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+
+    db = Session()
+    record = db.query(JapaneseSaveImport).one()
+    assert record.wanikani_level is None
+    assert record.bunpro_level is None
+    assert record.bunpro_points is None
+    db.close()
+
+
+def test_preview_accepts_separate_metrics(env):
+    client, _ = env
+    resp = client.post("/japanese/preview", data={"raw_save": SEPARATE_TEXT})
+    assert resp.status_code == 200
+    assert "N5" in resp.text and "37" in resp.text
+
+
+def test_import_stores_separate_metrics(env):
+    client, Session = env
+    client.post("/japanese/import", data={"raw_save": SEPARATE_TEXT})
+
+    db = Session()
+    record = db.query(JapaneseSaveImport).one()
+    assert record.wanikani_level == 2
+    assert record.bunpro_level == "N5"
+    assert record.bunpro_points == 37
+    db.close()
+
+
+def test_an_explicit_zero_is_stored_as_zero(env):
+    client, Session = env
+    text = MINIMAL_TEXT.replace("Charakter:", "Grammatikpunkte im SRS: 0\nCharakter:")
+    client.post("/japanese/import", data={"raw_save": text})
+
+    db = Session()
+    record = db.query(JapaneseSaveImport).one()
+    assert record.bunpro_points == 0
+    assert record.bunpro_points is not None
+    db.close()
+
+
+def test_importing_the_minimal_save_twice_awards_no_double_xp(env):
+    client, Session = env
+    client.post("/japanese/import", data={"raw_save": MINIMAL_TEXT})
+    client.post("/japanese/import", data={"raw_save": MINIMAL_TEXT})
+
+    db = Session()
+    assert db.query(JapaneseSaveImport).count() == 1
+    assert db.query(XpEvent).count() == 0
+    db.close()
+
+
+def test_an_import_never_fills_in_an_earlier_value(env):
+    """A later SAVE without a metric must not inherit the previous number."""
+    client, Session = env
+    client.post("/japanese/import", data={"raw_save": SEPARATE_TEXT})
+    later = MINIMAL_TEXT.replace("Datum: 2026-08-01", "Datum: 2026-08-02")
+    client.post("/japanese/import", data={"raw_save": later})
+
+    db = Session()
+    newest = (
+        db.query(JapaneseSaveImport)
+        .order_by(JapaneseSaveImport.save_date.desc())
+        .first()
+    )
+    assert newest.bunpro_points is None
+    assert newest.wanikani_level is None
+    db.close()
+
+
+def test_a_contradiction_is_reported_in_plain_german(env):
+    client, _ = env
+    text = MINIMAL_TEXT.replace(
+        "Charakter:",
+        "WaniKani: Lv 2 | Bunpro: N5, 10 Grammatikpunkte im SRS\n"
+        "Grammatikpunkte im SRS: 37\nCharakter:",
+    )
+    resp = client.post("/japanese/preview", data={"raw_save": text})
+    assert "Widersprüchliche Angaben" in resp.text
+    assert "(?P<" not in resp.text and "Traceback" not in resp.text
+
+
+def test_the_full_legacy_format_still_imports(env):
+    client, Session = env
+    resp = client.post(
+        "/japanese/import", data={"raw_save": VALID_SAVE}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+
+    db = Session()
+    record = db.query(JapaneseSaveImport).one()
+    assert (record.wanikani_level, record.bunpro_level, record.bunpro_points) == (1, "N5", 5)
+    db.close()

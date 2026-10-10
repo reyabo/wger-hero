@@ -105,8 +105,13 @@ class TestHabitCompletion:
         assert db.query(HeroProfile).first().total_xp == 20
 
     def test_spaced_completions_both_count(self, db):
+        """The double-click guard must not block a genuinely later completion.
+
+        The habit allows two a day, so the period allowance is not what is
+        being tested here — the time gap is.
+        """
         hero = _hero(db)
-        habit = create_habit(db, title="Read", base_xp_reward=20)
+        habit = create_habit(db, title="Read", base_xp_reward=20, target_count=2)
         now = datetime.utcnow()
 
         first = complete_habit(db, habit, hero, when=now)

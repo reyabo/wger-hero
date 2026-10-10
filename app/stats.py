@@ -141,6 +141,117 @@ def get_recent_stat_gains(db: Session, limit: int = 20) -> list[StatXpEvent]:
     )
 
 
+# Where a stat-XP award can come from. The key is what the ledger stores and
+# stays English; only the label is German. An unknown key falls back to itself
+# rather than being hidden — the ledger is the record, not this map.
+SOURCE_LABELS = {
+    "habit": "Gewohnheiten",
+    "quest": "Quests",
+    "wger": "wger-Training",
+    "japanese": "Japanisch",
+}
+
+
+@dataclass
+class SourceShare:
+    key: str
+    label: str
+    xp: int
+    count: int
+    pct: int
+
+
+@dataclass
+class TitleShare:
+    title: str
+    source: str
+    label: str
+    xp: int
+    count: int
+
+
+@dataclass
+class StatDetailView:
+    progress: StatProgressView
+    total_xp: int
+    sources: list[SourceShare]
+    titles: list[TitleShare]
+    events: list[StatXpEvent]
+    all_stats: list[StatProgressView]
+
+
+def summarize_sources(events) -> list[SourceShare]:
+    """Group stat-XP events by their source. Pure: no database, no clock."""
+    totals: dict[str, list[int]] = {}
+    for event in events:
+        entry = totals.setdefault(event.source, [0, 0])
+        entry[0] += event.xp
+        entry[1] += 1
+    grand = sum(xp for xp, _ in totals.values())
+    rows = [
+        SourceShare(
+            key=key,
+            label=SOURCE_LABELS.get(key, key),
+            xp=xp,
+            count=count,
+            pct=round(xp * 100 / grand) if grand else 0,
+        )
+        for key, (xp, count) in totals.items()
+    ]
+    rows.sort(key=lambda r: (-r.xp, r.key))
+    return rows
+
+
+def summarize_titles(events, limit: int = 10) -> list[TitleShare]:
+    """Group by (title, source). Same title from two sources stays separate —
+    a habit and a quest may well share a name and are not the same thing."""
+    totals: dict[tuple[str, str], list[int]] = {}
+    for event in events:
+        entry = totals.setdefault((event.title, event.source), [0, 0])
+        entry[0] += event.xp
+        entry[1] += 1
+    rows = [
+        TitleShare(
+            title=title,
+            source=source,
+            label=SOURCE_LABELS.get(source, source),
+            xp=xp,
+            count=count,
+        )
+        for (title, source), (xp, count) in totals.items()
+    ]
+    rows.sort(key=lambda r: (-r.xp, r.title))
+    return rows[:limit]
+
+
+def get_stat_detail(db: Session, stat_key: str, limit: int = 30):
+    """Everything one attribute page needs, or None for an unknown key.
+
+    The aggregate `HeroStat.xp` stays the authoritative total. The event list is
+    only the recent slice and may well sum to less — the page must not present
+    it as the whole history.
+    """
+    if stat_key not in STATS:
+        return None
+
+    all_stats = get_all_stat_progress(db)
+    progress = next(s for s in all_stats if s.key == stat_key)
+
+    query = db.query(StatXpEvent).filter(StatXpEvent.stat_key == stat_key)
+    # Sources and titles are computed over the full ledger for this stat, so the
+    # shares describe the whole history rather than the visible slice.
+    every = query.order_by(StatXpEvent.created_at.desc(), StatXpEvent.id.desc()).all()
+
+    return StatDetailView(
+        progress=progress,
+        total_xp=progress.total_xp,
+        sources=summarize_sources(every),
+        titles=summarize_titles(every),
+        events=every[:limit],
+        all_stats=all_stats,
+    )
+
+
 def get_stat_summary(db: Session) -> dict:
     """Return summary data for the stats page (strongest, weakest, recent XP)."""
     rows = {s.stat_key: s.xp for s in db.query(HeroStat).all()}

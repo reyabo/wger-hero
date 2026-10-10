@@ -16,33 +16,47 @@
   <form method="POST" action="{{ form_action }}" class="form">
   {{ csrf_input(request) }}
     <div class="form-row">
-      <label for="title">Title</label>
+      <label for="title">Titel</label>
       <input type="text" id="title" name="title" required
-             value="{{ submitted.title if submitted else (quest.title if quest else '') }}" placeholder="e.g. Read 600 minutes this month">
+             value="{{ submitted.title if submitted else (quest.title if quest else '') }}" placeholder="z. B. 600 Minuten in diesem Monat lesen">
     </div>
 
     <div class="form-row">
-      <label for="description">Description</label>
+      <label for="description">Beschreibung</label>
       <textarea id="description" name="description" rows="2"
-                placeholder="Optional notes">{{ quest.description if quest and quest.description else '' }}</textarea>
+                placeholder="Optionale Notizen">{{ quest.description if quest and quest.description else '' }}</textarea>
     </div>
 
     <div class="form-grid">
       <div class="form-row">
-        <label for="quest_type">Type</label>
+        <label for="quest_type">Quelle</label>
         <select id="quest_type" name="quest_type">
           {% for t in quest_types %}
-          <option value="{{ t }}" {% if quest and quest.quest_type == t %}selected{% elif not quest and t == 'manual' %}selected{% endif %}>{{ t }}</option>
+          <option value="{{ t }}" {% if quest and quest.quest_type == t %}selected{% elif not quest and t == 'manual' %}selected{% endif %}>{{ quest_type_labels.get(t, t) }}</option>
           {% endfor %}
         </select>
       </div>
 
       <div class="form-row">
-        <label for="period">Period</label>
+        <label for="goal_id">Ziel</label>
+        <select id="goal_id" name="goal_id">
+          <option value="">— kein Ziel —</option>
+          {% for goal in goals %}
+          <option value="{{ goal.id }}" {% if quest and quest.goal_id == goal.id %}selected{% endif %}>{{ goal.title }}</option>
+          {% endfor %}
+        </select>
+        <p class="muted small">
+          „Verschiedene Gewohnheiten eines Ziels“ braucht ein Ziel und zählt
+          jede Gewohnheit dieses Ziels einmal pro Zeitraum.
+        </p>
+      </div>
+
+      <div class="form-row">
+        <label for="period">Zeitraum</label>
         <select id="period" name="period" onchange="toggleRange()">
           {% set sel_period = submitted.period if submitted else (quest.period if quest else 'weekly') %}
           {% for p in periods %}
-          <option value="{{ p }}" {% if sel_period == p %}selected{% endif %}>{{ p }}</option>
+          <option value="{{ p }}" {% if sel_period == p %}selected{% endif %}>{{ period_labels.get(p, p) }}</option>
           {% endfor %}
         </select>
       </div>
@@ -60,15 +74,15 @@
       </div>
 
       <div class="form-row">
-        <label for="target_value">Target value</label>
+        <label for="target_value">Zielwert</label>
         <input type="number" id="target_value" name="target_value" min="1"
                value="{{ submitted.target_value if submitted else (quest.target_value if quest else 1) }}">
       </div>
 
       <div class="form-row">
-        <label for="category">Category</label>
+        <label for="category">Kategorie</label>
         <select id="category" name="category" onchange="updatePreview()">
-          <option value="">— select —</option>
+          <option value="">— bitte wählen —</option>
           {% for key, label in categories.items() %}
           <option value="{{ key }}" {% if quest and quest.category == key %}selected{% endif %}>{{ label }}</option>
           {% endfor %}
@@ -76,9 +90,9 @@
       </div>
 
       <div class="form-row">
-        <label for="duration_size">Duration</label>
+        <label for="duration_size">Dauer</label>
         <select id="duration_size" name="duration_size" onchange="updatePreview()">
-          <option value="">— select —</option>
+          <option value="">— bitte wählen —</option>
           {% for key, label in duration_labels.items() %}
           <option value="{{ key }}" {% if quest and quest.duration_size == key %}selected{% endif %}>{{ label }}</option>
           {% endfor %}
@@ -86,9 +100,9 @@
       </div>
 
       <div class="form-row">
-        <label for="effort">Effort</label>
+        <label for="effort">Aufwand</label>
         <select id="effort" name="effort" onchange="updatePreview()">
-          <option value="">— select —</option>
+          <option value="">— bitte wählen —</option>
           {% for key, label in effort_labels.items() %}
           <option value="{{ key }}" {% if quest and quest.effort == key %}selected{% endif %}>{{ label }}</option>
           {% endfor %}
@@ -102,25 +116,25 @@
     </div>
 
     <div class="form-row">
-      <label for="match_text">Match text <span class="muted small">(habit_count: only count habits whose title contains this)</span></label>
+      <label for="match_text">Suchbegriff <span class="muted small">(bei „Abschlüsse einer Gewohnheit“: zählt nur Gewohnheiten, deren Titel ihn enthält)</span></label>
       <input type="text" id="match_text" name="match_text"
-             value="{{ submitted.match_text if submitted else (quest.match_text if quest and quest.match_text else '') }}" placeholder="optional, e.g. Japanese">
+             value="{{ submitted.match_text if submitted else (quest.match_text if quest and quest.match_text else '') }}" placeholder="optional, z. B. Japanisch">
     </div>
 
     <div class="form-row checkbox-row">
       <label class="checkbox">
         <input type="checkbox" name="active" {% if not quest or quest.active %}checked{% endif %}>
-        Active
+        Aktiv
       </label>
       <label class="checkbox">
         <input type="checkbox" name="repeatable" {% if quest and quest.repeatable %}checked{% endif %}>
-        Repeatable (re-arm next period)
+        Wiederholbar (im nächsten Zeitraum erneut scharf)
       </label>
     </div>
 
     <div class="form-actions">
-      <button type="submit" class="btn btn-primary">Save</button>
-      <a href="/quests" class="btn btn-ghost">Cancel</a>
+      <button type="submit" class="btn btn-primary">Speichern</button>
+      <a href="/quests" class="btn btn-ghost">Abbrechen</a>
     </div>
   </form>
 </section>

@@ -19,7 +19,9 @@ CONTAINER="${CONTAINER:-wger-hero}"
 # Use the HTTPS name: a service worker is only registered over HTTPS or
 # localhost, so testing the plain 8091 port would not prove installability.
 BASE="${BASE:-https://wger-hero.example.invalid}"
-DB="${DB:-/data/wger_hero.db}"
+# On Fairbrook the file is wger_hero.sqlite — verify with
+#   docker exec wger-hero printenv DATABASE_URL
+DB="${DB:-/data/wger_hero.sqlite}"
 OUT="wger-hero-smoke-pwa-$(date +%F_%H-%M-%S).txt"
 
 exec > "$OUT" 2>&1

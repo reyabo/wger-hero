@@ -1,7 +1,11 @@
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
+
+from itsdangerous import URLSafeTimedSerializer
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import (
@@ -53,9 +57,11 @@ from app.goals import (
 from app.goal_progress import goal_week_summary, pause_windows
 from app.momentum import explain_momentum
 from app.planning import parse_reference_date, today_plan, week_plan
+from app.endurance_program import GOAL_SLUG as ENDURANCE_GOAL_SLUG
 from app.starter import SAFETY_NOTE, StarterError, apply_starter, plan_starter
 from app.habits import (
     RECURRENCE_CHOICES,
+    RECURRENCE_LABELS,
     WEEKDAY_LABELS,
     InvalidWeekdayError,
     archive_habit,
@@ -63,6 +69,7 @@ from app.habits import (
     create_habit,
     delete_or_archive_habit,
     parse_weekdays,
+    remaining_completions,
     scheduled_weekdays,
     set_weekdays,
     update_habit,
@@ -87,7 +94,9 @@ from app.models import (
 )
 from app.quests import (
     PERIOD_CHOICES,
+    PERIOD_LABELS,
     QUEST_TYPE_CHOICES,
+    QUEST_TYPE_LABELS,
     complete_quest_manual,
     create_quest,
     delete_or_archive_quest,
@@ -112,8 +121,10 @@ from app.stats import (
     STAT_KEYS,
     STATS,
     STAT_ABBR,
+    SOURCE_LABELS,
     build_radar,
     get_all_stat_progress,
+    get_stat_detail,
     get_recent_stat_gains,
     get_stat_summary,
     get_stat_totals,
@@ -178,7 +189,38 @@ def _csrf_input(request: Request) -> Markup:
     )
 
 
+def _rank_rewards(db: Session):
+    """Unlocked Japanese rank rewards, newest first."""
+    from app.models import JapaneseRankReward
+
+    return (
+        db.query(JapaneseRankReward)
+        .order_by(JapaneseRankReward.source_level.desc())
+        .all()
+    )
+
+
+def _jp_progress(record) -> object:
+    """Bounded curve position for a Japanese snapshot, for the templates.
+
+    A global rather than a per-route context value, so every page that renders
+    a snapshot gets the same bounded numbers without four routes having to
+    remember to pass them.
+    """
+    from app.japanese_levels import progress_view
+
+    if record is None:
+        return None
+    return progress_view(
+        record.source_character_level,
+        record.source_level_xp,
+        record.source_level_xp_cap,
+        cumulative=(getattr(record, "save_version", 1) or 1) >= 2,
+    )
+
+
 templates.env.globals["csrf_input"] = _csrf_input
+templates.env.globals["jp_progress"] = _jp_progress
 
 # Paths a form may ask to return to. An open redirect would let a crafted link
 # bounce the user off this host, so the value is matched against this list
@@ -225,6 +267,78 @@ def _set_session(response, session: SessionData, settings) -> None:
         serialize_session(session, load_session_secret(settings)),
         **_cookie_kwargs(settings),
     )
+
+
+# --- The completion moment -------------------------------------------------
+#
+# A confirmed habit completion leaves one short-lived, signed cookie behind. The
+# next rendered page consumes it — reads it, shows it, deletes it. That is what
+# makes the reward moment appear exactly once: a reload has no cookie left, a
+# failed or deduplicated POST never set one, and a CSRF rejection never reaches
+# the route at all. No new table, no query parameter that survives in history.
+
+REWARD_COOKIE = "hero_reward"
+REWARD_MAX_AGE_SECONDS = 30
+
+
+# With AUTH_ENABLED=false there is no session secret file, and the reward
+# effect must still work. A per-process key is enough here: the flash lives for
+# seconds, carries no secret, and only decides whether an animation plays.
+_REWARD_FALLBACK_SECRET = secrets.token_urlsafe(32)
+
+
+def _reward_secret(settings) -> str:
+    try:
+        return load_session_secret(settings)
+    except Exception:  # noqa: BLE001 — auth off, or no secret configured
+        return _REWARD_FALLBACK_SECRET
+
+
+def _reward_serializer(settings) -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(_reward_secret(settings), salt="wger-hero-reward")
+
+
+def set_reward_flash(response, settings, payload: dict) -> None:
+    """Hand one confirmed success to the page that renders next."""
+    try:
+        token = _reward_serializer(settings).dumps(payload)
+    except Exception:  # noqa: BLE001 — a missing secret must not break a completion
+        logger.warning("Could not sign the reward flash; skipping the effect")
+        return
+    response.set_cookie(
+        REWARD_COOKIE,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=bool(settings.COOKIE_SECURE),
+        max_age=REWARD_MAX_AGE_SECONDS,
+        path="/",
+    )
+
+
+def take_reward_flash(request: Request, settings) -> Optional[dict]:
+    """Read the flash once. The caller must clear the cookie on its response."""
+    raw = request.cookies.get(REWARD_COOKIE)
+    if not raw:
+        return None
+    try:
+        payload = _reward_serializer(settings).loads(
+            raw, max_age=REWARD_MAX_AGE_SECONDS
+        )
+    except Exception:  # noqa: BLE001 — expired or tampered: simply no effect
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _render_with_reward(request: Request, name: str, context: dict):
+    """Render a page, consuming any pending reward flash exactly once."""
+    settings = get_settings()
+    reward = take_reward_flash(request, settings)
+    context = {**context, "reward": reward, "charged": bool(reward)}
+    response = templates.TemplateResponse(request=request, name=name, context=context)
+    if reward is not None:
+        response.delete_cookie(REWARD_COOKIE, path="/")
+    return response
 
 
 async def _csrf_token_from_body(request: Request) -> str | None:
@@ -470,6 +584,277 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
 # served from the app root rather than /static so the service worker's scope can
 # be "/" — a worker may only control paths at or below its own.
 
+# ---------------------------------------------------------------------------
+# FitTrackee — a read-only endurance source
+# ---------------------------------------------------------------------------
+
+# Where the PKCE verifier and state live between the redirect out and the
+# callback back. A signed cookie would carry the verifier through the browser;
+# keeping it server-side means it never leaves this process.
+_FITTRACKEE_PENDING: dict[str, str] = {}
+
+
+def _fittrackee_context(db: Session) -> dict:
+    """Everything the settings page shows. Never a token, never a secret."""
+    from app.fittrackee_oauth import is_configured, token_store_for
+    from app.fittrackee_sync import get_connection
+    from app.models import FitTrackeeSport, FitTrackeeWorkout
+
+    settings = get_settings()
+    connection = get_connection(db)
+    db.commit()
+
+    store = token_store_for(settings)
+    if not store.exists():
+        token_status = "nicht verbunden"
+    elif connection.needs_reauth:
+        token_status = "neu verbinden nötig"
+    else:
+        token_status = "gültig"
+
+    sports = db.query(FitTrackeeSport).order_by(FitTrackeeSport.label).all()
+    total = db.query(FitTrackeeWorkout).count()
+    eligible = (
+        db.query(FitTrackeeWorkout)
+        .filter(FitTrackeeWorkout.reward_eligible == True)  # noqa: E712
+        .count()
+    )
+
+    return {
+        "ft_base_url": settings.FITTRACKEE_BASE_URL or "—",
+        "ft_client_configured": is_configured(settings),
+        "ft_connected": store.exists(),
+        "ft_token_status": token_status,
+        "ft_connection": connection,
+        "ft_sports": sports,
+        "ft_workouts": total,
+        "ft_eligible": eligible,
+        "ft_has_baseline": connection.baseline_at is not None,
+        "ft_goal_exists": db.query(Goal).filter(Goal.slug == ENDURANCE_GOAL_SLUG).first()
+        is not None,
+    }
+
+
+def _fittrackee_render(request: Request, db: Session, *, message=None, error=None):
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    return templates.TemplateResponse(
+        request=request,
+        name="fittrackee.html",
+        context={
+            **_hero_context(hero),
+            **_fittrackee_context(db),
+            "message": message,
+            "error": error,
+        },
+    )
+
+
+@app.get("/settings/fittrackee", response_class=HTMLResponse)
+async def fittrackee_page(request: Request, db: Session = Depends(get_db)):
+    return _fittrackee_render(request, db)
+
+
+@app.post("/settings/fittrackee/connect")
+async def fittrackee_connect(request: Request, db: Session = Depends(get_db)):
+    """Start the OAuth flow. Only workouts:read is ever requested."""
+    from app.fittrackee_oauth import build_authorization_request, is_configured
+
+    settings = get_settings()
+    if not is_configured(settings):
+        return _fittrackee_render(
+            request, db,
+            error="FitTrackee ist nicht konfiguriert. FITTRACKEE_BASE_URL und "
+                  "FITTRACKEE_CLIENT_ID setzen.",
+        )
+    redirect_uri = settings.FITTRACKEE_REDIRECT_URI or str(
+        request.url_for("fittrackee_callback")
+    )
+    auth = build_authorization_request(
+        settings.FITTRACKEE_BASE_URL, settings.FITTRACKEE_CLIENT_ID, redirect_uri
+    )
+    # Only one authorization can be in flight; a second replaces the first.
+    _FITTRACKEE_PENDING.clear()
+    _FITTRACKEE_PENDING["state"] = auth.state
+    _FITTRACKEE_PENDING["verifier"] = auth.verifier
+    _FITTRACKEE_PENDING["redirect_uri"] = redirect_uri
+    return RedirectResponse(url=auth.url, status_code=303)
+
+
+@app.get("/settings/fittrackee/callback", response_class=HTMLResponse)
+async def fittrackee_callback(request: Request, db: Session = Depends(get_db)):
+    """Where FitTrackee sends the user back. Validates state before anything."""
+    from app.fittrackee_client import exchange_code_for_tokens
+    from app.fittrackee_oauth import (
+        FitTrackeeAuthError,
+        load_client_secret,
+        state_matches,
+        token_store_for,
+    )
+    from app.fittrackee_sync import get_connection
+
+    settings = get_settings()
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    expected = _FITTRACKEE_PENDING.get("state")
+    verifier = _FITTRACKEE_PENDING.get("verifier")
+    redirect_uri = _FITTRACKEE_PENDING.get("redirect_uri") or (
+        settings.FITTRACKEE_REDIRECT_URI or str(request.url_for("fittrackee_callback"))
+    )
+
+    if not state_matches(expected, state):
+        logger.warning("Rejected a FitTrackee callback: state did not match")
+        _FITTRACKEE_PENDING.clear()
+        return _fittrackee_render(
+            request, db,
+            error="Die Rückmeldung von FitTrackee konnte nicht zugeordnet werden. "
+                  "Bitte den Vorgang neu starten.",
+        )
+    if not code or not verifier:
+        _FITTRACKEE_PENDING.clear()
+        return _fittrackee_render(
+            request, db, error="FitTrackee hat keinen Autorisierungscode geliefert."
+        )
+
+    try:
+        tokens = await exchange_code_for_tokens(
+            settings.FITTRACKEE_BASE_URL,
+            code=code,
+            code_verifier=verifier,
+            client_id=settings.FITTRACKEE_CLIENT_ID,
+            client_secret=load_client_secret(settings),
+            redirect_uri=redirect_uri,
+        )
+        token_store_for(settings).save(tokens)
+    except Exception as exc:  # noqa: BLE001 — sanitized below
+        logger.error("FitTrackee authorization failed: %s", type(exc).__name__)
+        message = str(exc) if isinstance(exc, FitTrackeeAuthError) else (
+            "Die Autorisierung bei FitTrackee ist fehlgeschlagen."
+        )
+        return _fittrackee_render(request, db, error=message)
+    finally:
+        _FITTRACKEE_PENDING.clear()
+
+    connection = get_connection(db)
+    connection.base_url = settings.FITTRACKEE_BASE_URL
+    connection.connected_at = datetime.utcnow()
+    connection.needs_reauth = False
+    connection.last_error = None
+    db.commit()
+    return _fittrackee_render(request, db, message="Mit FitTrackee verbunden.")
+
+
+@app.post("/settings/fittrackee/sports")
+async def fittrackee_refresh_sports(request: Request, db: Session = Depends(get_db)):
+    """Fetch the instance's sports. Enables nothing by itself."""
+    from app.fittrackee_oauth import FitTrackeeAuthError
+    from app.fittrackee_client import FitTrackeeClientError
+    from app.fittrackee_sync import build_client, store_sports
+
+    try:
+        client = build_client(get_settings())
+        sports = await client.get_sports()
+    except (FitTrackeeAuthError, FitTrackeeClientError) as exc:
+        return _fittrackee_render(request, db, error=str(exc))
+
+    count = store_sports(db, sports)
+    db.commit()
+    return _fittrackee_render(
+        request, db,
+        message=f"{count} Sportarten abgerufen. Neue zählen erst, wenn du sie "
+                f"unten als Ausdauer markierst.",
+    )
+
+
+@app.post("/settings/fittrackee/sports/save")
+async def fittrackee_save_sports(request: Request, db: Session = Depends(get_db)):
+    """Store which sports count as endurance. The one user decision here."""
+    from app.models import FitTrackeeSport
+
+    form = await request.form()
+    chosen = set()
+    for raw in form.getlist("endurance_sports"):
+        try:
+            chosen.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+
+    for sport in db.query(FitTrackeeSport).all():
+        sport.counts_for_endurance = sport.sport_id in chosen
+    db.commit()
+    return _fittrackee_render(
+        request, db,
+        message=f"{len(chosen)} Sportarten zählen als Ausdauertraining. "
+                f"Das gilt für künftige Workouts; bereits bewertete bleiben, "
+                f"wie sie sind.",
+    )
+
+
+async def _run_fittrackee(request: Request, db: Session, *, baseline: bool,
+                          dry_run: bool):
+    from app.fittrackee_oauth import FitTrackeeAuthError
+    from app.fittrackee_client import FitTrackeeClientError
+    from app.fittrackee_sync import build_client, has_baseline, run_sync
+
+    settings = get_settings()
+    if baseline and has_baseline(db) and not dry_run:
+        return _fittrackee_render(
+            request, db, error="Es existiert bereits eine Baseline."
+        )
+    if not baseline and not has_baseline(db):
+        return _fittrackee_render(
+            request, db,
+            error="Zuerst die Baseline erstellen — sonst würde die gesamte "
+                  "Historie rückwirkend XP geben.",
+        )
+
+    try:
+        client = build_client(settings)
+        outcome = await run_sync(
+            db, client,
+            baseline=baseline,
+            dry_run=dry_run,
+            from_date=settings.FITTRACKEE_SYNC_FROM_DATE,
+            hero_name=settings.HERO_NAME,
+        )
+    except (FitTrackeeAuthError, FitTrackeeClientError) as exc:
+        return _fittrackee_render(request, db, error=str(exc))
+
+    return _fittrackee_render(request, db, message=" · ".join(outcome.as_lines()))
+
+
+@app.post("/settings/fittrackee/baseline")
+async def fittrackee_baseline(request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    dry_run = bool(form.get("dry_run"))
+    return await _run_fittrackee(request, db, baseline=True, dry_run=dry_run)
+
+
+@app.post("/settings/fittrackee/sync")
+async def fittrackee_sync(request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    dry_run = bool(form.get("dry_run"))
+    return await _run_fittrackee(request, db, baseline=False, dry_run=dry_run)
+
+
+@app.post("/settings/fittrackee/goal")
+async def fittrackee_create_goal(request: Request, db: Session = Depends(get_db)):
+    """Create the endurance goal programme. Idempotent, user-triggered only."""
+    from app.endurance_program import EnduranceProgramError, apply_endurance_program
+
+    try:
+        plan = apply_endurance_program(db)
+    except EnduranceProgramError as exc:
+        return _fittrackee_render(request, db, error=str(exc))
+
+    created = sum(1 for item in plan.items if item.action == "create")
+    message = (
+        f"Ausdauerziel angelegt: {created} neue Einträge."
+        if created
+        else "Das Ausdauerziel war bereits vollständig vorhanden."
+    )
+    return _fittrackee_render(request, db, message=message)
+
+
 @app.get("/settings/starter", response_class=HTMLResponse)
 async def starter_preview(request: Request, db: Session = Depends(get_db)):
     """Show what activating the starter campaign would change. Writes nothing."""
@@ -541,10 +926,10 @@ async def today_page(request: Request, db: Session = Depends(get_db)):
     hero = _ensure_hero(db, get_settings().HERO_NAME)
     day = app_today()
     data = today_plan(db, day)
-    return templates.TemplateResponse(
-        request=request,
-        name="today.html",
-        context={
+    return _render_with_reward(
+        request,
+        "today.html",
+        {
             **_hero_context(hero),
             "day": day,
             "plan": data["plan"],
@@ -564,11 +949,11 @@ async def week_page(
     hero = _ensure_hero(db, get_settings().HERO_NAME)
     today = app_today()
     reference, date_error = parse_reference_date(date, today)
-    plan = week_plan(db, reference)
-    return templates.TemplateResponse(
-        request=request,
-        name="week.html",
-        context={
+    plan = week_plan(db, reference, today=today)
+    return _render_with_reward(
+        request,
+        "week.html",
+        {
             **_hero_context(hero),
             "today": today,
             "week": plan,
@@ -642,17 +1027,24 @@ async def quests_page(request: Request, db: Session = Depends(get_db)):
             "quests": all_quests,
             "quest_rewards": quest_rewards,
             "stat_names": STATS,
+            "quest_type_labels": QUEST_TYPE_LABELS,
+            "period_labels": PERIOD_LABELS,
         },
     )
 
 
-def _quest_form_context(quest: Quest | None) -> dict:
+def _quest_form_context(quest: Quest | None, db: Session | None = None) -> dict:
     from app.rewards import CATEGORIES, DURATION_LABELS, EFFORT_LABELS, CATEGORY_CHOICES, DURATION_CHOICES, EFFORT_CHOICES
     return {
         "quest": quest,
         "rewards": parse_stat_rewards(quest.stat_rewards) if quest else {},
         "quest_types": QUEST_TYPE_CHOICES,
+        "quest_type_labels": QUEST_TYPE_LABELS,
+        # The goal selector: goal_habit_variety is unusable without one, and
+        # until now app/starter.py was the only thing that could set goal_id.
+        "goals": list_goals(db) if db is not None else [],
         "periods": PERIOD_CHOICES,
+        "period_labels": PERIOD_LABELS,
         "stat_keys": STAT_KEYS,
         "stat_names": STATS,
         "categories": CATEGORIES,
@@ -672,11 +1064,33 @@ async def quest_new(request: Request, db: Session = Depends(get_db)):
         name="quest_form.html",
         context={
             **_hero_context(hero),
-            **_quest_form_context(None),
+            **_quest_form_context(None, db),
             "form_action": "/quests/new",
-            "heading": "New Quest",
+            "heading": "Neue Quest",
         },
     )
+
+
+def _goal_id_from_form(form, db: Session) -> Optional[int]:
+    """The selected goal, or None. An id that is not a real goal becomes None."""
+    raw = (form.get("goal_id") or "").strip()
+    if not raw:
+        return None
+    try:
+        goal_id = int(raw)
+    except ValueError:
+        return None
+    return goal_id if db.get(Goal, goal_id) is not None else None
+
+
+def _quest_needs_a_goal(quest_type: str, goal_id: Optional[int]) -> Optional[str]:
+    """The one source that is meaningless without a goal."""
+    if quest_type == "goal_habit_variety" and goal_id is None:
+        return (
+            "Die Quelle „Verschiedene Gewohnheiten eines Ziels“ braucht ein Ziel. "
+            "Bitte oben ein Ziel auswählen."
+        )
+    return None
 
 
 def _quest_range_from_form(form) -> tuple[datetime | None, datetime | None, str | None]:
@@ -700,7 +1114,7 @@ def _quest_form_error(request: Request, db: Session, form, error: str, *,
         name="quest_form.html",
         context={
             **_hero_context(hero),
-            **_quest_form_context(quest),
+            **_quest_form_context(quest, db),
             "form_action": action,
             "heading": heading,
             "error": error,
@@ -718,15 +1132,18 @@ async def quest_create(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse(url="/quests/new", status_code=303)
 
     period_start, period_end, error = _quest_range_from_form(form)
+    goal_id = _goal_id_from_form(form, db)
+    error = error or _quest_needs_a_goal(form.get("quest_type") or "manual", goal_id)
     if error:
         return _quest_form_error(
             request, db, form, error,
-            quest=None, action="/quests/new", heading="New Quest",
+            quest=None, action="/quests/new", heading="Neue Quest",
         )
 
     create_quest(
         db,
         title=title,
+        goal_id=goal_id,
         description=form.get("description"),
         quest_type=form.get("quest_type") or "manual",
         period=form.get("period") or "weekly",
@@ -753,9 +1170,9 @@ async def quest_edit(quest_id: int, request: Request, db: Session = Depends(get_
         name="quest_form.html",
         context={
             **_hero_context(hero),
-            **_quest_form_context(quest),
+            **_quest_form_context(quest, db),
             "form_action": f"/quests/{quest_id}/edit",
-            "heading": "Edit Quest",
+            "heading": "Quest bearbeiten",
         },
     )
 
@@ -768,16 +1185,21 @@ async def quest_update(quest_id: int, request: Request, db: Session = Depends(ge
     form = await request.form()
 
     period_start, period_end, error = _quest_range_from_form(form)
+    goal_id = _goal_id_from_form(form, db)
+    error = error or _quest_needs_a_goal(
+        form.get("quest_type") or quest.quest_type, goal_id
+    )
     if error:
         return _quest_form_error(
             request, db, form, error,
-            quest=quest, action=f"/quests/{quest.id}/edit", heading="Edit Quest",
+            quest=quest, action=f"/quests/{quest.id}/edit", heading="Quest bearbeiten",
         )
 
     update_quest(
         db,
         quest,
         title=(form.get("title") or quest.title),
+        goal_id=goal_id,
         description=form.get("description"),
         quest_type=form.get("quest_type") or quest.quest_type,
         period=form.get("period") or quest.period,
@@ -809,19 +1231,24 @@ async def habits_page(request: Request, db: Session = Depends(get_db)):
     hero = _ensure_hero(db, get_settings().HERO_NAME)
     habits = db.query(Habit).order_by(Habit.active.desc(), Habit.title).all()
     habit_rewards = {h.id: parse_stat_rewards(h.stat_rewards) for h in habits}
+    # How much of each habit's period allowance is still open, so the list can
+    # show the state instead of offering an action that would be refused.
+    habit_remaining = {h.id: remaining_completions(db, h) for h in habits}
     completion_counts = {
         h.id: db.query(HabitCompletion).filter(HabitCompletion.habit_id == h.id).count()
         for h in habits
     }
-    return templates.TemplateResponse(
-        request=request,
-        name="habits.html",
-        context={
+    return _render_with_reward(
+        request,
+        "habits.html",
+        {
             **_hero_context(hero),
             "habits": habits,
             "habit_rewards": habit_rewards,
+            "habit_remaining": habit_remaining,
             "completion_counts": completion_counts,
             "stat_names": STATS,
+            "recurrence_labels": RECURRENCE_LABELS,
         },
     )
 
@@ -832,6 +1259,7 @@ def _habit_form_context(habit: Habit | None, db: Session | None = None) -> dict:
         "habit": habit,
         "rewards": parse_stat_rewards(habit.stat_rewards) if habit else {},
         "recurrences": RECURRENCE_CHOICES,
+        "recurrence_labels": RECURRENCE_LABELS,
         "weekday_labels": WEEKDAY_LABELS,
         "selected_weekdays": scheduled_weekdays(db, habit) if habit and db else [],
         "stat_keys": STAT_KEYS,
@@ -855,7 +1283,7 @@ async def habit_new(request: Request, db: Session = Depends(get_db)):
             **_hero_context(hero),
             **_habit_form_context(None),
             "form_action": "/habits/new",
-            "heading": "New Habit",
+            "heading": "Neue Gewohnheit",
         },
     )
 
@@ -903,7 +1331,7 @@ async def habit_edit(habit_id: int, request: Request, db: Session = Depends(get_
             **_hero_context(hero),
             **_habit_form_context(habit, db),
             "form_action": f"/habits/{habit_id}/edit",
-            "heading": "Edit Habit",
+            "heading": "Gewohnheit bearbeiten",
         },
     )
 
@@ -944,15 +1372,31 @@ async def habit_complete(habit_id: int, request: Request, db: Session = Depends(
     habit = db.get(Habit, habit_id)
     if habit is None:
         raise HTTPException(status_code=404, detail="Habit not found")
-    hero = _ensure_hero(db, get_settings().HERO_NAME)
-    complete_habit(db, habit, hero)
+    settings = get_settings()
+    hero = _ensure_hero(db, settings.HERO_NAME)
+    result = complete_habit(db, habit, hero)
     # Habit completions may advance habit_count quests and unlock achievements.
-    evaluate_quests(db, hero)
-    check_achievements(db, hero)
+    newly_completed = []
+    if result.ok:
+        newly_completed = evaluate_quests(db, hero)
+        check_achievements(db, hero)
+
     form = await request.form()
-    return RedirectResponse(
+    response = RedirectResponse(
         url=safe_next(form.get("next"), "/habits"), status_code=303
     )
+    # Only a genuinely recorded completion earns the reward moment. An inactive
+    # habit and a deduplicated double-click both return ok=False, so neither
+    # shows an effect and neither claims XP that was not awarded.
+    if result.ok:
+        set_reward_flash(response, settings, {
+            "habit_id": habit.id,
+            "title": habit.title,
+            "xp": int(result.xp_awarded),
+            "stat_xp": int(result.stat_xp_awarded),
+            "quests": newly_completed[:3],
+        })
+    return response
 
 
 
@@ -985,6 +1429,7 @@ async def japanese_page(request: Request, db: Session = Depends(get_db)):
             **_hero_context(hero),
             "recent_imports": get_recent_imports(db),
             "latest": get_latest_import(db),
+                "rank_rewards": _rank_rewards(db),
             "legacy_habit": find_legacy_japanese_habit(db),
         },
     )
@@ -1021,6 +1466,7 @@ async def japanese_preview(request: Request, db: Session = Depends(get_db)):
                 **_hero_context(hero),
                 "recent_imports": get_recent_imports(db),
                 "latest": get_latest_import(db),
+                "rank_rewards": _rank_rewards(db),
                 "errors": exc.errors,
                 "raw_save": raw,
             },
@@ -1067,6 +1513,7 @@ async def japanese_import(request: Request, db: Session = Depends(get_db)):
                 **_hero_context(hero),
                 "recent_imports": get_recent_imports(db),
                 "latest": get_latest_import(db),
+                "rank_rewards": _rank_rewards(db),
                 "errors": exc.errors,
                 "raw_save": raw,
             },
@@ -1219,6 +1666,27 @@ async def goal_set_status(slug: str, request: Request, db: Session = Depends(get
     if not set_status(db, goal, target):
         raise HTTPException(status_code=400, detail="Unzulässiger Statuswechsel")
     return RedirectResponse(url=f"/goals/{goal.slug}", status_code=303)
+
+
+STAT_DETAIL_EVENT_LIMIT = 30
+
+
+@app.get("/stats/{stat_key}", response_class=HTMLResponse)
+async def stat_detail_page(stat_key: str, request: Request, db: Session = Depends(get_db)):
+    hero = _ensure_hero(db, get_settings().HERO_NAME)
+    detail = get_stat_detail(db, stat_key, limit=STAT_DETAIL_EVENT_LIMIT)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Attribut nicht gefunden")
+    return templates.TemplateResponse(
+        request=request,
+        name="stat_detail.html",
+        context={
+            **_hero_context(hero),
+            "detail": detail,
+            "source_labels": SOURCE_LABELS,
+            "limit": STAT_DETAIL_EVENT_LIMIT,
+        },
+    )
 
 
 @app.get("/stats", response_class=HTMLResponse)

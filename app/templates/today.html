@@ -8,12 +8,15 @@
   <a href="/week">Zur Wochenansicht</a>
 </p>
 
+{% include "_hero.html" %}
+{% include "_reward.html" %}
+
 <section class="card">
   <h2 class="card-title">Für heute geplant</h2>
   {% if plan.planned %}
   <ul class="day-list">
     {% for item in plan.planned %}
-    <li class="day-item {% if item.done %}is-done{% elif item.paused %}is-paused{% endif %}">
+    <li class="day-item {% if item.done %}is-done{% elif item.paused %}is-paused{% endif %}{% if reward and reward.habit_id == item.habit.id %} is-fresh{% endif %}">
       <div class="day-item-main">
         <span class="day-item-title">{{ item.habit.title }}</span>
         {% if item.goal %}
@@ -23,11 +26,23 @@
           {{ item.status_label }}
         </span>
       </div>
+      {% if item.done %}
+      <span class="day-item-note muted small">
+        {% if item.habit.target_count and item.habit.target_count > 1 %}
+        {{ item.habit.target_count }} / {{ item.habit.target_count }} für diesen Zeitraum
+        {% else %}
+        Für diesen Zeitraum erledigt
+        {% endif %}
+      </span>
+      {% else %}
       <form method="post" action="/habits/{{ item.habit.id }}/complete" class="day-item-action">
         {{ csrf_input(request) }}
         <input type="hidden" name="next" value="/today">
-        <button type="submit" class="btn btn-small">Erledigt eintragen</button>
+        <button type="submit" class="btn btn-small">
+          Erledigt eintragen{% if item.remaining > 1 %} ({{ item.remaining }} offen){% endif %}
+        </button>
       </form>
+      {% endif %}
     </li>
     {% endfor %}
   </ul>
@@ -41,7 +56,7 @@
   {% if plan.flexible %}
   <ul class="day-list">
     {% for item in plan.flexible %}
-    <li class="day-item {% if item.done %}is-done{% elif item.paused %}is-paused{% endif %}">
+    <li class="day-item {% if item.done %}is-done{% elif item.paused %}is-paused{% endif %}{% if reward and reward.habit_id == item.habit.id %} is-fresh{% endif %}">
       <div class="day-item-main">
         <span class="day-item-title">{{ item.habit.title }}</span>
         {% if item.goal %}
@@ -51,11 +66,23 @@
           {{ item.status_label }}
         </span>
       </div>
+      {% if item.done %}
+      <span class="day-item-note muted small">
+        {% if item.habit.target_count and item.habit.target_count > 1 %}
+        {{ item.habit.target_count }} / {{ item.habit.target_count }} für diesen Zeitraum
+        {% else %}
+        Für diesen Zeitraum erledigt
+        {% endif %}
+      </span>
+      {% else %}
       <form method="post" action="/habits/{{ item.habit.id }}/complete" class="day-item-action">
         {{ csrf_input(request) }}
         <input type="hidden" name="next" value="/today">
-        <button type="submit" class="btn btn-small">Erledigt eintragen</button>
+        <button type="submit" class="btn btn-small">
+          Erledigt eintragen{% if item.remaining > 1 %} ({{ item.remaining }} offen){% endif %}
+        </button>
       </form>
+      {% endif %}
     </li>
     {% endfor %}
   </ul>

@@ -156,21 +156,139 @@ Migration: nein. Keine externen CDNs.
 Migration: nein (nur Daten). Der Datenbankstand bleibt bei
 `0005_habit_schedule_days` — die Kampagne ist niemals Teil einer Alembic-Revision.
 
-## 9 — Oberfläche
+## Nachtrag — Flexibler Japanisch-SAVE
 
-- [ ] Navigation: Heute, Woche, Ziele, Gewohnheiten, Quests, Japanisch,
-      Attribute, Erfolge, Einstellungen
-- [ ] Zielkarten mit Fortschritt, Momentum, Streaks, nächstem Meilenstein, Status
-- [ ] Sachliche, nicht wertende Texte (kein „gescheitert“, „Strafe“, „verloren“)
+- [x] Pflichtkern auf `Datum`, `Charakter` und die fünf Sprachwerte reduziert
+- [x] `WaniKani-Level`, `Bunpro-Level` und `Grammatikpunkte im SRS` als
+      unabhängige optionale Zeilen; kombiniertes Altformat bleibt gültig
+- [x] Fehlender Wert ist `None`, nicht `0`; `0` bleibt ein gültiger Wert
+- [x] Coach-Notizen optional, kein Ersatzwert, keine Übernahme aus früheren Imports
+- [x] Zentrale Konfliktprüfung bei doppelter Schreibweise
 
-## 10 — Dokumentation
+Migration: `0006_optional_learning_metrics`, macht `wanikani_level` und
+`bunpro_points` nullable; Bestandswerte unverändert, `downgrade()` getestet.
 
-- [ ] `README.md`, `.env.example`, `docs/DEPLOY.md`, optional `docs/PRIVACY.md`
-- [ ] `CLAUDE.md` nur bei neuen verbindlichen Architekturregeln
-- [ ] Momentum-/Streak-Formeln, PWA-Cache-Grenzen, Secret-Erzeugung,
-      Backup vor Migration, Verhalten bei pausierten Zielen
+## 9 — Oberfläche  ✅
+
+- [x] Navigation: Übersicht, Heute, Woche, Ziele, Habits, Quests, Achievements,
+      Attribute, Japanisch, Einstellungen
+- [x] Dunkle Blau-Schwarz-Basis, elektrisches Blau und Cyan als Primärenergie,
+      Violett als kalter Akzent, Gold/Magenta/Rot sparsam; statisches Licht
+      statt animierter Hintergründe
+- [x] Hero-Bereich auf `/today`: Name, Level, XP-Leiste, Gesamt-XP — nur
+      vorhandene Werte, kein Bildmaterial, Sigil rein per CSS
+- [x] Belohnungsmoment beim Habit-Abschluss über eine kurzlebige signierte
+      Flash-Cookie; genau einmal, nur nach bestätigtem Erfolg
+- [x] Zielkarten mit Fortschritt, Momentum, Streaks, Meilenstein, Status
+- [x] Quests unterscheiden sichtbar zwischen „zählt automatisch" und
+      „manuell zu bestätigen"; Meilensteine sind markiert
+- [x] Login, Starter-Vorschau, Japanisch-Vorschau und Offline-Seite angeglichen
+- [x] Mobil: eine Spalte, kein horizontales Scrollen, 44px-Touchziele
+- [x] Barrierefreiheit: Skip-Link, sichtbarer Fokus, semantische Überschriften,
+      `aria-live` für die Erfolgsmeldung, Status immer auch als Wort
+- [x] `prefers-reduced-motion`: keine Animation, stattdessen stehender
+      Rahmen- und Flächenwechsel
+- [x] Sachliche, nicht wertende Texte (kein „gescheitert", „Strafe", „verloren")
+- [x] Fehlende numerische Japanisch-Metriken werden als `0` **dargestellt**;
+      gespeichert bleibt `NULL`, das Rendern schreibt nichts
+
+Migration: nein.
+
+## 10 — Dokumentation  ✅
+
+- [x] `README.md` konsolidiert: Zweck, Architektur, alle Funktionsbereiche,
+      Entwicklung, Tests, Migrationen, Deployment-Übersicht
+- [x] `docs/DEPLOY.md` neu geordnet: 18 Schritte von der Zustandsprüfung bis
+      zur manuellen Abnahme, plus zwei getrennte Rückwege
+- [x] `docs/UI_CHECKLIST.md` als manuelle Sichtprüfliste
+- [x] SAVE-Format nach PR #20 vollständig dokumentiert, inklusive
+      NULL-/0-Semantik und Konfliktregel
+- [x] Migration `0006` und ihr verlustbehafteter Rückweg dokumentiert
+- [x] PWA-Cache-Grenzen, Starter-Kampagne, Momentum-/Streak-Formeln,
+      Pausenverhalten dokumentiert
+- [x] `scripts/smoke_full.sh` als rein lesender Abnahme-Smoke-Test
+
+Migration: nein.
 
 ---
+
+## Nachtrag — wger-Sync-Fix
+
+- [x] `/api/v2/workoutlog/` statt `/api/v2/log/` (404 auf der Live-Instanz)
+- [x] Session↔Log über `WorkoutLog.session` ↔ `WorkoutSession.id`, durchgehend
+      als String; keine Integer-Konvertierung von UUIDs
+- [x] `repetitions` (String) statt `reps`; `weight` als String; `rir` nullable
+- [x] „X exercises" zählt unterschiedliche Übungen, nicht Sätze
+- [x] `workout_complete` spiegelt jetzt zusätzlich den kanonischen Stat
+      `strength`; Conditioning und RIR bleiben rein global
+- [x] Re-Sync nimmt alte Awards aus den Auditzeilen zurück und löscht sie
+- [x] Deterministischer Hash über stabil sortierte Logs
+- [x] `python -m app.repair_wger_stat_xp --dry-run|--apply`, idempotent
+
+Migration: nein — `HeroStat`, `StatXpEvent`, `SyncEvent` und `XpEvent` reichen.
+
+## Nachtrag — Abschlussgrenze für Gewohnheiten
+
+- [x] `target_count` wirkt als echte Obergrenze je Periode, nicht nur als Anzeige
+- [x] Periode aus der vorhandenen `recurrence`: Tag / Mo–So / Monat;
+      `flexible` heißt „ohne festen Wochentag", nicht „unbegrenzt"
+- [x] Abgelehnter Abschluss (`period_complete`): kein XP-Event, kein Stat-XP,
+      keine Completion-Zeile, kein Belohnungseffekt
+- [x] `/today` und Habit-Liste bieten die Aktion nicht mehr an, wenn nichts
+      mehr offen ist, und zeigen stattdessen den Zustand
+- [x] Bestandshistorie bleibt unverändert; nichts wird gelöscht oder zurückgeholt
+
+Migration: nein — `recurrence` und `target_count` existieren bereits.
+
+## Bekannte Einschränkungen
+
+Stand nach der FitTrackee-Integration — bewusst so, nicht vergessen:
+
+- **Gelöschte FitTrackee-Workouts werden nicht zurückgenommen.** Ein Workout,
+  das in einem einzelnen Abruf fehlt, kann gelöscht sein — oder außerhalb des
+  Sync-Fensters liegen, an einem API-Fehler scheitern oder vorübergehend nicht
+  sichtbar sein. Eine XP-Rücknahme auf diese Evidenz wäre bei einem Fehlalarm
+  destruktiv. Eine ausdrückliche Reconciliation ist ein eigener Schritt.
+- **Keine Cross-Source-Deduplizierung.** Ob dieselbe reale Aktivität zusätzlich
+  in wger steht, kann Hero nicht zuverlässig erkennen; eine Heuristik über
+  Titel, Uhrzeit, Dauer oder Distanz wäre schlechter als keine. Konvention:
+  wger für Kraft, FitTrackee für Ausdauer.
+- **Keine Herzfrequenz-Bewertung.** `ave_hr` und `max_hr` werden gespeichert und
+  angezeigt, aber nie für XP verwendet. Ohne individuelle Ausgangswerte wären
+  Zonen, VO2max oder Trainingsbelastung geraten.
+- **Kein automatischer FitTrackee-Sync.** Kein Cron, kein Scheduler, kein
+  Worker. Die Synchronisation wird ausgelöst, nicht geplant.
+
+Stand nach Schritt 10 — bewusst so, nicht vergessen:
+
+- **Service Worker nur statisch geprüft.** Es gibt keinen Browser in der
+  Testumgebung; die Cache-Grenze wird an der Quelle geprüft. Das trägt, weil die
+  Assetliste klein, fest und explizit ist.
+- **PWA-Icons sind SVG** (`sizes: "any"`), keine PNG-Größenstaffel.
+- **„Der Fünfer-Rhythmus" zählt automatisch** über die ziel-bezogene Questquelle
+  `goal_habit_variety` — verschiedene Gewohnheiten eines Ziels im Zeitraum.
+  `workout_variety` bleibt daneben bestehen: freitextliche wger-Titel sind eine
+  andere Frage als eigene, per Fremdschlüssel zugeordnete Gewohnheiten.
+- **Keine historischen Questzähler** für beliebige vergangene Wochen. Die
+  zentralen Zähler beantworten den laufenden Zeitraum; eine vergangene Woche
+  meldet das offen, statt eine Zahl zu erfinden.
+- **Keine rückwirkend erfundenen Pausenintervalle.** Pausen vor Revision `0004`
+  haben keinen Datensatz.
+- **Der Rückweg hinter `0006` ist verlustbehaftet.** „Nicht angegeben" wird beim
+  Downgrade zu `0`; datentreu nur über das Backup.
+- **Fehlende numerische Japanisch-Metriken erscheinen als `0`** — ausschließlich
+  in der Darstellung. Gespeichert bleibt `NULL`.
+- **Die Wochenansicht zeigt keine wger-Trainings und keine Japanisch-Sessions
+  je Tag**; beides bleibt auf den bestehenden Seiten.
+- **Conditioning- und RIR-Boni bleiben rein globale XP.** Es gibt im Projekt
+  keine kanonische Stat-Zuordnung dafür; eine zu erfinden würde das Balancing
+  ändern.
+- **Die Stärke-Reparatur ergänzt nur fehlende Stat-XP.** Widersprüchliche
+  Bestandsdaten werden als Konflikt gemeldet und unverändert gelassen, nicht
+  aufgefüllt.
+- **Sätze werden nicht getrennt ausgewiesen.** Die Sync-Zusammenfassung nennt
+  die Zahl unterschiedlicher Übungen; die einzelnen Sätze liegen normalisiert
+  vor, haben aber keine eigene Oberfläche.
 
 ## Ausdrücklich nicht Teil dieses Umbaus
 

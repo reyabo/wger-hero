@@ -9,6 +9,7 @@ from datetime import date
 import pytest
 
 from app.japanese_saves import (
+    SaveParseError,
     JAPANESE_SESSION_REWARDS,
     PARTIAL_SESSION_CAP,
     SESSION_COMPLETIONS,
@@ -122,11 +123,18 @@ def test_unknown_completion_is_warning_case():
     assert result.reward_calculation == "warning"
 
 
-def test_mode_without_completion_is_warning_case():
-    save = parse_save(save_with(mode="START"))
-    result = calculate_delta(save, prev())
-    assert result.xp_delta == 0
-    assert result.reward_calculation == "warning"
+def test_a_half_written_session_pair_is_refused():
+    """Mode and completion are one statement; half of it cannot be evaluated.
+
+    This used to import as a warning case with 0 XP. It is now a plain
+    validation error instead, so the incomplete line is corrected rather than
+    silently stored — the reward is 0 either way, nothing about the XP rules
+    changed.
+    """
+    with pytest.raises(SaveParseError):
+        parse_save(save_with(mode="START"))
+    with pytest.raises(SaveParseError):
+        parse_save(save_with(completion="vollständig"))
 
 
 # ---------------------------------------------------------------------------

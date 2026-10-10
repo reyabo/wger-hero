@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}{{ detail.progress.name }} — wger-hero{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>{{ detail.progress.name }}</h1>
+  <span class="badge">Stufe {{ detail.progress.level }}</span>
+</div>
+<p class="muted"><a href="/stats">Zurück zum Radar</a></p>
+
+<section class="card">
+  <div class="card-title">Fortschritt</div>
+  <div class="quest-progress-row">
+    <span class="progress-text">
+      {{ detail.progress.xp_in_level }} / {{ detail.progress.xp_for_next }} XP bis Stufe {{ detail.progress.level + 1 }}
+    </span>
+    <div class="bar-wrap">
+      <div class="bar" style="width: {{ detail.progress.pct }}%"></div>
+    </div>
+  </div>
+  <p class="muted small">{{ detail.total_xp }} XP insgesamt auf diesem Attribut.</p>
+</section>
+
+<section class="card">
+  <div class="card-title">Woher die XP kommen</div>
+  {% if detail.sources %}
+  <table class="config-table">
+    <thead>
+      <tr><th>Quelle</th><th>XP</th><th>Anteil</th><th>Einträge</th></tr>
+    </thead>
+    <tbody>
+      {% for row in detail.sources %}
+      <tr>
+        <td>{{ row.label }}</td>
+        <td><span class="xp-reward">+{{ row.xp }}</span></td>
+        <td>{{ row.pct }} %</td>
+        <td class="muted">{{ row.count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted small">
+    Über die gesamte Historie gerechnet, nicht nur über die Liste unten.
+  </p>
+  {% else %}
+  <p class="muted">Noch keine XP auf diesem Attribut.</p>
+  {% endif %}
+</section>
+
+{% if detail.titles %}
+<section class="card">
+  <div class="card-title">Die stärksten Beiträge</div>
+  <table class="config-table">
+    <thead>
+      <tr><th>Eintrag</th><th>Quelle</th><th>XP</th><th>Mal</th></tr>
+    </thead>
+    <tbody>
+      {% for row in detail.titles %}
+      <tr>
+        <td>{{ row.title }}</td>
+        <td class="muted">{{ row.label }}</td>
+        <td><span class="xp-reward">+{{ row.xp }}</span></td>
+        <td class="muted">{{ row.count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="card-title">Zuletzt vergeben</div>
+  {% if detail.events %}
+  <ul class="day-list">
+    {% for event in detail.events %}
+    <li class="day-item">
+      <div class="day-item-main">
+        <span class="day-item-title">{{ event.title }}</span>
+        <span class="tag">{{ source_labels.get(event.source, event.source) }}</span>
+        <span class="xp-reward">+{{ event.xp }} XP</span>
+        <span class="muted small">{{ event.created_at.strftime('%d.%m.%Y') }}</span>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="muted small">
+    Höchstens die letzten {{ limit }} Einträge — der maßgebliche Gesamtwert steht oben.
+  </p>
+  {% else %}
+  <p class="muted">Noch nichts eingetragen.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="card-title">Andere Attribute</div>
+  <div class="quest-meta">
+    {% for stat in detail.all_stats %}
+    {% if stat.key != detail.progress.key %}
+    <a class="tag" href="/stats/{{ stat.key }}">{{ stat.name }} · Stufe {{ stat.level }}</a>
+    {% endif %}
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

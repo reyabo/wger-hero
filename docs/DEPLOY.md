@@ -1,206 +1,704 @@
 # DEPLOY — wger-hero
 
-Deployment auf dem Zielserver. **Diese Schritte werden nicht von Claude Code
-ausgeführt** — die Entwicklungsumgebung hat keinen Zugriff auf den Server, die
-Produktivdatenbank oder eine echte wger-Instanz.
+Verbindlicher Ablauf für ein Update der Produktivinstanz. Jeder Schritt schreibt
+sein Ergebnis in eine Datei, damit im Fehlerfall nachvollziehbar ist, wo es
+gehakt hat.
 
-Alle Beispiele leiten ihre Ausgabe in zeitgestempelte Dateien um. Gib niemals
-Secrets aus: keine Tokens, keine Hashes, keine Session-Keys.
-
-```bash
-TS=$(date +%Y-%m-%d_%H-%M-%S)
-LOG=/srv/data/wger-hero/deploy-$TS
-mkdir -p "$(dirname "$LOG")"
-```
-
-Umgebungsannahmen laut Projektvorgabe: Container `wger-hero`, intern Port 5000,
-Host-Port 8091, hinter Caddy, Datenbank `/srv/data/wger-hero/wger_hero.db`.
-Die konkrete Caddy- und Compose-Konfiguration des Servers ist hier **nicht**
-dokumentiert, weil sie in diesem Repository nicht vorliegt — nicht erfinden,
-sondern auf dem Server nachsehen.
+**Nichts hiervon wird aus einer Entwicklungssitzung heraus ausgeführt.** Diese
+Datei ist die Anleitung für den Betreiber am Server.
 
 ---
 
-## 1. Bestandsprüfung
+## 0. Vorbereitung und Annahmen
 
 ```bash
-docker compose ps                          > "$LOG-01-ps.txt"        2>&1
-docker compose exec wger-hero python -c "import app; print('ok')" \
-                                           > "$LOG-02-import.txt"    2>&1
-sqlite3 /srv/data/wger-hero/wger_hero.db ".tables" \
-                                           > "$LOG-03-tables.txt"    2>&1
-sqlite3 /srv/data/wger-hero/wger_hero.db \
-  "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version';" \
-                                           > "$LOG-04-alembic.txt"   2>&1
+TS=$(date +%F_%H-%M-%S)
+LOG=/srv/data/wger-hero/deploy-$TS
+mkdir -p /srv/data/wger-hero
+cd /pfad/zu/wger-hero
 ```
 
-Ist `alembic_version` **nicht** vorhanden, ist die Datenbank noch nicht
-übernommen → Abschnitt 3a. Ist sie vorhanden → Abschnitt 3b.
+Der Container heißt `wger-hero`, läuft intern auf Port 5000, veröffentlicht auf
+8091, hinter Caddy.
 
-## 2. Sicherung inklusive WAL-Zustand
+### Den Compose-Stack zuerst festlegen
 
-Die Datenbank läuft im WAL-Modus. Ein blosses `cp` der `.db`-Datei ist **nicht**
-konsistent, weil die zuletzt geschriebenen Seiten noch in `-wal` liegen können.
-`.backup` schreibt einen konsistenten Stand, auch bei laufendem Container.
+**Compose lädt von sich aus nur `docker-compose.yml` und
+`docker-compose.override.yml`.** Jede weitere Datei muss bei *jedem* Aufruf
+erneut mit `-f` angegeben werden — auch bei `build`, `run` und `up`. Fehlt sie
+bei einem Aufruf, der den Container neu erzeugt, entsteht er ohne ihre Mounts.
+Genau so verliert eine funktionierende Installation ihre Auth-Secrets und
+antwortet danach auf jedem Pfad mit `503 {"detail": "Auth not configured"}`.
+
+Deshalb laufen **alle** Compose-Aufrufe dieser Anleitung über ein Array, das
+einmal gesetzt und nie wieder umgangen wird:
 
 ```bash
-sqlite3 /srv/data/wger-hero/wger_hero.db \
-  ".backup '/srv/data/wger-hero/wger_hero.db.bak-$TS'" \
-                                           > "$LOG-05-backup.txt"    2>&1
-ls -l /srv/data/wger-hero/wger_hero.db.bak-$TS \
-                                           >> "$LOG-05-backup.txt"   2>&1
-sqlite3 "/srv/data/wger-hero/wger_hero.db.bak-$TS" "PRAGMA integrity_check;" \
-                                           > "$LOG-06-integrity.txt" 2>&1
+# Standardinstallation ohne zusätzliche Compose-Dateien:
+DC=(docker compose)
 ```
 
-`integrity_check` muss `ok` liefern. Erst dann weiter.
-
-## 3. Migration
-
-Migration ist ein **expliziter** Schritt. Die Anwendung migriert weder beim
-Import noch beim Start — das ist durch Tests abgesichert.
-
-### 3a. Bestehende Datenbank übernehmen (einmalig)
-
-Die Datenbank hat bereits alle Tabellen. Die Baseline-Revision darf hier
-**nicht** ausgeführt werden — sie würde an bereits existierenden Tabellen
-scheitern. Stattdessen wird der Stand gestempelt:
+Sobald eigene Dateien dazugehören, werden sie hier vollständig aufgezählt —
+und dann auch `docker-compose.override.yml`, denn sobald ein `-f` gesetzt ist,
+lädt Compose die Override-Datei nicht mehr von selbst:
 
 ```bash
-docker compose exec wger-hero alembic stamp 0001_baseline \
-                                           > "$LOG-07-stamp.txt"     2>&1
-docker compose exec wger-hero alembic current \
-                                           >> "$LOG-07-stamp.txt"    2>&1
+# Beispiel Fairbrook — dort liegt der Zugriffsschutz in einer lokalen,
+# nicht eingecheckten docker-compose.auth.yml:
+DC=(docker compose
+    -f docker-compose.yml
+    -f docker-compose.override.yml
+    -f docker-compose.auth.yml)
 ```
 
-Danach einmal Abschnitt 3b, um spätere Revisionen anzuwenden.
-
-### 3b. Migration anwenden
+Vor dem ersten Schritt einmal prüfen, was tatsächlich vorhanden ist:
 
 ```bash
-docker compose exec wger-hero alembic current \
-                                           > "$LOG-08-before.txt"    2>&1
-docker compose exec wger-hero alembic upgrade head \
-                                           > "$LOG-09-upgrade.txt"   2>&1
-docker compose exec wger-hero alembic current \
-                                           >> "$LOG-09-upgrade.txt"  2>&1
+ls -l docker-compose*.yml compose*.yaml 2>/dev/null
 ```
 
-### 3c. Nach Revision 0003 (Quest-Abschlüsse)
+Ab hier steht `"${DC[@]}"` überall dort, wo sonst der nackte
+`docker&nbsp;compose`-Aufruf stünde. Wird ein Schritt einzeln ausgeführt, muss
+`DC` in derselben Shell gesetzt sein.
 
-`quest_completions` startet leer. Bereits abgeschlossene Quests bekommen
-**keinen** nachträglichen Datensatz — es wird keine Historie erfunden. Sie
-werden dennoch nicht erneut belohnt, weil `completed_at` und `active` weiter
-greifen. Prüfen, dass die Tabelle existiert und der Unique-Index steht:
+### Den Datenbankpfad zuerst feststellen
+
+Der Pfad steht **an genau einer Stelle** und wird hier als Variable gesetzt, weil
+er im Repository und auf dem Server abweichen kann:
 
 ```bash
-docker compose exec wger-hero sqlite3 /data/wger_hero.db \
-  "SELECT count(*) FROM quest_completions;
-   SELECT name FROM sqlite_master WHERE type='index'
-     AND name='ix_quest_completions_dedup_key';" \
-                                           > "$LOG-09b-completions.txt"  2>&1
+# Auf Fairbrook:
+DB_IN_CONTAINER=/data/wger_hero.sqlite
+DB_ON_HOST=/srv/data/wger-hero/wger_hero.sqlite
 ```
 
-Erwartet: `0` und der Indexname. Fehlt der Index, ist die Migration
-unvollständig — dann nicht weitermachen, sondern Abschnitt 8 (Rückweg).
+> **Vor dem ersten Befehl prüfen.** Die `docker-compose.yml` im Repository setzt
+> als Vorgabe `DATABASE_URL=sqlite:////data/wger_hero.db` — mit `.db`. Ein
+> Eintrag unter `environment:` **überschreibt** `.env`, die Vorgabe gewinnt also
+> gegen eine dort gesetzte Variable. Weicht der Server davon ab, muss seine
+> `docker-compose.yml` den Pfad selbst setzen. Erst nachsehen, dann arbeiten:
+>
+> ```bash
+> "${DC[@]}" exec wger-hero printenv DATABASE_URL
+> "${DC[@]}" exec wger-hero ls -l /data
+> ```
+>
+> Die tatsächliche Ausgabe ist maßgeblich, nicht diese Datei.
 
-### 3d. Nach Revision 0004 (Pausenzeiträume der Ziele)
+---
 
-`goal_pause_intervals` startet ebenfalls leer. Pausen, die **vor** dieser
-Revision begonnen haben, bekommen keinen nachträglichen Datensatz — auch hier
-wird keine Historie erfunden. Ein bereits pausiertes Ziel bleibt pausiert und
-wird weiterhin nicht bewertet; seine zurückliegenden Wochen zählen so wie
-bisher. Erst ab dem nächsten Pausieren entsteht ein Intervall.
-
-Prüfen, dass die Tabelle und der **partielle** Unique-Index existieren:
+## 1. Aktuellen Containerzustand prüfen
 
 ```bash
-docker compose exec wger-hero sqlite3 /data/wger_hero.db \
-  "SELECT count(*) FROM goal_pause_intervals;
-   SELECT sql FROM sqlite_master WHERE type='index'
-     AND name='ux_goal_pause_open';" \
-                                           > "$LOG-09c-pauses.txt"     2>&1
+"${DC[@]}" ps                              > "$LOG-01-ps.txt"          2>&1
+"${DC[@]}" logs --tail=200 wger-hero      >> "$LOG-01-ps.txt"          2>&1
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8091/healthz \
+                                          >> "$LOG-01-ps.txt"          2>&1
 ```
 
-Erwartet: `0` und eine Indexdefinition, die auf `WHERE ended_at IS NULL` endet.
-Fehlt der Zusatz, wäre pro Ziel nur **eine** Pause überhaupt möglich — dann
-nicht weitermachen, sondern Abschnitt 8 (Rückweg).
+Erwartet: Container `running`, Healthcheck `200`. Läuft die Instanz schon vorher
+nicht, wird nicht deployt, sondern erst die Ursache gesucht.
 
-### 3e. Nach Revision 0005 (Wochenplanung der Gewohnheiten)
+## 1a. Preflight — nur lesen, nichts ändern
 
-`habit_schedule_days` startet leer. Bestehende Gewohnheiten bekommen **keine**
-Planung — sie bleiben flexibel und erscheinen wie bisher an jedem Tag. Weder
-Gewohnheiten noch Completions werden verändert.
+Vier Fragen, bevor irgendetwas angefasst wird. Alles read-only; kein Secret-Wert
+wird ausgegeben, nur ob eine Datei existiert und wie groß sie ist.
 
 ```bash
-docker compose exec wger-hero sqlite3 /data/wger_hero.db \
-  "SELECT count(*) FROM habit_schedule_days;
+bash scripts/deploy_preflight.sh           > "$LOG-01a-preflight.txt"  2>&1
+cat "$LOG-01a-preflight.txt"
+```
+
+Das Skript prüft dasselbe wie die vier Blöcke unten; wer lieber von Hand
+vorgeht, führt sie einzeln aus.
+
+**Arbeitsverzeichnis sauber** — nichts still überschreiben:
+
+```bash
+git status --short
+git rev-parse HEAD
+git fetch --prune origin
+```
+
+**Welche Compose-Dateien liegen überhaupt da:**
+
+```bash
+ls -l docker-compose*.yml compose*.yaml 2>/dev/null
+```
+
+Jede Datei, die hier auftaucht und nicht `docker-compose.yml` oder
+`docker-compose.override.yml` heißt, gehört in `DC` — sonst geht sie beim
+nächsten `up` verloren.
+
+**Existieren die Auth-Secrets** (nur Metadaten, nie der Inhalt):
+
+```bash
+for f in secrets/hero_password_hash secrets/hero_session_secret; do
+  if [ -s "$f" ]; then
+    stat -c 'vorhanden: path=%n mode=%a owner=%U group=%G size=%s' "$f"
+  elif [ -e "$f" ]; then
+    echo "LEER: $f"
+  else
+    echo "FEHLT: $f"
+  fi
+done
+```
+
+**Landen sie im Container an der richtigen Stelle** — die entscheidende Frage,
+weil genau hier eine vergessene `-f`-Datei sichtbar wird:
+
+```bash
+"${DC[@]}" config | grep -B3 -A3 '/run/secrets/hero_'
+```
+
+Erwartet werden beide Ziele:
+
+```text
+/run/secrets/hero_password_hash
+/run/secrets/hero_session_secret
+```
+
+> Nicht die vollständige `config`-Ausgabe ins Log schreiben — sie enthält die
+> aufgelöste Umgebung des Dienstes und kann damit Werte aus `.env` zeigen.
+
+Fehlt hier ein Ziel, ist **nicht** das Secret kaputt, sondern der Compose-Stack
+unvollständig. Dann `DC` korrigieren und erneut prüfen — **keine** neuen
+Secrets erzeugen. Siehe Abschnitt „Auth-Fehler einordnen" am Ende dieser Datei.
+
+## 2. Git-Stand prüfen
+
+```bash
+git fetch origin                           > "$LOG-02-git.txt"         2>&1
+git status --porcelain                    >> "$LOG-02-git.txt"         2>&1
+git log --oneline -5 origin/main          >> "$LOG-02-git.txt"         2>&1
+```
+
+Erwartet: sauberes Arbeitsverzeichnis. Lokale Änderungen am Server sind ein
+Warnsignal — sie gehen beim Pull verloren oder erzeugen einen Konflikt.
+
+## 3. SQLite-Integrität prüfen
+
+```bash
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "PRAGMA integrity_check;
+   PRAGMA foreign_key_check;
+   SELECT count(*) FROM xp_events;
    SELECT count(*) FROM habit_completions;
-   SELECT sql FROM sqlite_master WHERE type='table'
-     AND name='habit_schedule_days';" \
-                                           > "$LOG-09d-schedule.txt"    2>&1
+   SELECT count(*) FROM quest_completions;
+   SELECT count(*) FROM japanese_save_imports;" \
+                                           > "$LOG-03-integrity.txt"   2>&1
 ```
 
-Erwartet: `0`, die unveränderte Anzahl der Completions und eine Tabellen-
-definition mit `UNIQUE (habit_id, iso_weekday)`. Fehlt der Unique-Zusatz, könnte
-ein Wochentag doppelt gespeichert werden — dann nicht weitermachen, sondern
-Abschnitt 8 (Rückweg). Rückweg dieser Revision:
-`alembic downgrade 0004_goal_pause_intervals` plus Backup; das Löschen der
-Planungstabelle lässt Gewohnheiten und Completions unberührt (getestet).
+Erwartet: `ok`, keine Fremdschlüsselverletzung, plausible Zahlen. Diese Zahlen
+sind später der Vergleichsmaßstab.
 
-### 3f. PWA und Starter-Kampagne (Schritt 7 und 8)
+## 4. Konsistentes Online-Backup erstellen
 
-**Keine neue Migration.** Beide Schritte kommen mit den vorhandenen Modellen
-aus: die PWA ist rein statisch, und die Starter-Kampagne legt ausschließlich
-Zeilen in `goals`, `habits`, `habit_schedule_days` und `quests` an. Der
-Datenbankstand bleibt deshalb bei `0005_habit_schedule_days`. Eine leere
-Revision wird bewusst nicht erzeugt.
+`.backup` ist WAL-konsistent — im Gegensatz zu einem `cp` der Datei, das mitten
+in einer Transaktion einen unbrauchbaren Stand einfängt.
 
-Die Starter-Kampagne ist **niemals** Teil einer Alembic-Revision — sie ist
-Daten, keine Schemaänderung, und wird nur auf ausdrückliche Anforderung
-angelegt.
+```bash
+"${DC[@]}" exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
+  ".backup '/data/backup-$TS.sqlite'"      > "$LOG-04-backup.txt"      2>&1
+ls -l /srv/data/wger-hero/backup-$TS.sqlite \
+                                          >> "$LOG-04-backup.txt"      2>&1
+"${DC[@]}" exec wger-hero sqlite3 -readonly "/data/backup-$TS.sqlite" \
+  "PRAGMA integrity_check;"               >> "$LOG-04-backup.txt"      2>&1
+```
 
-Prüfen, dass die PWA-Dateien ausgeliefert werden:
+Erwartet: Datei vorhanden, nicht leer, `ok`. **Ohne geprüftes Backup wird nicht
+weitergemacht.**
+
+## 5. Altes Image als Rollback taggen
+
+```bash
+docker image inspect wger-hero-wger-hero:latest --format '{{.Id}}' \
+                                           > "$LOG-05-image.txt"       2>&1
+docker tag wger-hero-wger-hero:latest wger-hero:rollback-$TS \
+                                          >> "$LOG-05-image.txt"       2>&1
+docker image ls | grep wger-hero          >> "$LOG-05-image.txt"       2>&1
+```
+
+Damit existiert ein benanntes Ziel für Abschnitt 19.
+
+## 6. Neues Image bauen
+
+```bash
+git pull origin main                       > "$LOG-06-pull.txt"        2>&1
+"${DC[@]}" build                          >> "$LOG-06-pull.txt"        2>&1
+```
+
+Der Build kopiert `app/`, `alembic.ini` **und** `migrations/` ins Image — ohne
+die beiden letzten wäre der Migrationsbefehl in Abschnitt 7 und 10 im Container
+nicht ausführbar.
+
+## 7. Migration auf einer Kopie testen
+
+Erst auf einer Kopie, nie zuerst auf den Echtdaten.
+
+```bash
+cp /srv/data/wger-hero/backup-$TS.sqlite \
+   /srv/data/wger-hero/migrationstest-$TS.sqlite \
+                                           > "$LOG-07-migtest.txt"     2>&1
+"${DC[@]}" run --rm \
+  -e DATABASE_URL="sqlite:////data/migrationstest-$TS.sqlite" \
+  wger-hero python -m alembic current     >> "$LOG-07-migtest.txt"     2>&1
+"${DC[@]}" run --rm \
+  -e DATABASE_URL="sqlite:////data/migrationstest-$TS.sqlite" \
+  wger-hero python -m alembic upgrade head \
+                                          >> "$LOG-07-migtest.txt"     2>&1
+"${DC[@]}" run --rm \
+  -e DATABASE_URL="sqlite:////data/migrationstest-$TS.sqlite" \
+  wger-hero python -m alembic current     >> "$LOG-07-migtest.txt"     2>&1
+"${DC[@]}" exec wger-hero sqlite3 -readonly \
+  "/data/migrationstest-$TS.sqlite" "PRAGMA integrity_check;" \
+                                          >> "$LOG-07-migtest.txt"     2>&1
+```
+
+Erwartet am Ende: Revision `0006_optional_learning_metrics (head)` und `ok`.
+Schlägt hier etwas fehl, wird **nicht** produktiv migriert.
+
+**Erstübernahme einer Bestandsdatenbank:** ist noch nie mit Alembic gearbeitet
+worden, existiert keine `alembic_version`-Tabelle. Dann **nicht** `upgrade`,
+sondern erst `alembic stamp 0001_baseline` und danach `alembic upgrade head`.
+Ein `upgrade` über ein bestehendes Schema scheitert laut — das ist Absicht und
+durch einen Test abgesichert.
+
+## 8. Container stoppen
+
+```bash
+"${DC[@]}" stop wger-hero                  > "$LOG-08-stop.txt"        2>&1
+"${DC[@]}" ps                             >> "$LOG-08-stop.txt"        2>&1
+```
+
+## 9. Finales Offline-Backup erstellen
+
+Zwischen Abschnitt 4 und jetzt kann noch geschrieben worden sein. Bei
+gestopptem Container ist die Datei ruhig:
+
+```bash
+cp /srv/data/wger-hero/wger_hero.sqlite \
+   /srv/data/wger-hero/offline-$TS.sqlite  > "$LOG-09-offline.txt"     2>&1
+ls -l /srv/data/wger-hero/*.sqlite*       >> "$LOG-09-offline.txt"     2>&1
+```
+
+`-wal` und `-shm` gehören zur Datenbank. Bei gestopptem Container sind sie in
+der Regel bereits eingearbeitet; existieren sie noch, werden sie **mitkopiert**
+und nicht einzeln gelöscht.
+
+## 10. Produktive Migration ausführen
+
+```bash
+"${DC[@]}" run --rm wger-hero python -m alembic current \
+                                           > "$LOG-10-migrate.txt"     2>&1
+"${DC[@]}" run --rm wger-hero python -m alembic upgrade head \
+                                          >> "$LOG-10-migrate.txt"     2>&1
+"${DC[@]}" run --rm wger-hero python -m alembic current \
+                                          >> "$LOG-10-migrate.txt"     2>&1
+```
+
+Die Anwendung migriert **nie** von selbst — weder beim Import noch beim Start.
+Das ist eine feste Architekturregel und durch einen Test abgesichert.
+
+## 10a. Zugriffsschutz-Secrets erneut bestätigen
+
+Der Preflight aus Abschnitt 1a liegt jetzt einige Schritte zurück, und der
+nächste Befehl erzeugt den Container neu. Die eine Prüfung, die zählt, deshalb
+unmittelbar davor noch einmal:
+
+```bash
+"${DC[@]}" config | grep -c '/run/secrets/hero_' > "$LOG-10a-secrets.txt" 2>&1
+cat "$LOG-10a-secrets.txt"
+```
+
+Erwartet: eine Zahl **größer als 0** — bei zwei Mounts üblicherweise `2`.
+Steht dort `0`, wird nicht gestartet, sondern `DC` korrigiert.
+
+## 11. Neuen Container starten
+
+```bash
+"${DC[@]}" up -d                           > "$LOG-11-up.txt"          2>&1
+"${DC[@]}" ps                             >> "$LOG-11-up.txt"          2>&1
+"${DC[@]}" logs --tail=100 wger-hero      >> "$LOG-11-up.txt"          2>&1
+```
+
+## 12. Healthcheck
+
+```bash
+sleep 5
+curl -sS http://127.0.0.1:8091/healthz     > "$LOG-12-health.txt"      2>&1
+curl -sS -o /dev/null -w 'login: %{http_code}\n' \
+  http://127.0.0.1:8091/login             >> "$LOG-12-health.txt"      2>&1
+```
+
+## 12a. Zugriffsschutz wirkt
+
+Drei Ebenen, von außen nach innen. Erst wenn alle drei stimmen, ist der
+Zugriffsschutz nach dem Recreate nachweislich intakt.
+
+**Container läuft und ist gesund:**
+
+```bash
+docker inspect -f \
+  'status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+  wger-hero                                > "$LOG-12a-auth.txt"       2>&1
+```
+
+Erwartet: `status=running health=healthy`. Ein `health=unhealthy` ist hier fast
+immer der Auth-Fehler selbst — `/healthz` wird mitgesperrt, weil die
+Secret-Prüfung vor der Freigabe öffentlicher Pfade greift.
+
+**Die Mounts sind wirklich im Container** (nur Ziel und Modus, nie der Inhalt):
+
+```bash
+docker inspect wger-hero --format \
+  '{{range .Mounts}}{{if eq .Destination "/run/secrets/hero_password_hash"}}password_hash=mounted mode={{.Mode}}
+{{end}}{{if eq .Destination "/run/secrets/hero_session_secret"}}session_secret=mounted mode={{.Mode}}
+{{end}}{{end}}'                           >> "$LOG-12a-auth.txt"       2>&1
+```
+
+Erwartet: beide Zeilen, jeweils mit `mode=ro`.
+
+**Die Anwendung antwortet wie vorgesehen:**
+
+```bash
+{
+  curl -sS -o /dev/null -w 'healthz=%{http_code}\n' http://127.0.0.1:8091/healthz
+  curl -sS -o /dev/null -w 'login=%{http_code}\n'   http://127.0.0.1:8091/login
+  curl -sS -o /dev/null -w 'today=%{http_code}\n'   http://127.0.0.1:8091/today
+}                                         >> "$LOG-12a-auth.txt"       2>&1
+cat "$LOG-12a-auth.txt"
+```
+
+Erwartet:
+
+```text
+healthz=200
+login=200
+today=303      ← Weiterleitung auf /login, weil nicht angemeldet
+```
+
+`today=200` wäre ein Befund, kein Erfolg: dann wäre der Zugriffsschutz aus.
+Dreimal `503` bedeutet ein nicht lesbares Secret — weiter beim Abschnitt
+„Auth-Fehler einordnen".
+
+## 13. Datenbankintegrität
+
+```bash
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "PRAGMA integrity_check;"                > "$LOG-13-integrity.txt"   2>&1
+```
+
+## 14. Fremdschlüssel- und Bestandsprüfung
+
+```bash
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "PRAGMA foreign_key_check;
+   SELECT count(*) FROM xp_events;
+   SELECT count(*) FROM habit_completions;
+   SELECT count(*) FROM quest_completions;
+   SELECT count(*) FROM goal_pause_intervals;
+   SELECT count(*) FROM habit_schedule_days;
+   SELECT count(*) FROM japanese_save_imports;" \
+                                           > "$LOG-14-counts.txt"      2>&1
+```
+
+Die Zahlen müssen zu Abschnitt 3 passen. Eine gesunkene Zahl ist ein Abbruch­
+grund — dann Abschnitt 19.
+
+## 15. PWA-Smoke-Test
 
 ```bash
 for path in /manifest.webmanifest /sw.js /offline \
-            /static/icons/icon.svg /static/icons/icon-maskable.svg; do
+            /static/icons/icon.svg /static/icons/icon-maskable.svg \
+            /static/style.css; do
   curl -sS -o /dev/null -w "$path: %{http_code}\n" "https://DEINE-DOMAIN$path"
-done                                       > "$LOG-09e-pwa.txt"        2>&1
+done                                       > "$LOG-15-pwa.txt"         2>&1
 ```
 
-Erwartet: überall `200`. Die Installation als App setzt **HTTPS** voraus — über
-Caddy, nicht über den direkten Port 8091. Ein Browser registriert sonst keinen
-Service Worker.
+Erwartet: überall `200`. Die Installation als App setzt **HTTPS** voraus, also
+den Weg über Caddy — über den direkten Port 8091 registriert kein Browser einen
+Service Worker. Der Port ist zum Debuggen da, nicht als Installationsweg.
 
-### 3g. Nach dem wger-Update: Sessions mit `datetime_start`
+## 16. SAVE-Smoke-Test
 
-**Keine neue Migration.** Reine Codeänderung, der Datenbankstand bleibt bei
-`0005_habit_schedule_days`.
-
-Seit dem wger-Update liefert `/api/v2/workoutsession/` kein Feld `date` mehr,
-sondern `datetime_start` und `datetime_end`. Der Sync liest den Tag jetzt an
-einer Stelle (`app.sync.session_date_str`), bevorzugt `datetime_start` und
-fällt auf `date` zurück.
-
-Vor dem Deployment die Feldnamen der eigenen Instanz prüfen — die Diagnose
-nennt das erkannte Datumsfeld und druckt ausschließlich Feldnamen, keine Werte:
+Rein rechnend, ohne Schreibzugriff:
 
 ```bash
-docker compose exec wger-hero python -m app.diagnostics wger \
-                                           > "$LOG-30-wger-fields.txt"   2>&1
-grep -E "Date field recognized|workoutsession" "$LOG-30-wger-fields.txt"
+"${DC[@]}" exec wger-hero python - <<'PY' > "$LOG-16-save.txt" 2>&1
+from app.japanese_saves import parse_save
+BLOCK = """=== 状態 SAVE ===
+Datum: 2026-08-01 | Streak: 4
+WaniKani-Level: 2
+Bunpro-Level: N5
+Grammatikpunkte im SRS: 37
+Charakter: Lv 2 (見習い) | 433 / 1000 XP
+語彙 180 | 文法 250 | 読解 0 | 聴解 0 | 会話 215
+=== END SAVE ==="""
+s = parse_save(BLOCK)
+print("wanikani_level:", s.wanikani_level)
+print("bunpro_level:  ", s.bunpro_level)
+print("bunpro_points: ", s.bunpro_points)
+print("hash:          ", s.normalized_hash())
+PY
+```
+
+## 17. Starter-Dry-run
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.seed_programs starter --dry-run \
+                                           > "$LOG-17-starter-dry.txt" 2>&1
+```
+
+Der Dry-run schreibt nichts. Die eigentliche Aktivierung ist ein getrennter,
+bewusster Schritt — siehe Abschnitt 18.
+
+## 18. Manuelle UI-Abnahme
+
+Die manuelle UI-Abnahme ist der letzte Schritt vor der Freigabe.
+
+Siehe [docs/UI_CHECKLIST.md](UI_CHECKLIST.md). Kurz: Login, `/today`, `/week`,
+ein Habit abschließen und die Reaktion prüfen, ein pausiertes Ziel ansehen, die
+Japanisch-Vorschau mit fehlenden Werten öffnen, Starter-Vorschau, Offline-Seite.
+
+---
+
+## 18a. Einmalige Stärke-Reparatur und Exercise-Logs aktivieren
+
+**Nur beim Update auf den Sync-Fix nötig.** Reihenfolge nicht vertauschen: erst
+die Bestandsreparatur, dann die Logs — sonst laufen ein Re-Sync und eine
+Reparatur gleichzeitig über dieselben Zeilen.
+
+Workouts, die eine ältere Version synchronisiert hat, haben ihre globalen XP,
+aber keine Stärke-Stat-XP. Die Reparatur ergänzt ausschließlich die fehlende
+Stat-Seite; globale XP, `XpEvent`- und `SyncEvent`-Zeilen bleiben unangetastet.
+
+```bash
+# 1. Zustand vorher festhalten
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT 'hero_total_xp', total_xp FROM hero_profile;
+   SELECT 'wger_events', count(*), sum(xp) FROM xp_events
+     WHERE source='wger' AND event_type='workout_complete';
+   SELECT 'wger_stat_events', count(*), coalesce(sum(xp),0) FROM stat_xp_events
+     WHERE source='wger';
+   SELECT 'strength', coalesce(xp,0) FROM hero_stats WHERE stat_key='strength';" \
+                                           > "$LOG-40-repair-before.txt"  2>&1
+
+# 2. Dry-run — schreibt nichts
+"${DC[@]}" exec wger-hero python -m app.repair_wger_stat_xp --dry-run \
+                                           > "$LOG-41-repair-dry.txt"     2>&1
+
+# 3. Prüfen: „Kandidaten" muss zur Zahl der wger-Workouts aus Schritt 1 passen,
+#    „zusätzliche strength XP" zu deren XP-Summe, „globale XP Änderung" = 0.
+#    Konflikte hier zuerst klären, nicht überspringen.
+less "$LOG-41-repair-dry.txt"
+
+# 4. Sichern (die Reparatur schreibt gleich)
+"${DC[@]}" exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
+  ".backup '/data/vor-reparatur-$TS.sqlite'" \
+                                           > "$LOG-42-repair-backup.txt"  2>&1
+
+# 5. Anwenden
+"${DC[@]}" exec wger-hero python -m app.repair_wger_stat_xp --apply \
+                                           > "$LOG-43-repair-apply.txt"   2>&1
+
+# 6. Abnahme: erneuter Dry-run muss 0 zusätzliche XP melden
+"${DC[@]}" exec wger-hero python -m app.repair_wger_stat_xp --dry-run \
+                                           > "$LOG-44-repair-recheck.txt" 2>&1
+
+# 7. Zustand nachher — globale XP unverändert, strength gestiegen
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT 'hero_total_xp', total_xp FROM hero_profile;
+   SELECT 'strength', xp FROM hero_stats WHERE stat_key='strength';
+   SELECT 'wger_stat_events', count(*), sum(xp) FROM stat_xp_events
+     WHERE source='wger';" \
+                                           > "$LOG-45-repair-after.txt"   2>&1
+```
+
+Erst wenn Schritt 6 „Nichts zu tun" meldet, weitermachen.
+
+### Exercise-Logs aktivieren
+
+```bash
+# 8. .env sichern und erst dann ändern
+cp .env ".env.bak-$TS"                     > "$LOG-46-env.txt"           2>&1
+sed -i 's/^WGER_FETCH_EXERCISE_LOGS=false/WGER_FETCH_EXERCISE_LOGS=true/' .env
+grep '^WGER_FETCH_EXERCISE_LOGS' .env     >> "$LOG-46-env.txt"           2>&1
+
+# 9. Container kontrolliert neu erstellen (env_file wird nur beim Erstellen gelesen)
+"${DC[@]}" up -d --force-recreate          > "$LOG-47-recreate.txt"      2>&1
+curl -sS http://127.0.0.1:8091/healthz    >> "$LOG-47-recreate.txt"      2>&1
+
+# 10. VOR dem ersten echten Re-Sync noch einmal sichern: bestehende Sessions
+#     bekommen durch die neuen Logs einen neuen Hash und werden reconciled.
+"${DC[@]}" exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
+  ".backup '/data/vor-resync-$TS.sqlite'"  > "$LOG-48-resync-backup.txt" 2>&1
+
+# 11. Sync über die Oberfläche auslösen und danach prüfen
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT 'hero_total_xp', total_xp FROM hero_profile;
+   SELECT 'strength', xp FROM hero_stats WHERE stat_key='strength';
+   SELECT 'events_pro_session', source_id, count(*), sum(xp) FROM xp_events
+     WHERE source='wger' GROUP BY source_id HAVING count(*) > 3;
+   SELECT 'stat_events_pro_session', source_id, count(*) FROM stat_xp_events
+     WHERE source='wger' GROUP BY source_id HAVING count(*) > 1;
+   SELECT 'sync_events', count(*) FROM sync_events WHERE source='wger';
+   SELECT 'summaries', raw_summary FROM sync_events WHERE source='wger'
+     ORDER BY synced_at DESC LIMIT 5;" \
+                                           > "$LOG-49-resync-check.txt"  2>&1
+```
+
+Erwartet in Schritt 11: die globale XP-Summe ist **nicht** gesprungen (höchstens
+um die neu hinzugekommenen Conditioning- und RIR-Boni), keine Session mit mehr
+als drei XP-Events, **keine** Session mit mehr als einem Stärke-Stat-Event, und
+die Zusammenfassungen nennen jetzt eine Übungszahl statt
+`exercise details disabled`. Stimmt etwas nicht: Abschnitt 19b mit dem Backup
+aus Schritt 10.
+
+Es gibt weiterhin **keinen** automatischen Re-Sync beim Containerstart.
+
+## 18b. Starter-Kampagne aktivieren (optional, getrennt)
+
+Nicht Teil des Deployments. Reihenfolge:
+
+```bash
+# 1. Dry-run
+"${DC[@]}" exec wger-hero python -m app.seed_programs starter --dry-run \
+                                           > "$LOG-20-starter-dry.txt"  2>&1
+# 2. Vorschau prüfen — besonders Zeilen mit "Konflikt"
+less "$LOG-20-starter-dry.txt"
+# 3. Sichern
+"${DC[@]}" exec wger-hero sqlite3 "$DB_IN_CONTAINER" \
+  ".backup '/data/vor-starter-$TS.sqlite'" > "$LOG-21-starter-backup.txt" 2>&1
+# 4. Aktivieren
+"${DC[@]}" exec wger-hero python -m app.seed_programs starter \
+                                           > "$LOG-22-starter-apply.txt" 2>&1
+# 5. Ergebnis prüfen
+less "$LOG-22-starter-apply.txt"
+# 6. Abnahme: erneuter Dry-run muss "Keine Änderungen nötig" melden
+"${DC[@]}" exec wger-hero python -m app.seed_programs starter --dry-run \
+                                           > "$LOG-23-starter-recheck.txt" 2>&1
+```
+
+Schritt 6 ist die eigentliche Abnahme. Meldet er noch offene Änderungen, nicht
+erneut aktivieren, sondern die Ausgabe prüfen. Derselbe Weg steht in der
+Oberfläche unter **Einstellungen → Starter-Kampagne**.
+
+---
+
+## Revisionsspezifische Prüfungen
+
+Nach einem Update, das eine dieser Revisionen zum ersten Mal anwendet.
+
+### Nach `0003_quest_completions`
+
+`quest_completions` startet leer. Vorher abgeschlossene Quests bekommen keinen
+nachträglichen Datensatz — es wird keine Historie erfunden. Sie werden trotzdem
+nicht erneut belohnt, weil `completed_at` und `active` weiter greifen.
+
+```bash
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT count(*) FROM quest_completions;
+   SELECT name FROM sqlite_master WHERE type='index'
+     AND name='ix_quest_completions_dedup_key';"
+```
+
+Erwartet: `0` und der Indexname. Fehlt der Index, ist die Migration
+unvollständig — dann Abschnitt 19.
+
+### Nach `0004_goal_pause_intervals`
+
+`goal_pause_intervals` startet leer. Pausen, die vorher begonnen haben, bekommen
+keinen Datensatz. Ein bereits pausiertes Ziel bleibt pausiert; erst beim
+nächsten Pausieren entsteht ein Intervall.
+
+```bash
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT count(*) FROM goal_pause_intervals;
+   SELECT sql FROM sqlite_master WHERE type='index' AND name='ux_goal_pause_open';"
+```
+
+Erwartet: `0` und eine Indexdefinition, die auf `WHERE ended_at IS NULL` endet.
+Fehlt der Zusatz, wäre pro Ziel nur **eine** Pause überhaupt möglich.
+
+### Nach `0005_habit_schedule_days`
+
+`habit_schedule_days` startet leer. Bestehende Gewohnheiten bekommen keine
+Planung — sie bleiben flexibel und erscheinen wie bisher an jedem Tag.
+
+```bash
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT count(*) FROM habit_schedule_days;
+   SELECT count(*) FROM habit_completions;
+   SELECT sql FROM sqlite_master WHERE type='table' AND name='habit_schedule_days';"
+```
+
+Erwartet: `0`, die unveränderte Zahl der Completions und
+`UNIQUE (habit_id, iso_weekday)` in der Tabellendefinition.
+
+### Nach `0006_optional_learning_metrics`
+
+`japanese_save_imports.wanikani_level` und `.bunpro_points` werden nullable.
+Bestandswerte bleiben **unverändert**; eine bestehende `0` wird **nicht**
+rückwirkend zu `NULL`. Erst neue Imports ohne die jeweilige Zeile speichern
+`NULL` — „nicht angegeben".
+
+```bash
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT count(*) FROM japanese_save_imports;
+   SELECT count(*) FROM japanese_save_imports WHERE bunpro_points IS NULL;
+   SELECT sql FROM sqlite_master WHERE type='table' AND name='japanese_save_imports';"
+```
+
+Erwartet: die unveränderte Zahl der Imports, direkt nach der Migration `0`
+NULL-Werte, und eine Definition, in der `wanikani_level` und `bunpro_points`
+**kein** `NOT NULL` mehr tragen.
+
+> **Der Rückweg hinter `0006` ist verlustbehaftet.**
+> `alembic downgrade 0005_habit_schedule_days` stellt `NOT NULL` wieder her und
+> braucht dafür in jeder Zeile einen Wert. Zeilen, die „nicht angegeben"
+> gespeichert haben, werden zu `0`. Gezählte Werte bleiben unangetastet, aber
+> die Unterscheidung zwischen „nicht angegeben" und einer echten `0` ist danach
+> **weg** und lässt sich aus der Datenbank nicht rekonstruieren.
+>
+> **Für einen vollständig datentreuen Rollback hinter
+> `0006_optional_learning_metrics` ist das vor dem Deployment erstellte
+> SQLite-Backup zu verwenden. Ein Alembic-Downgrade allein stellt die
+> ursprüngliche NULL-Semantik nicht vollständig wieder her.**
+
+---
+
+## 18c. Nach einem wger-Update: Sessions mit `datetime_start`
+
+**Keine neue Revision.** Reine Codeänderung, der Datenbankstand bleibt, wie er
+ist.
+
+Aktuelle wger-Versionen liefern an `/api/v2/workoutsession/` kein Feld `date`
+mehr, sondern `datetime_start` und `datetime_end`. Der Sync liest den Tag
+deshalb an genau einer Stelle (`app.sync.session_date_str`), bevorzugt
+`datetime_start` und fällt auf `date` zurück, damit eine ältere Instanz
+unverändert weiterläuft.
+
+Vor dem Deployment die Feldnamen der eigenen Instanz prüfen. Die Diagnose nennt
+das erkannte Datumsfeld und druckt ausschließlich Feldnamen, keine Werte:
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.diagnostics wger \
+                                           > "$LOG-18c-wger-fields.txt"  2>&1
+grep -E "Date field recognized|workoutsession" "$LOG-18c-wger-fields.txt"
 ```
 
 Erwartet: `Date field recognized : datetime_start`. Meldet die Zeile `NONE`,
 kennt diese wger-Version keines der beiden Felder — dann **nicht** syncen,
 sondern erst die Feldnamen klären.
 
-**Achtung, der erste Sync nach dem Fix ist nicht folgenlos.** Der
-Deduplizierungs-Hash wird über die rohe API-Antwort gebildet. Weil sich deren
-Form geändert hat, gilt jede bereits importierte Session als „verändert“ und
-läuft erneut durch den Re-Sync-Pfad. Lokal mit synthetischen Daten
-reproduziert, drei bekannte Sessions:
+### Der erste Sync nach dem Fix ist nicht folgenlos
+
+Der Deduplizierungs-Hash wird über die rohe API-Antwort gebildet
+(`_hash_session({"session": …, "logs": …})`). Weil sich deren Form geändert
+hat, gilt jede bereits importierte Session als „verändert“ und läuft erneut
+durch den Re-Sync-Pfad. Lokal mit synthetischen Daten reproduziert, drei
+bekannte Sessions:
 
 | Größe | vor dem Sync | danach |
 |---|---|---|
@@ -211,145 +709,423 @@ reproduziert, drei bekannte Sessions:
 
 Die Workout-XP bleiben also korrekt, aber die Audit-Spur verdoppelt sich, und
 weil `week-warrior` Workouts über `sync_events.synced_at` statt über das
-Trainingsdatum zählt, schließt die Quest ab. **Vor dem ersten Sync sichern**
-(Abschnitt 2) und den Sync zuerst auf einer Kopie laufen lassen. Wie dieser
-Einmaleffekt behandelt wird, ist noch offen und bewusst nicht Teil dieses
-Fixes — er greift in die XP-Historie ein.
+Trainingsdatum zählt, schließt die Quest ab.
 
-## 4a. Starter-Kampagne aktivieren (optional, nach dem Deployment)
+**Vor dem ersten Sync sichern** (Abschnitt 4) und den Sync zuerst auf einer
+Kopie laufen lassen. Wie dieser Einmaleffekt behandelt wird, ist offen und
+bewusst nicht Teil dieses Fixes — er griffe in die XP-Historie ein.
 
-Getrennter, bewusst ausgelöster Schritt. Nicht Teil des Deployments.
-
-```bash
-# 1. Dry-run: zeigt nur an, was passieren würde
-docker compose exec wger-hero python -m app.seed_programs starter --dry-run \
-                                           > "$LOG-20-starter-dry.txt"  2>&1
-
-# 2. Vorschau prüfen — besonders Zeilen mit "Konflikt"
-less "$LOG-20-starter-dry.txt"
-
-# 3. Datenbank sichern (WAL-konsistent, siehe Abschnitt 2)
-docker compose exec wger-hero sqlite3 /data/wger_hero.db \
-  ".backup '/data/backup-vor-starter.db'"  > "$LOG-21-starter-backup.txt" 2>&1
-
-# 4. Aktivieren
-docker compose exec wger-hero python -m app.seed_programs starter \
-                                           > "$LOG-22-starter-apply.txt" 2>&1
-
-# 5. Ergebnis prüfen
-less "$LOG-22-starter-apply.txt"
-
-# 6. Erneuter Dry-run: muss "Keine Änderungen nötig" melden
-docker compose exec wger-hero python -m app.seed_programs starter --dry-run \
-                                           > "$LOG-23-starter-recheck.txt" 2>&1
-```
-
-Schritt 6 ist die eigentliche Abnahme: meldet der zweite Dry-run noch offene
-Änderungen, ist etwas schiefgelaufen — dann nicht erneut aktivieren, sondern
-die Ausgabe prüfen. Dasselbe ist auch über die Oberfläche möglich:
-**Einstellungen → Starter-Kampagne**, Vorschau, dann Bestätigung.
-
-## 4. Container neu bauen
+Danach prüfen, dass der Ledger stimmt:
 
 ```bash
-git -C /pfad/zu/wger-hero pull origin main > "$LOG-10-pull.txt"      2>&1
-docker compose up -d --build               > "$LOG-11-build.txt"     2>&1
-docker compose ps                          >> "$LOG-11-build.txt"    2>&1
+"${DC[@]}" exec wger-hero python -m app.check_consistency \
+                                           > "$LOG-18c-consistency.txt"  2>&1
 ```
 
-## 5. Healthcheck
+## 19. Rückweg
+
+Es gibt zwei verschiedene Rückwege. Welcher gebraucht wird, hängt davon ab, ob
+die Datenbank schon verändert wurde.
+
+### 19a. Nur die Anwendung zurückrollen
+
+Wenn die Migration **nicht** gelaufen ist oder die alte Anwendung mit dem neuen
+Schema noch arbeiten kann — additive Revisionen erlauben das in der Regel:
 
 ```bash
-curl -fsS http://127.0.0.1:8091/healthz    > "$LOG-12-health.txt"    2>&1
+"${DC[@]}" stop wger-hero                  > "$LOG-30-rollback.txt"    2>&1
+docker tag wger-hero:rollback-$TS wger-hero-wger-hero:latest \
+                                          >> "$LOG-30-rollback.txt"    2>&1
+"${DC[@]}" up -d --no-build               >> "$LOG-30-rollback.txt"    2>&1
+curl -sS http://127.0.0.1:8091/healthz    >> "$LOG-30-rollback.txt"    2>&1
 ```
 
-Erwartet: `{"status":"ok"}`.
+Die Datenbank bleibt unangetastet. Das ist der schonende Weg und der erste, den
+man versucht.
 
-## 6. Funktionsprüfung
+### 19b. Die Datenbank zurückrollen
 
-Im Browser, angemeldet:
-
-- Übersicht lädt, XP und Level plausibel
-- Sync auslösen, keine neuen Fehler
-- Habits und Quests sichtbar, Fortschritt unverändert
-- `/japanese` lädt, letzter Import unverändert
-- `/stats` zeigt das Radar
-- `/settings` zeigt Token-Status ohne Wert
-
-Datenbestand gegenprüfen:
+Nur wenn die Daten selbst beschädigt sind oder hinter `0006` zurückgegangen
+werden muss.
 
 ```bash
-sqlite3 /srv/data/wger-hero/wger_hero.db \
-  "SELECT level,total_xp FROM hero_profile;
-   SELECT count(*) FROM xp_events;
-   SELECT count(*) FROM habit_completions;
-   SELECT count(*) FROM japanese_save_imports;" \
-                                           > "$LOG-13-counts.txt"    2>&1
+# 1. Container stoppen
+"${DC[@]}" stop wger-hero                  > "$LOG-31-restore.txt"     2>&1
+
+# 2. Den fehlgeschlagenen Stand separat sichern — nicht überschreiben.
+mv /srv/data/wger-hero/wger_hero.sqlite \
+   /srv/data/wger-hero/fehlgeschlagen-$TS.sqlite \
+                                          >> "$LOG-31-restore.txt"     2>&1
+# -wal und -shm gehören dazu: mitnehmen, damit der Stand analysierbar bleibt.
+for suffix in -wal -shm; do
+  [ -f "/srv/data/wger-hero/wger_hero.sqlite$suffix" ] && \
+  mv "/srv/data/wger-hero/wger_hero.sqlite$suffix" \
+     "/srv/data/wger-hero/fehlgeschlagen-$TS.sqlite$suffix"
+done                                      >> "$LOG-31-restore.txt"     2>&1
+
+# 3. Backup prüfen, bevor es eingespielt wird.
+sqlite3 -readonly "/srv/data/wger-hero/offline-$TS.sqlite" \
+  "PRAGMA integrity_check;"               >> "$LOG-31-restore.txt"     2>&1
+
+# 4. Einspielen
+cp /srv/data/wger-hero/offline-$TS.sqlite \
+   /srv/data/wger-hero/wger_hero.sqlite   >> "$LOG-31-restore.txt"     2>&1
+
+# 5. Altes Image starten
+docker tag wger-hero:rollback-$TS wger-hero-wger-hero:latest \
+                                          >> "$LOG-31-restore.txt"     2>&1
+"${DC[@]}" up -d --no-build               >> "$LOG-31-restore.txt"     2>&1
+curl -sS http://127.0.0.1:8091/healthz    >> "$LOG-31-restore.txt"     2>&1
 ```
 
-Die Zahlen müssen zum Stand vor der Migration passen.
-
-## 7. Logprüfung
-
-```bash
-docker compose logs --tail=200 wger-hero   > "$LOG-14-logs.txt"      2>&1
-grep -iE "error|traceback|exception" "$LOG-14-logs.txt" \
-                                           > "$LOG-15-errors.txt"    2>&1 || true
-```
-
-`$LOG-15-errors.txt` sollte leer sein. Prüfe zusätzlich, dass **kein** Token,
-Hash oder Session-Key im Log steht.
-
-## 8. Rückweg
-
-Zuerst der reguläre Weg über Alembic:
-
-```bash
-docker compose exec wger-hero alembic downgrade -1 \
-                                           > "$LOG-16-downgrade.txt" 2>&1
-docker compose up -d --build               >> "$LOG-16-downgrade.txt" 2>&1
-```
-
-Wenn das nicht reicht, zurück auf das Backup. Container vorher stoppen, damit
-keine Schreibvorgänge laufen. Die alte Datei wird **nicht gelöscht**, sondern
-zur Seite gelegt:
-
-```bash
-docker compose stop wger-hero              > "$LOG-17-restore.txt"   2>&1
-mv /srv/data/wger-hero/wger_hero.db \
-   /srv/data/wger-hero/wger_hero.db.pre-restore-$TS \
-                                           >> "$LOG-17-restore.txt"  2>&1
-rm -f /srv/data/wger-hero/wger_hero.db-wal /srv/data/wger-hero/wger_hero.db-shm
-cp "/srv/data/wger-hero/wger_hero.db.bak-$TS" \
-   /srv/data/wger-hero/wger_hero.db        >> "$LOG-17-restore.txt"  2>&1
-docker compose start wger-hero             >> "$LOG-17-restore.txt"  2>&1
-curl -fsS http://127.0.0.1:8091/healthz    >> "$LOG-17-restore.txt"  2>&1
-```
-
-Die `-wal`/`-shm`-Dateien gehören zur alten Datenbank und müssen weg, sonst
-mischt SQLite den alten WAL-Inhalt in die wiederhergestellte Datei.
+**Nie** die produktive Datei ohne geprüftes Backup überschreiben, und **nie**
+den fehlgeschlagenen Stand einfach löschen: er ist die einzige Quelle für die
+Frage, was schiefgegangen ist.
 
 ---
 
-## Secrets erzeugen
+## Automatische Sicherung
 
-Werden ausserhalb des Repositories erzeugt und schreibgeschützt eingebunden.
-Nie committen, nie ins Log schreiben.
+Die Sicherungen in Abschnitt 4 und 9 gehören zum Deployment. Im Normalbetrieb
+gab es lange gar keine — `scripts/backup.sh` schließt diese Lücke und **ersetzt
+die Deployment-Sicherungen nicht**, sondern ergänzt sie.
 
 ```bash
-# Session-Schlüssel
-umask 077
-openssl rand -hex 32 > /srv/secrets/hero_session_secret
-
-# Passwort-Hash (Argon2), Passwort interaktiv, nicht in der Shell-History
-python - <<'EOF' > /srv/secrets/hero_password_hash
-from argon2 import PasswordHasher
-from getpass import getpass
-print(PasswordHasher().hash(getpass("Passwort: ")), end="")
-EOF
-
-chmod 400 /srv/secrets/hero_session_secret /srv/secrets/hero_password_hash
+bash scripts/backup.sh              # Standard: 14 Tage aufbewahren
+KEEP_DAYS=30 bash scripts/backup.sh # längere Aufbewahrung
 ```
 
-Einbindung read-only per Compose, Pfade über `AUTH_PASSWORD_HASH_FILE` und
-`SESSION_SECRET_FILE`. Details in `.env.example`.
+Das Skript nimmt eine WAL-konsistente Online-Sicherung über die Backup-API von
+SQLite, prüft das Ergebnis mit `PRAGMA integrity_check` und entfernt danach
+eigene Sicherungen jenseits des Aufbewahrungsfensters. Schlägt irgendein Schritt
+fehl, bricht es ab, **bevor** rotiert wird — es soll nie eine gute alte Sicherung
+löschen, um Platz für eine kaputte neue zu machen.
+
+Es schreibt nach `/srv/data/wger-hero/backups/` und benennt seine Dateien
+`auto-backup-<Zeitstempel>.sqlite`. Beides zusammen ist der Schutz beim
+Aufräumen: die Rotation läuft ausschließlich in diesem eigenen Verzeichnis und
+trifft ausschließlich dieses eigene Namensmuster. Die Live-Datenbank, ihre
+`-wal`- und `-shm`-Begleiter und sämtliche Momentaufnahmen aus dieser Anleitung
+(`backup-*`, `offline-*`, `migrationstest-*`, `vor-*` und besonders die niemals
+zu löschenden `fehlgeschlagen-*`) liegen in einem anderen Verzeichnis **und**
+tragen ein anderes Präfix — sie sind für die Rotation unerreichbar.
+
+Als Cron-Eintrag (root, `crontab -e`):
+
+```
+PATH=/usr/local/bin:/usr/bin:/bin
+MAILTO=root
+30 3 * * * /bin/bash /pfad/zu/wger-hero/scripts/backup.sh >> /srv/data/wger-hero/backup.log 2>&1
+```
+
+`PATH` ist nötig, weil Cron `docker` sonst nicht findet. Bei Erfolg schreibt das
+Skript **eine** Zeile, im Fehlerfall eine `FEHLER:`-Meldung auf stderr und einen
+Exit-Code ungleich null — das ist es, was Cron per Mail meldet.
+
+Nachsehen, was vorhanden ist:
+
+```bash
+ls -lh /srv/data/wger-hero/backups/
+```
+
+### Zurückspielen
+
+Eine automatische Sicherung wird genauso eingespielt wie eine Deployment-
+Sicherung: Abschnitt 19b, mit `auto-backup-<Zeitstempel>.sqlite` an der Stelle
+von `offline-$TS.sqlite`. Ein eigenes Restore-Skript gibt es bewusst nicht —
+ein Wiederherstellen überschreibt die Produktivdaten, und dieser Schritt soll
+gelesen und verstanden, nicht bequem aufgerufen werden.
+
+## FitTrackee in Betrieb nehmen
+
+Einmalig, nach einem Update, das die Integration mitbringt. Jeder Schritt
+schreibt sein Ergebnis in eine Datei; **kein Schritt gibt einen Secret- oder
+Tokenwert aus.**
+
+### FT-1. Ist-Zustand und Migration
+
+Die Integration bringt Revision `0007_fittrackee_endurance` mit — drei neue
+Tabellen und eine nullbare Spalte an `quests`. Sie läuft im normalen
+Migrationsschritt dieser Anleitung mit; ein eigener Ablauf ist nicht nötig.
+
+```bash
+"${DC[@]}" exec wger-hero python -m alembic current \
+                                           > "$LOG-FT1-state.txt"      2>&1
+"${DC[@]}" exec wger-hero python -m app.check_consistency \
+                                          >> "$LOG-FT1-state.txt"      2>&1
+cat "$LOG-FT1-state.txt"
+```
+
+Erwartet nach dem Update: `0007_fittrackee_endurance (head)`.
+
+### FT-2. Secret-Verzeichnisse vorbereiten
+
+Zwei getrennte Orte, und das ist der Punkt: das Client Secret wird nur gelesen,
+die Tokens werden bei jeder Erneuerung **neu geschrieben**. Lägen sie im selben
+Verzeichnis, könnte eine Token-Erneuerung das Secret überschreiben.
+
+```bash
+umask 077
+install -d -m 700 secrets/fittrackee
+install -d -m 700 secrets/fittrackee-oauth
+ls -ld secrets/fittrackee secrets/fittrackee-oauth \
+                                           > "$LOG-FT2-dirs.txt"       2>&1
+```
+
+### FT-3. OAuth-App in FitTrackee anlegen
+
+In FitTrackee unter dem eigenen Profil → Apps einen Client für wger-hero
+anlegen. Als Redirect-URI exakt die Hero-Callback-Adresse eintragen:
+
+```text
+https://<hero-host>/settings/fittrackee/callback
+```
+
+Scope: **nur** `workouts:read`. Hero schreibt nichts nach FitTrackee zurück.
+
+### FT-4. Client Secret ablegen
+
+Interaktiv, damit der Wert weder als Argument noch in der Shell-History landet:
+
+```bash
+umask 077
+test ! -e secrets/fittrackee/client_secret || {
+  echo "ABBRUCH: existiert bereits — nicht ersetzen"; exit 1; }
+
+cat > secrets/fittrackee/client_secret     # einfügen, dann Strg-D
+chmod 400 secrets/fittrackee/client_secret
+
+stat -c 'path=%n mode=%a size=%s' secrets/fittrackee/client_secret \
+                                           > "$LOG-FT4-secret.txt"     2>&1
+```
+
+Nur Metadaten prüfen. Der Inhalt wird nie ausgegeben — weder mit `cat` noch über
+`docker exec`.
+
+### FT-5. `.env` ergänzen
+
+```bash
+FITTRACKEE_BASE_URL=https://<fittrackee-host>
+FITTRACKEE_CLIENT_ID=<client-id>
+FITTRACKEE_REDIRECT_URI=https://<hero-host>/settings/fittrackee/callback
+FITTRACKEE_CLIENT_SECRET_FILE=/run/secrets/fittrackee_client_secret
+FITTRACKEE_TOKEN_DIR=/run/wger-hero-fittrackee
+```
+
+`.env` enthält **kein** Secret — nur den Pfad dorthin.
+
+### FT-6. Mounts im vollständigen Stack prüfen
+
+Vor dem Neustart, mit allen `-f`-Dateien:
+
+```bash
+"${DC[@]}" config | grep -E 'fittrackee_client_secret|wger-hero-fittrackee' \
+                                           > "$LOG-FT6-mounts.txt"     2>&1
+cat "$LOG-FT6-mounts.txt"
+```
+
+Erwartet: das Secret `read_only: true`, das Tokenverzeichnis **beschreibbar**.
+Fehlt eines, wird nicht gestartet, sondern `DC` korrigiert.
+
+### FT-7. Container neu erzeugen
+
+`.env` wird beim Erzeugen gelesen, nicht beim Neustart:
+
+```bash
+"${DC[@]}" up -d --force-recreate wger-hero \
+                                           > "$LOG-FT7-up.txt"         2>&1
+curl -sS -o /dev/null -w 'healthz=%{http_code}\n' http://127.0.0.1:8091/healthz \
+                                          >> "$LOG-FT7-up.txt"         2>&1
+```
+
+### FT-8. Status, Verbindung, Sportarten
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync status \
+                                           > "$LOG-FT8-status.txt"     2>&1
+```
+
+Dann im Browser `/settings/fittrackee` öffnen und **„Mit FitTrackee
+verbinden"**. Nach der Rückkehr **„Sportarten aktualisieren"**, danach die
+gewünschten Ausdauersportarten ankreuzen und speichern.
+
+Eine neu erkannte Sportart zählt **nie** von selbst — das ist beabsichtigt.
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync probe \
+                                           > "$LOG-FT8-probe.txt"      2>&1
+```
+
+### FT-9. Baseline — erst Probelauf, dann echt
+
+Der wichtigste Schritt. Die Baseline importiert die Historie und schüttet dabei
+**null XP** aus.
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync baseline --dry-run \
+                                           > "$LOG-FT9-baseline-dry.txt" 2>&1
+cat "$LOG-FT9-baseline-dry.txt"
+
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync baseline \
+                                           > "$LOG-FT9-baseline.txt"   2>&1
+cat "$LOG-FT9-baseline.txt"
+```
+
+Erwartet: `globale XP: 0` und `Ausdauer-XP: 0`.
+
+### FT-10. Bestätigen, dass die Historie nichts gezahlt hat
+
+```bash
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT COUNT(*) AS workouts,
+          SUM(reward_eligible) AS reward_faehig
+     FROM fittrackee_workouts;
+   SELECT COUNT(*) AS xp_zeilen
+     FROM xp_events WHERE source='fittrackee';" \
+                                           > "$LOG-FT10-baseline.txt"  2>&1
+cat "$LOG-FT10-baseline.txt"
+```
+
+Erwartet: `reward_faehig = 0` und `xp_zeilen = 0`. Stimmt das nicht, **nicht
+weitermachen** — dann hat die Baseline nicht gegriffen.
+
+### FT-11. Ausdauerziel anlegen
+
+Auf `/settings/fittrackee` „Ausdauerziel anlegen". Idempotent: ein zweiter
+Aufruf legt nichts doppelt an und setzt nichts zurück.
+
+```bash
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT title, quest_type, period, target_value, allowed_weekdays
+     FROM quests
+     WHERE goal_id = (SELECT id FROM goals WHERE slug='kardiovaskulaere-ausdauer')
+     ORDER BY is_milestone, period, title;" \
+                                           > "$LOG-FT11-goal.txt"      2>&1
+cat "$LOG-FT11-goal.txt"
+```
+
+Erwartet: acht Zeilen, darunter genau zwei mit `period = weekly` —
+*Dienstagsrunde* (`allowed_weekdays = 2`) und *Wochenendrunde* (`6,7`).
+
+### FT-12. Erster normaler Sync
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync sync --dry-run \
+                                           > "$LOG-FT12-sync-dry.txt"  2>&1
+cat "$LOG-FT12-sync-dry.txt"
+
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync sync \
+                                           > "$LOG-FT12-sync.txt"      2>&1
+cat "$LOG-FT12-sync.txt"
+```
+
+### FT-13. Denselben Sync wiederholen
+
+Die Idempotenzprobe. Ein zweiter identischer Lauf muss **null** neue XP geben:
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.fittrackee_sync sync \
+                                           > "$LOG-FT13-again.txt"     2>&1
+cat "$LOG-FT13-again.txt"
+```
+
+Erwartet: `globale XP: 0`, `Ausdauer-XP: 0`, alles unter „unverändert".
+
+### FT-14. Ledger, Attribut und Quests prüfen
+
+```bash
+"${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
+  "SELECT COUNT(*) AS zeilen, SUM(xp) AS summe
+     FROM xp_events WHERE source='fittrackee';
+   SELECT COUNT(*) AS zeilen, SUM(xp) AS summe
+     FROM stat_xp_events WHERE source='fittrackee';
+   SELECT stat_key, xp FROM hero_stats WHERE stat_key='endurance';" \
+                                           > "$LOG-FT14-ledger.txt"    2>&1
+cat "$LOG-FT14-ledger.txt"
+```
+
+Beide Summen müssen übereinstimmen und ein Vielfaches von 40 sein.
+
+### FT-15. Konsistenzcheck zum Abschluss
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.check_consistency \
+                                           > "$LOG-FT15-consistency.txt" 2>&1
+cat "$LOG-FT15-consistency.txt"
+```
+
+Erwartet: keine `FEHLER`-Zeile. Hinweise zu Altdaten sind normal.
+
+### Was hier nichts zu suchen hat
+
+```text
+cat secrets/fittrackee/client_secret          # nein
+docker exec ... cat /run/wger-hero-fittrackee/tokens.json   # nein
+printenv / env ohne Variablennamen            # nein
+```
+
+`stat`, `test -s` und `test -r` beantworten jede Frage, die in diesem Ablauf
+auftritt, ohne einen Wert zu zeigen.
+
+## Auth-Fehler einordnen
+
+```text
+503 {"detail": "Auth not configured"}
+```
+
+heißt bei `AUTH_ENABLED=true` genau eines: **die Anwendung kann mindestens eines
+der beiden Auth-Secrets nicht lesen.** Sie fällt absichtlich geschlossen aus —
+ohne Signierschlüssel ist keine Sitzung vertrauenswürdig — und sperrt deshalb
+auch `/login` und `/healthz`.
+
+Die Antwort bleibt bewusst nichtssagend, weil sie vor der Authentifizierung
+ausgeliefert wird und keine Pfade verraten darf. Die Logzeile ist präzise:
+
+```bash
+docker logs --tail 100 wger-hero 2>&1 \
+  | grep -E 'Auth is enabled but unusable|Auth not configured'
+```
+
+### Die Reihenfolge ist nicht verhandelbar
+
+Ein neu erzeugtes `hero_password_hash` ersetzt das bisherige Login-Passwort, ein
+neues `hero_session_secret` wirft alle Sitzungen weg. Beides ist unnötig, wenn
+nur ein Compose-Mount fehlt — und das ist der häufigste Fall. Deshalb von oben
+nach unten, und erst der letzte Punkt erzeugt etwas:
+
+1. **Existiert die Datei auf dem Host?** `[ -e secrets/hero_session_secret ]`
+2. **Ist sie nicht leer?** `[ -s secrets/hero_session_secret ]`
+3. **Ist der richtige Compose-Stack aktiv?** Enthält `DC` alle `-f`-Dateien?
+4. **Ist sie nach `/run/secrets/…` gemountet?**
+   `"${DC[@]}" config | grep '/run/secrets/hero_'`
+5. **Kann der Container sie lesen?**
+   `docker exec wger-hero test -r /run/secrets/hero_session_secret && echo lesbar`
+6. **Erst jetzt** über Neuerzeugung nachdenken — siehe README, Abschnitt
+   „Restoring missing auth secrets".
+
+Punkt 3 und 4 lösen den Fall, der diese Anleitung überhaupt veranlasst hat: Ein
+`docker compose up -d --build` ohne die lokale `-f`-Datei erzeugt den Container
+ohne Mounts, während die Secrets auf dem Host unverändert und intakt daneben
+liegen.
+
+### Was in der Fehlersuche nichts zu suchen hat
+
+Der Inhalt der Secrets wird **nie** ausgegeben — weder auf dem Host mit `cat`
+noch im Container über `docker exec`. Es gibt keinen Diagnoseschritt, der den
+Wert braucht: `test -r`, `test -s` und `stat` beantworten jede Frage, die hier
+auftritt, ohne ihn zu zeigen. Ebenso wenig gehören vollständige Umgebungs-Dumps
+(`printenv`, `env`, `docker inspect` ohne Format-Filter) in ein Deploy-Log: sie
+zeigen den API-Token und alles andere aus `.env` im Klartext.
+
+## Smoke-Test-Skripte
+
+Rein lesend, nicht Teil des Deployments, jederzeit ausführbar:
+
+```bash
+bash scripts/smoke_full.sh          # Healthcheck, PWA, Seiten, DB, Starter-Dry-run
+bash scripts/smoke_today_week.sh    # Tages- und Wochenlogik
+bash scripts/smoke_pwa_starter.sh   # PWA-Assets und Starter-Vorschau
+```
+
+Jedes schreibt seine Ausgabe in eine TXT-Datei, gibt keine Secrets aus,
+aktiviert nichts und ändert nichts.

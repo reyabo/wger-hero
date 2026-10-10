@@ -12,13 +12,23 @@ the ledger (``XpEvent``) is only ever appended to.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.japanese_levels import (
+    RankBoss,
+    canonical_state,
+    validate_boss_event,
+    validate_level_claim,
+)
+from app.models import JapaneseRankReward
 from app.japanese_saves import (
+    SAVE_VERSION_CUMULATIVE,
+    SAVE_VERSION_LEGACY,
     CALC_DUPLICATE,
     CLASSIFICATION_DUPLICATE,
     JAPANESE_STAT_CATEGORY,
@@ -53,6 +63,16 @@ class PreviewResult:
     hero_total_xp_after: int
     hero_level_before: int
     hero_level_after: int
+    # What the SAVE's own level claim looks like against the curve, and what
+    # its optional boss event would do. Both are computed, never written.
+    curve_problems: list[str] = field(default_factory=list)
+    # For version 2, the state the total actually represents — which is what
+    # the import will store. Present only when it differs from the claim, so
+    # the screen can show the correction before it is confirmed.
+    canonical_correction: Optional[object] = None
+    rank_boss: Optional[RankBoss] = None
+    rank_reward_already_held: bool = False
+    rank_problems: list[str] = field(default_factory=list)
 
     @property
     def classification(self) -> str:
@@ -81,11 +101,27 @@ class PreviewResult:
 
 
 @dataclass
+class RankRewardState:
+    """What a SAVE's optional boss event amounts to, without writing anything."""
+
+    boss: Optional[RankBoss]
+    already_held: bool
+    problems: list[str]
+
+
+@dataclass
 class ImportResult:
     created: Optional[JapaneseSaveImport]
     is_duplicate: bool
     duplicate_of: Optional[JapaneseSaveImport]
     xp_awarded: int
+    # The rank boss this SAVE reported, when it was complete and consistent.
+    rank_boss: Optional[RankBoss] = None
+    rank_reward_granted: bool = False
+    rank_reward_already_held: bool = False
+    # Why a reported boss event granted nothing. Never fatal: a broken boss
+    # line must not cost the user the rest of a valid SAVE.
+    rank_problems: list[str] = field(default_factory=list)
 
 
 def get_latest_import(db: Session) -> Optional[JapaneseSaveImport]:
@@ -120,18 +156,90 @@ def _find_duplicate(db: Session, digest: str) -> Optional[JapaneseSaveImport]:
     )
 
 
-def _previous_state(row: Optional[JapaneseSaveImport]) -> Optional[PreviousState]:
+def _previous_state(
+    db: Session, row: Optional[JapaneseSaveImport]
+) -> Optional[PreviousState]:
     if row is None:
         return None
     save_date = row.save_date
     if isinstance(save_date, datetime):
         save_date = save_date.date()
+    # A cumulative counter is measured from the highest total ever recorded,
+    # not from the newest row. A SAVE whose total fell — a coach reset, a
+    # different campaign, a bad export — is kept as a warning snapshot, but if
+    # it became the measuring point the next import would pay the range between
+    # the two all over again. The high-water mark makes that impossible.
+    highest = row.source_level_xp
+    if (row.save_version or SAVE_VERSION_LEGACY) >= SAVE_VERSION_CUMULATIVE:
+        peak = (
+            db.query(func.max(JapaneseSaveImport.source_level_xp))
+            .filter(JapaneseSaveImport.save_version >= SAVE_VERSION_CUMULATIVE)
+            .scalar()
+        )
+        if peak is not None:
+            highest = max(highest, peak)
+
     return PreviousState(
         character_level=row.source_character_level,
         level_xp=row.source_level_xp,
         level_xp_cap=row.source_level_xp_cap,
         save_date=save_date,
+        # Rows written before versioning existed carry NULL and are legacy,
+        # which is exactly what they are.
+        save_version=row.save_version or SAVE_VERSION_LEGACY,
+        highest_total=highest,
     )
+
+
+def rank_reward_state(db: Session, save: JapaneseSave) -> "RankRewardState":
+    """What the SAVE's optional boss event means right now. Writes nothing.
+
+    Used by the preview and by the import itself, so the page can never promise
+    a reward the import would then refuse.
+    """
+    boss, problems = validate_boss_event(
+        save.rank_boss_id, save.rank_boss_status,
+        save.rank_reward_id, save.rank_reward_name,
+    )
+    if boss is None:
+        return RankRewardState(boss=None, already_held=False, problems=problems)
+
+    held = (
+        db.query(JapaneseRankReward)
+        .filter(JapaneseRankReward.boss_id == boss.boss_id)
+        .first()
+    )
+    return RankRewardState(boss=boss, already_held=held is not None, problems=problems)
+
+
+def _grant_rank_reward(db: Session, boss, import_id: int) -> bool:
+    """Record a reward once. Returns False when it was already held.
+
+    The unique index on boss_id is the actual guarantee — this query only makes
+    the common case cheap and the message accurate. Two concurrent imports that
+    both pass the check still cannot both insert, and the loser rolls back with
+    the rest of its unit of work.
+    """
+    existing = (
+        db.query(JapaneseRankReward)
+        .filter(JapaneseRankReward.boss_id == boss.boss_id)
+        .first()
+    )
+    if existing is not None:
+        return False
+
+    db.add(
+        JapaneseRankReward(
+            boss_id=boss.boss_id,
+            reward_id=boss.reward_id,
+            reward_name=boss.reward_name,
+            boss_title=boss.title,
+            source_level=boss.level,
+            tier=boss.tier,
+            import_id=import_id,
+        )
+    )
+    return True
 
 
 def _xp_description(save: JapaneseSave, delta: DeltaResult) -> str:
@@ -172,7 +280,7 @@ def preview_save(
     previous = get_latest_import(db)
     delta = calculate_delta(
         save,
-        _previous_state(previous),
+        _previous_state(db, previous),
         accept_baseline_credit=accept_baseline_credit,
     )
 
@@ -183,9 +291,31 @@ def preview_save(
     awarded = 0 if duplicate is not None else delta.xp_delta
     total_after = total_before + awarded
 
+    # Version 2 states a level, a rank and a next threshold, so all three can be
+    # checked against the curve. A mismatch is reported and nothing is silently
+    # corrected: the coach is the source, this table is only a check.
+    curve_problems: list[str] = []
+    if save.is_cumulative:
+        curve_problems = validate_level_claim(
+            save.character_level, save.level_xp, save.character_rank, save.level_xp_cap
+        )
+
+    correction = None
+    if save.is_cumulative:
+        canonical = canonical_state(save.level_xp)
+        if (canonical.level, canonical.rank) != (save.character_level, save.character_rank):
+            correction = canonical
+
+    reward_state = rank_reward_state(db, save)
+
     return PreviewResult(
         save=save,
         delta=delta,
+        curve_problems=curve_problems,
+        canonical_correction=correction,
+        rank_boss=reward_state.boss,
+        rank_reward_already_held=reward_state.boss is not None and reward_state.already_held,
+        rank_problems=reward_state.problems,
         previous=previous,
         is_duplicate=duplicate is not None,
         duplicate_of=duplicate,
@@ -224,10 +354,32 @@ def import_save(
     previous = get_latest_import(db)
     delta = calculate_delta(
         save,
-        _previous_state(previous),
+        _previous_state(db, previous),
         accept_baseline_credit=accept_baseline_credit,
     )
     awarded = max(0, delta.xp_delta)
+
+    # Under version 2 the cumulative total is canonical and the rest of the
+    # character line is a rendering of it. A SAVE whose level, rank or cap
+    # disagrees is stored in its *corrected* form: the delta already follows
+    # the total, and persisting the claim beside it would leave a row that
+    # contradicts itself and would hand the wrong level to the next import.
+    # The disagreement is not lost — it is in the warning, and raw_save keeps
+    # the SAVE exactly as it was written.
+    stored_level = save.character_level
+    stored_rank = save.character_rank
+    stored_cap = save.level_xp_cap
+    if save.is_cumulative:
+        canonical = canonical_state(save.level_xp)
+        stored_level = canonical.level
+        stored_rank = canonical.rank
+        # At the ceiling there is no next threshold, so there is no canonical
+        # cap either — and taking the claim instead would persist exactly the
+        # contradiction this correction exists to remove. 0 records "none".
+        # The coach specification deliberately leaves the right-hand side of a
+        # level-30 bar undefined, so whatever it wrote is not warned about; it
+        # is simply not adopted as fact.
+        stored_cap = canonical.next_threshold if canonical.next_threshold is not None else 0
 
     try:
         record = JapaneseSaveImport(
@@ -236,10 +388,14 @@ def import_save(
             wanikani_level=save.wanikani_level,
             bunpro_level=save.bunpro_level,
             bunpro_points=save.bunpro_points,
-            source_character_level=save.character_level,
-            source_character_rank=save.character_rank,
+            source_character_level=stored_level,
+            source_character_rank=stored_rank,
+            save_version=save.save_version,
             source_level_xp=save.level_xp,
-            source_level_xp_cap=save.level_xp_cap,
+            source_level_xp_cap=stored_cap,
+            rank_boss_id=save.rank_boss_id,
+            rank_boss_status=save.rank_boss_status,
+            rank_reward_id=save.rank_reward_id,
             reported_session_xp=save.session_xp,
             vocabulary_score=save.vocabulary,
             grammar_score=save.grammar,
@@ -302,6 +458,14 @@ def import_save(
         record.stat_xp_awarded = stat_total
         record.stat_rewards = serialize_stat_rewards(stat_rewards)
 
+        # The reward rides in the same unit of work as the snapshot and the XP,
+        # so a failure cannot leave a badge without the import that earned it.
+        # It carries no XP of its own: reaching the level was already paid for.
+        reward_state = rank_reward_state(db, save)
+        reward_granted = False
+        if reward_state.boss is not None and not reward_state.already_held:
+            reward_granted = _grant_rank_reward(db, reward_state.boss, record.id)
+
         db.commit()
     except Exception:
         db.rollback()
@@ -310,5 +474,13 @@ def import_save(
 
     db.refresh(record)
     return ImportResult(
-        created=record, is_duplicate=False, duplicate_of=None, xp_awarded=awarded
+        created=record,
+        is_duplicate=False,
+        duplicate_of=None,
+        xp_awarded=awarded,
+        rank_boss=reward_state.boss,
+        rank_reward_granted=reward_granted,
+        rank_reward_already_held=reward_state.boss is not None
+        and reward_state.already_held,
+        rank_problems=reward_state.problems,
     )

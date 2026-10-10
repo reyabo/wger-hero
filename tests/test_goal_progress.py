@@ -45,7 +45,9 @@ def db():
 def _goal(db, **kw):
     goal = create_goal(db, title=kw.pop("title", "Ziel"), **kw)
     # created far enough back that history weeks count as "has data"
-    goal.created_at = datetime.utcnow() - timedelta(weeks=20)
+    # Far enough back that tests pinning a fixed calendar date stay inside the
+    # goal's lifetime however long from now they are run.
+    goal.created_at = datetime(2020, 1, 1)
     db.commit()
     return goal
 

@@ -47,6 +47,11 @@ logs/
 
 docker-compose.override.yml
 compose.override.yml
+# Lokale Zusatzdateien, z. B. die produktiven Auth-Secret-Mounts. Sie
+# beschreiben Hostpfade einer konkreten Installation und gehören nicht ins Repo.
+docker-compose.auth.yml
+compose.auth.yml
+docker-compose.prod.yml
 
 # IDEs
 
