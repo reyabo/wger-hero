@@ -668,6 +668,60 @@ NULL-Werte, und eine Definition, in der `wanikani_level` und `bunpro_points`
 
 ---
 
+## 18c. Nach einem wger-Update: Sessions mit `datetime_start`
+
+**Keine neue Revision.** Reine Codeänderung, der Datenbankstand bleibt, wie er
+ist.
+
+Aktuelle wger-Versionen liefern an `/api/v2/workoutsession/` kein Feld `date`
+mehr, sondern `datetime_start` und `datetime_end`. Der Sync liest den Tag
+deshalb an genau einer Stelle (`app.sync.session_date_str`), bevorzugt
+`datetime_start` und fällt auf `date` zurück, damit eine ältere Instanz
+unverändert weiterläuft.
+
+Vor dem Deployment die Feldnamen der eigenen Instanz prüfen. Die Diagnose nennt
+das erkannte Datumsfeld und druckt ausschließlich Feldnamen, keine Werte:
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.diagnostics wger \
+                                           > "$LOG-18c-wger-fields.txt"  2>&1
+grep -E "Date field recognized|workoutsession" "$LOG-18c-wger-fields.txt"
+```
+
+Erwartet: `Date field recognized : datetime_start`. Meldet die Zeile `NONE`,
+kennt diese wger-Version keines der beiden Felder — dann **nicht** syncen,
+sondern erst die Feldnamen klären.
+
+### Der erste Sync nach dem Fix ist nicht folgenlos
+
+Der Deduplizierungs-Hash wird über die rohe API-Antwort gebildet
+(`_hash_session({"session": …, "logs": …})`). Weil sich deren Form geändert
+hat, gilt jede bereits importierte Session als „verändert“ und läuft erneut
+durch den Re-Sync-Pfad. Lokal mit synthetischen Daten reproduziert, drei
+bekannte Sessions:
+
+| Größe | vor dem Sync | danach |
+|---|---|---|
+| `hero_profile.total_xp` (Workout-XP) | 300 | 300 |
+| `sync_events` | 3 | 3, `synced_at` auf „jetzt“ gesetzt |
+| `xp_events` | 3 | 6 — die alten Zeilen bleiben stehen |
+| Quest `week-warrior` | offen | abgeschlossen, +200 XP |
+
+Die Workout-XP bleiben also korrekt, aber die Audit-Spur verdoppelt sich, und
+weil `week-warrior` Workouts über `sync_events.synced_at` statt über das
+Trainingsdatum zählt, schließt die Quest ab.
+
+**Vor dem ersten Sync sichern** (Abschnitt 4) und den Sync zuerst auf einer
+Kopie laufen lassen. Wie dieser Einmaleffekt behandelt wird, ist offen und
+bewusst nicht Teil dieses Fixes — er griffe in die XP-Historie ein.
+
+Danach prüfen, dass der Ledger stimmt:
+
+```bash
+"${DC[@]}" exec wger-hero python -m app.check_consistency \
+                                           > "$LOG-18c-consistency.txt"  2>&1
+```
+
 ## 19. Rückweg
 
 Es gibt zwei verschiedene Rückwege. Welcher gebraucht wird, hängt davon ab, ob

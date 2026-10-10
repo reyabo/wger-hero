@@ -18,12 +18,29 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+SESSIONS_PATH = "/api/v2/workoutsession/"
+
+# Current wger versions expose datetime_start / datetime_end on a session and
+# no longer expose `date`, so both the ordering hint and the lower-bound filter
+# have to name datetime_start.
+SESSION_ORDERING = "-datetime_start"
+SESSION_SINCE_PARAM = "datetime_start__gte"
+
 # The current wger exposes performed sets here. /api/v2/log/ is gone (404).
 LOG_ENDPOINT = "/api/v2/workoutlog/"
 
 
 class WgerClientError(Exception):
-    pass
+    """A failed wger request.
+
+    `status_code` carries the HTTP status when there was one, so a caller can
+    react to a specific status without parsing the message. The message format
+    is unchanged, since existing callers still match on it.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class WgerClient:
@@ -40,7 +57,10 @@ class WgerClient:
             return response.json()
         except httpx.HTTPStatusError as e:
             logger.error("wger API error: %s %s -> %s", e.request.method, path, e.response.status_code)
-            raise WgerClientError(f"HTTP {e.response.status_code} from {path}") from e
+            raise WgerClientError(
+                f"HTTP {e.response.status_code} from {path}",
+                status_code=e.response.status_code,
+            ) from e
         except httpx.RequestError as e:
             logger.error("wger request error on %s: %s", path, type(e).__name__)
             raise WgerClientError(f"Request failed for {path}") from e
@@ -67,18 +87,34 @@ class WgerClient:
 
     async def get_workout_sessions(self, since: "date | None" = None) -> list[dict]:
         """
-        Fetch workout sessions ordered by date descending.
+        Fetch workout sessions, newest first where the server honours it.
         Endpoint: /api/v2/workoutsession/
-        Fields expected: id, date, workout, notes, impression
+        Fields expected: id, datetime_start, datetime_end, workout, notes,
+        impression — current versions no longer report a plain `date`.
 
-        `since`: if given, only sessions on or after this date are fetched
-        (uses the wger date__gte filter parameter).
+        `since`: if given, only sessions on or after this day are requested.
+
+        Which filter and ordering parameters this wger version accepts has not
+        been verified against a live instance. The server may ignore them — it
+        demonstrably ignores the ordering hint and answers oldest first — or
+        reject them. A rejected parameter (HTTP 400) is therefore retried once
+        without ordering and filter: fetching everything and narrowing it down
+        locally is slower but correct, whereas a failed request would look like
+        "no new workouts" again. sync.py enforces `since` locally regardless.
         """
-        from datetime import date as _date
-        params: dict = {"ordering": "-date"}
+        params: dict = {"ordering": SESSION_ORDERING}
         if since is not None:
-            params["date__gte"] = since.isoformat()
-        return await self._get_all("/api/v2/workoutsession/", params)
+            params[SESSION_SINCE_PARAM] = since.isoformat()
+        try:
+            return await self._get_all(SESSIONS_PATH, params)
+        except WgerClientError as e:
+            if e.status_code != 400:
+                raise
+            logger.warning(
+                "wger rejected the session ordering/filter parameters — "
+                "retrying unfiltered and narrowing down locally"
+            )
+            return await self._get_all(SESSIONS_PATH)
 
     async def get_exercise_logs(self, session_id: str | None = None) -> list[dict]:
         """
