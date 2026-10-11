@@ -89,7 +89,9 @@ docker exec "$CONTAINER" sqlite3 -readonly "$DB" \
 echo
 echo "--- 8. Japanese SAVE parser against the deployed code (pure, no write) ---"
 # parse_save(raw: str) -> JapaneseSave; it touches neither session nor database.
-docker exec "$CONTAINER" python - <<'PY'
+# -i: without it the heredoc never reaches python, which then exits 0
+# having run nothing.
+docker exec -i "$CONTAINER" python - <<'PY'
 from app.japanese_saves import parse_save
 
 MINIMAL = """=== 状態 SAVE ===

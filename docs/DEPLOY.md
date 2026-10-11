@@ -852,6 +852,13 @@ MAILTO=root
 Skript **eine** Zeile, im Fehlerfall eine `FEHLER:`-Meldung auf stderr und einen
 Exit-Code ungleich null — das ist es, was Cron per Mail meldet.
 
+Nach dem Einrichten das Skript einmal von Hand ausführen und nachsehen, dass
+wirklich eine Datei entsteht. Das gilt besonders für das Update, das
+`docker exec -i` eingeführt hat: Davor erreichte der Python-Teil des Skripts den
+Container nie, jeder Lauf endete mit „ist auf dem Host nicht aufgetaucht", und
+eine Sicherung ist auf diesem Weg nie entstanden. Ein schon eingerichteter
+Cron-Eintrag hat bis dahin also nur `FEHLER:`-Mails erzeugt.
+
 Nachsehen, was vorhanden ist:
 
 ```bash
@@ -862,9 +869,11 @@ ls -lh /srv/data/wger-hero/backups/
 
 Eine automatische Sicherung wird genauso eingespielt wie eine Deployment-
 Sicherung: Abschnitt 19b, mit `auto-backup-<Zeitstempel>.sqlite` an der Stelle
-von `offline-$TS.sqlite`. Ein eigenes Restore-Skript gibt es bewusst nicht —
-ein Wiederherstellen überschreibt die Produktivdaten, und dieser Schritt soll
-gelesen und verstanden, nicht bequem aufgerufen werden.
+von `offline-$TS.sqlite`. Sie ist eine einzelne Datei ohne `-wal` und `-shm`;
+die Anwendung stellt sie beim ersten Verbinden selbst wieder auf WAL um. Ein
+eigenes Restore-Skript gibt es bewusst nicht — ein Wiederherstellen
+überschreibt die Produktivdaten, und dieser Schritt soll gelesen und
+verstanden, nicht bequem aufgerufen werden.
 
 ## FitTrackee in Betrieb nehmen
 
