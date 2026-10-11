@@ -88,9 +88,10 @@ main() {
 
     # Paths go through the environment, never interpolated into the Python
     # source: a path containing a quote would otherwise become code.
-    # The stdlib sqlite3 module is used rather than the sqlite3 CLI, which the
-    # image does not install — Connection.backup() is the same WAL-consistent
-    # online backup, and it needs no extra package.
+    # The stdlib sqlite3 module is used rather than the sqlite3 CLI. The image
+    # installs the CLI now, but cron runs this against whatever image is
+    # deployed — including one rolled back to before it had the CLI — and
+    # Connection.backup() is the same WAL-consistent online backup without it.
     docker exec -e SRC="$DB" -e DST="$target_in_container" "$CONTAINER" python - <<'PY' \
         || fail "Die Sicherung konnte nicht erstellt werden."
 import os
