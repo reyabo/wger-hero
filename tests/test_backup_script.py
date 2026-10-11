@@ -216,3 +216,149 @@ def test_the_docs_say_it_does_not_replace_the_deploy_backup():
     deploy = (REPO_ROOT / "docs" / "DEPLOY.md").read_text()
     section = deploy.split("Automatische Sicherung")[1]
     assert "ersetzt" in section
+
+
+# ---------------------------------------------------------------------------
+# The Python the script hands to the container — run here, without docker
+# ---------------------------------------------------------------------------
+
+def python_blocks(text: str = TEXT) -> list:
+    """The bodies of every `python - <<'PY'` heredoc, in order.
+
+    As in bash, the body starts after the whole command: a trailing backslash
+    carries the command — here `|| fail ...` — onto the next line first.
+    """
+    blocks, current, continued = [], None, False
+    for line in text.splitlines():
+        if current is None:
+            if "python - <<'PY'" in line:
+                current = []
+                continued = line.rstrip().endswith("\\")
+        elif continued:
+            continued = line.rstrip().endswith("\\")
+        elif line == "PY":
+            blocks.append("\n".join(current) + "\n")
+            current = None
+        else:
+            current.append(line)
+    return blocks
+
+
+def run_block(block: str, **env) -> subprocess.CompletedProcess:
+    """Exactly what `docker exec -i ... python -` does: the block on stdin."""
+    import sys
+
+    return subprocess.run(
+        [sys.executable, "-"], input=block, text=True, capture_output=True,
+        env={**os.environ, **env},
+    )
+
+
+def live_wal_database(path: Path):
+    """A WAL database whose newest rows are still only in the -wal file, the
+    way the running app leaves it. The connection is returned open — closing
+    it would checkpoint and hide exactly the case that matters."""
+    import sqlite3
+
+    con = sqlite3.connect(path)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA wal_autocheckpoint=0")
+    con.execute("CREATE TABLE xp_events (id INTEGER PRIMARY KEY, xp INTEGER)")
+    con.executemany("INSERT INTO xp_events (xp) VALUES (?)", [(n,) for n in range(500)])
+    con.commit()
+    assert Path(f"{path}-wal").stat().st_size > 0
+    return con
+
+
+def test_the_script_hands_python_two_blocks():
+    """Writer, then verifier — the tests below rely on that order."""
+    blocks = python_blocks()
+    assert len(blocks) == 2
+    assert "src.backup(dst)" in blocks[0]
+    assert "integrity_check" in blocks[1]
+
+
+def test_every_python_call_receives_its_heredoc():
+    """Without -i, docker exec does not forward stdin: `python -` reads
+    nothing, exits 0, and the step reports success having run no code. That
+    is how the script ended every run with "nicht aufgetaucht"."""
+    calls = [line for line in TEXT.splitlines() if "python - <<'PY'" in line]
+    assert len(calls) == 2
+    for line in calls:
+        assert line.lstrip().startswith("docker exec -i "), line
+
+
+def test_the_backup_carries_rows_still_in_the_wal(tmp_path):
+    import sqlite3
+
+    src = live_wal_database(tmp_path / "live.sqlite")
+    dst = tmp_path / "auto-backup.sqlite"
+    try:
+        result = run_block(python_blocks()[0], SRC=str(tmp_path / "live.sqlite"), DST=str(dst))
+    finally:
+        src.close()
+    assert result.returncode == 0, result.stderr
+    con = sqlite3.connect(f"file:{dst}?mode=ro", uri=True)
+    try:
+        assert con.execute("SELECT count(*) FROM xp_events").fetchone()[0] == 500
+    finally:
+        con.close()
+
+
+def test_the_backup_is_one_self_contained_file(tmp_path):
+    """The copy inherits the source's WAL flag. Left that way, the read-only
+    check leaves -wal and -shm beside it, which rotation never matches and
+    which therefore pile up. Switched to a rollback journal, it is one file."""
+    src = live_wal_database(tmp_path / "live.sqlite")
+    dst = tmp_path / "auto-backup.sqlite"
+    try:
+        assert run_block(python_blocks()[0], SRC=str(tmp_path / "live.sqlite"), DST=str(dst)).returncode == 0
+    finally:
+        src.close()
+    check = run_block(python_blocks()[1], DST=str(dst))
+    assert check.returncode == 0, check.stderr
+
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("auto-backup")) == [
+        "auto-backup.sqlite"
+    ]
+
+
+def test_the_backup_is_left_in_rollback_journal_mode(tmp_path):
+    """The app sets WAL again on its first connect (app/database.py), so a
+    restored backup returns to WAL by itself."""
+    import sqlite3
+
+    src = live_wal_database(tmp_path / "live.sqlite")
+    dst = tmp_path / "auto-backup.sqlite"
+    try:
+        run_block(python_blocks()[0], SRC=str(tmp_path / "live.sqlite"), DST=str(dst))
+    finally:
+        src.close()
+    con = sqlite3.connect(f"file:{dst}?mode=ro", uri=True)
+    try:
+        assert con.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    finally:
+        con.close()
+
+
+def test_the_backup_never_writes_to_the_live_database(tmp_path):
+    src = live_wal_database(tmp_path / "live.sqlite")
+    try:
+        before = (tmp_path / "live.sqlite").read_bytes()
+        run_block(python_blocks()[0], SRC=str(tmp_path / "live.sqlite"), DST=str(tmp_path / "b.sqlite"))
+        assert (tmp_path / "live.sqlite").read_bytes() == before
+    finally:
+        src.close()
+
+
+def test_the_verifier_fails_on_a_damaged_file(tmp_path):
+    """Proves the check actually runs: a file that is no database fails it."""
+    damaged = tmp_path / "auto-backup.sqlite"
+    damaged.write_bytes(b"not a database" * 1000)
+    assert run_block(python_blocks()[1], DST=str(damaged)).returncode != 0
+
+
+def test_the_docs_say_to_run_it_once_by_hand():
+    deploy = (REPO_ROOT / "docs" / "DEPLOY.md").read_text()
+    section = deploy[deploy.index("## Automatische Sicherung"):deploy.index("### Zurückspielen")]
+    assert "von Hand" in section

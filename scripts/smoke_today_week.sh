@@ -72,7 +72,9 @@ echo "--- 6. Planning logic against the live schema (read-only) ---"
 #   database._get_session_factory()()      -> Session     (module-private,
 #                                                    the only session factory
 #                                                    the app exposes)
-docker exec "$CONTAINER" python - <<'PY'
+# -i: without it the heredoc never reaches python, which then exits 0
+# having run nothing.
+docker exec -i "$CONTAINER" python - <<'PY'
 from app.database import _get_session_factory
 from app.momentum import week_start
 from app.planning import today_plan, week_days, week_plan

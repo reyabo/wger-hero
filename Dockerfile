@@ -2,9 +2,13 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install build deps for packages that need compilation
+# gcc: build deps for packages that need compilation.
+# sqlite3: the command-line tool that docs/DEPLOY.md and scripts/smoke_*.sh run
+# through `docker exec` for the integrity check, the pre-deploy backup and the
+# read-only counts. The base image ships only the library Python links against.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./

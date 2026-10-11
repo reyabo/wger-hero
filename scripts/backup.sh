@@ -88,10 +88,14 @@ main() {
 
     # Paths go through the environment, never interpolated into the Python
     # source: a path containing a quote would otherwise become code.
-    # The stdlib sqlite3 module is used rather than the sqlite3 CLI, which the
-    # image does not install — Connection.backup() is the same WAL-consistent
-    # online backup, and it needs no extra package.
-    docker exec -e SRC="$DB" -e DST="$target_in_container" "$CONTAINER" python - <<'PY' \
+    # The stdlib sqlite3 module is used rather than the sqlite3 CLI. The image
+    # installs the CLI now, but cron runs this against whatever image is
+    # deployed — including one rolled back to before it had the CLI — and
+    # Connection.backup() is the same WAL-consistent online backup without it.
+    # -i is what hands the heredoc to python: without it docker exec does not
+    # forward stdin, `python -` reads nothing, exits 0, and the step "passes"
+    # having run no code at all.
+    docker exec -i -e SRC="$DB" -e DST="$target_in_container" "$CONTAINER" python - <<'PY' \
         || fail "Die Sicherung konnte nicht erstellt werden."
 import os
 import sqlite3
@@ -100,6 +104,13 @@ src = sqlite3.connect(f"file:{os.environ['SRC']}?mode=ro", uri=True)
 dst = sqlite3.connect(os.environ["DST"])
 try:
     src.backup(dst)
+    # The copy inherits the live database's WAL flag. As a rollback-journal
+    # database it is one self-contained file: the read-only check below then
+    # leaves no -wal/-shm beside it, which rotation would never match. The app
+    # switches a restored copy back to WAL on its first connect.
+    mode = dst.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+    if mode != "delete":
+        raise SystemExit(f"journal_mode: {mode}")
 finally:
     dst.close()
     src.close()
@@ -107,7 +118,7 @@ PY
 
     # Verified in a separate call, so a crash in the writer cannot be mistaken
     # for a pass.
-    docker exec -e DST="$target_in_container" "$CONTAINER" python - <<'PY' \
+    docker exec -i -e DST="$target_in_container" "$CONTAINER" python - <<'PY' \
         || fail "Die Integritätsprüfung der Sicherung ist fehlgeschlagen."
 import os
 import sqlite3

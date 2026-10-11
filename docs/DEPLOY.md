@@ -178,6 +178,36 @@ Warnsignal — sie gehen beim Pull verloren oder erzeugen einen Konflikt.
 
 ## 3. SQLite-Integrität prüfen
 
+Abschnitt 3, Abschnitt 4 und der letzte Befehl von Abschnitt 7 rufen `sqlite3`
+per `exec` im **noch laufenden** Container auf — also im alten Image. Die
+Kommandozeile bringt das Image erst mit, seit das Dockerfile sie installiert;
+ältere Images haben sie nicht. Deshalb zuerst:
+
+```bash
+"${DC[@]}" exec wger-hero sh -c 'command -v sqlite3 || echo FEHLT' \
+                                           > "$LOG-03-sqlite3-cli.txt" 2>&1
+cat "$LOG-03-sqlite3-cli.txt"
+```
+
+Erwartet: ein Pfad wie `/usr/bin/sqlite3`. Steht dort `FEHLT`, ist das das
+erste Update von einem Image ohne die Kommandozeile. Dann für **dieses eine**
+Update in den laufenden Container nachinstallieren. Das ändert keine Daten und
+verschwindet mit dem Container, den Abschnitt 11 neu erzeugt — das neue Image
+bringt sie selbst mit:
+
+```bash
+"${DC[@]}" exec -u 0 wger-hero sh -c \
+  'apt-get update -qq && apt-get install -y -qq --no-install-recommends sqlite3' \
+                                          >> "$LOG-03-sqlite3-cli.txt" 2>&1
+"${DC[@]}" exec wger-hero sqlite3 -version \
+                                          >> "$LOG-03-sqlite3-cli.txt" 2>&1
+```
+
+Erwartet: am Ende eine Versionszeile. Scheitert die Installation, etwa weil der
+Container kein Netz hat, geht es **nicht** ohne Abschnitt 3 und 4 weiter.
+
+Dann die eigentliche Prüfung:
+
 ```bash
 "${DC[@]}" exec wger-hero sqlite3 -readonly "$DB_IN_CONTAINER" \
   "PRAGMA integrity_check;
@@ -822,6 +852,13 @@ MAILTO=root
 Skript **eine** Zeile, im Fehlerfall eine `FEHLER:`-Meldung auf stderr und einen
 Exit-Code ungleich null — das ist es, was Cron per Mail meldet.
 
+Nach dem Einrichten das Skript einmal von Hand ausführen und nachsehen, dass
+wirklich eine Datei entsteht. Das gilt besonders für das Update, das
+`docker exec -i` eingeführt hat: Davor erreichte der Python-Teil des Skripts den
+Container nie, jeder Lauf endete mit „ist auf dem Host nicht aufgetaucht", und
+eine Sicherung ist auf diesem Weg nie entstanden. Ein schon eingerichteter
+Cron-Eintrag hat bis dahin also nur `FEHLER:`-Mails erzeugt.
+
 Nachsehen, was vorhanden ist:
 
 ```bash
@@ -832,9 +869,11 @@ ls -lh /srv/data/wger-hero/backups/
 
 Eine automatische Sicherung wird genauso eingespielt wie eine Deployment-
 Sicherung: Abschnitt 19b, mit `auto-backup-<Zeitstempel>.sqlite` an der Stelle
-von `offline-$TS.sqlite`. Ein eigenes Restore-Skript gibt es bewusst nicht —
-ein Wiederherstellen überschreibt die Produktivdaten, und dieser Schritt soll
-gelesen und verstanden, nicht bequem aufgerufen werden.
+von `offline-$TS.sqlite`. Sie ist eine einzelne Datei ohne `-wal` und `-shm`;
+die Anwendung stellt sie beim ersten Verbinden selbst wieder auf WAL um. Ein
+eigenes Restore-Skript gibt es bewusst nicht — ein Wiederherstellen
+überschreibt die Produktivdaten, und dieser Schritt soll gelesen und
+verstanden, nicht bequem aufgerufen werden.
 
 ## FitTrackee in Betrieb nehmen
 
