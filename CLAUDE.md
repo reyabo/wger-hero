@@ -8,7 +8,9 @@ Antwortsprache: Deutsch. Code, Bezeichner und Commit-Nachrichten: Englisch.
 Selbstgehostete Gamification-Schicht über einer wger-Instanz. FastAPI mit
 server-gerendertem Jinja2, SQLAlchemy 2.0, SQLite mit WAL, httpx, pydantic-settings.
 Läuft in Produktion als Container `wger-hero` auf einem Debian-Server, intern Port 5000,
-veröffentlicht auf 8091, hinter Caddy. Datenbank unter `/srv/data/wger-hero/wger_hero.db`.
+veröffentlicht auf 8091, hinter Caddy. Den Datenbankpfad nicht aus Code oder Compose-Datei
+ablesen: Die Vorgabe im Repository (`wger_hero.db`) weicht vom Server ab. Maßgeblich ist
+`docs/DEPLOY.md` Abschnitt 0, „Den Datenbankpfad zuerst feststellen".
 Einbenutzerbetrieb.
 
 ## Leitidee — nicht aufweichen
